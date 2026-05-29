@@ -4,8 +4,8 @@ use tiptap_rusty_parser::{doc, Document, Mark, Node};
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
 fn big_doc(paras: usize, spans: usize) -> Document {
     let paragraphs = (0..paras).map(|p| {
-        let texts =
-            (0..spans).map(move |s| Node::text_with_marks(format!("w{p}-{s} "), [Mark::new("bold")]));
+        let texts = (0..spans)
+            .map(move |s| Node::text_with_marks(format!("w{p}-{s} "), [Mark::new("bold")]));
         Node::element("paragraph")
             .with_attr("textAlign", "left")
             .with_children(texts)
@@ -21,9 +21,7 @@ fn benches(c: &mut Criterion) {
         b.iter(|| Document::from_json_str(black_box(&json)).unwrap())
     });
 
-    c.bench_function("serialize", |b| {
-        b.iter(|| document.to_json_str().unwrap())
-    });
+    c.bench_function("serialize", |b| b.iter(|| document.to_json_str().unwrap()));
 
     c.bench_function("walk_count", |b| {
         b.iter(|| {
@@ -35,7 +33,11 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("find_all_text", |b| {
         b.iter(|| {
-            black_box(document.find_all(|n| n.node_type.as_deref() == Some("text")).len())
+            black_box(
+                document
+                    .find_all(|n| n.node_type.as_deref() == Some("text"))
+                    .len(),
+            )
         })
     });
 

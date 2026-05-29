@@ -38,7 +38,10 @@ fn value_roundtrip_is_lossless() {
     let original: serde_json::Value = serde_json::from_str(SAMPLE).unwrap();
     let doc = Document::from_value(original.clone()).unwrap();
     let out = doc.to_value().unwrap();
-    assert_eq!(original, out, "roundtrip must preserve structure & unknown fields");
+    assert_eq!(
+        original, out,
+        "roundtrip must preserve structure & unknown fields"
+    );
 }
 
 #[test]

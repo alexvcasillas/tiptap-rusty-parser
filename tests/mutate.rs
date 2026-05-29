@@ -23,7 +23,12 @@ fn mark_attr() {
     t.add_mark(Mark::new("link"));
     assert!(t.set_mark_attr("link", "href", "https://x.dev"));
     assert_eq!(
-        t.get_mark("link").unwrap().attrs.as_ref().unwrap().get("href"),
+        t.get_mark("link")
+            .unwrap()
+            .attrs
+            .as_ref()
+            .unwrap()
+            .get("href"),
         Some(&json!("https://x.dev"))
     );
     assert!(!t.set_mark_attr("missing", "k", "v"));
