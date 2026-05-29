@@ -12,6 +12,7 @@ categories = ["parsing", "text-processing"]
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
+unicode-segmentation = "1"
 
 [dev-dependencies]
 criterion = "0.5"

@@ -6,7 +6,10 @@ ProseMirror `JSONContent` documents, in Rust.
 - **Schema-agnostic** — any node/mark `type` is accepted; unknown JSON fields are
   preserved for lossless roundtrip.
 - **Query** with predicate closures — `find`, `find_all`, `walk`, `descendants`.
+- **Select** by type/mark/attr — `by_type`, `by_mark`, `by_attr`.
+- **Address** by index path — `node_at`, `path_to`, `paths_to`.
 - **Mutate** in place — marks, attrs, children, text, and bulk `replace_all`.
+- **Extract text** — `text_content`, `char_count`, `word_count` (Unicode-aware).
 - **Build** ergonomically — `Node::element`, `Node::text`, `doc(..)`, `with_*` chaining.
 - **Fast** — borrow over copy, stack-based traversal (no recursion blowup), `lto`
   release profile, criterion benches.
@@ -20,12 +23,15 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Data model](#data-model)
 - [Parsing & serializing](#parsing--serializing)
 - [Querying](#querying)
+- [Selectors](#selectors)
+- [Node paths](#node-paths)
 - [Mutating](#mutating)
   - [Marks](#marks)
   - [Attributes](#attributes)
   - [Children](#children)
   - [Text](#text)
   - [Bulk transforms](#bulk-transforms)
+- [Text extraction](#text-extraction)
 - [Building nodes](#building-nodes)
 - [Error handling](#error-handling)
 - [Performance](#performance)
@@ -212,6 +218,73 @@ doc.walk_mut(&mut |n| { /* edit n */ });
 
 ---
 
+## Selectors
+
+Convenience wrappers over the closure API for the common cases — no closure to
+write, and a friendlier surface for future CLI/FFI layers.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{
+  "type":"doc","content":[
+    {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Title"}]},
+    {"type":"paragraph","content":[{"type":"text","text":"a","marks":[{"type":"bold"}]}]}
+  ]}"#)?;
+
+doc.by_type("paragraph");        // -> Vec<&Node>
+doc.first_by_type("heading");    // -> Option<&Node>
+doc.by_mark("bold");             // -> Vec<&Node> (nodes carrying the mark)
+doc.by_attr("level", 1);         // -> Vec<&Node> (attr equals value)
+
+// mutable
+# let mut doc = doc;
+for n in doc.root_mut().by_type_mut("paragraph") {
+    n.set_attr("touched", true);
+}
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Returns |
+|--------|---------|
+| `by_type(t)` / `first_by_type(t)` / `by_type_mut(t)` | `Vec<&Node>` / `Option<&Node>` / `Vec<&mut Node>` |
+| `by_mark(mark_type)` | `Vec<&Node>` |
+| `by_attr(key, value)` | `Vec<&Node>` |
+
+---
+
+## Node paths
+
+Address nodes by **index path** — a slice of child indices, root = `&[]`. In a
+`doc → paragraph → text` tree the text node is at `&[0, 0]`. There are no parent
+pointers; parent/sibling navigation is just path slicing.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let mut doc = Document::from_json_str(r#"{
+  "type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}
+  ]}"#)?;
+
+doc.node_at(&[0, 1]);                 // -> Option<&Node>  (the "b" text node)
+doc.node_at_mut(&[0, 1]).unwrap().set_text("B");
+
+let p = doc.path_to(|n| n.get_text() == Some("B")).unwrap(); // -> vec![0, 1]
+let parent = doc.node_at(&p[..p.len() - 1]).unwrap();        // its paragraph
+
+doc.paths_to(|n| n.node_type.as_deref() == Some("text"));    // every text location
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Returns |
+|--------|---------|
+| `node_at(path)` / `node_at_mut(path)` | `Option<&Node>` / `Option<&mut Node>` |
+| `path_to(pred)` | `Option<Vec<usize>>` (first match, pre-order) |
+| `paths_to(pred)` | `Vec<Vec<usize>>` (all matches) |
+
+---
+
 ## Mutating
 
 Mutation is **in place** on a `&mut Node` / `&mut Document` — no copies, no
@@ -303,6 +376,40 @@ let changed = doc.replace_all(
 assert_eq!(changed, 2);
 # Ok::<(), tiptap_rusty_parser::ParseError>(())
 ```
+
+---
+
+## Text extraction
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{
+  "type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"Hello "},{"type":"text","text":"world"}]},
+    {"type":"paragraph","content":[{"type":"text","text":"second line"}]}
+  ]}"#)?;
+
+doc.text_content();                       // "Hello worldsecond line"  (ProseMirror semantics)
+doc.text_content_with_separator("\n\n");  // "Hello world\n\nsecond line"
+doc.char_count();                         // Unicode scalar count of all text
+doc.word_count();                         // 3  (Unicode word segmentation, block-aware)
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`text_content` concatenates all descendant text with no separators (matches
+ProseMirror's `node.textContent`). `text_content_with_separator(sep)` inserts
+`sep` between adjacent block-level siblings (a node with `content` that isn't a
+`text` node), so words don't merge across blocks. `word_count` uses
+[`unicode-segmentation`](https://crates.io/crates/unicode-segmentation), so CJK
+and complex scripts count correctly.
+
+| Method | Returns |
+|--------|---------|
+| `text_content()` | `String` |
+| `text_content_with_separator(sep)` | `String` |
+| `char_count()` | `usize` |
+| `word_count()` | `usize` |
 
 ---
 
