@@ -13,6 +13,7 @@
 //! - **Mutate** in place: marks, attrs, children, text, and bulk
 //!   [`Node::replace_all`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
+//! - **Validate** (opt-in) against a schema: [`Node::validate`], [`Schema`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
 //!
 //! ```
@@ -42,6 +43,7 @@ mod mutate;
 mod node;
 mod path;
 mod query;
+mod schema;
 mod select;
 mod text;
 
@@ -50,3 +52,4 @@ pub use document::Document;
 pub use error::{ParseError, Result};
 pub use node::{Mark, Node};
 pub use query::Descendants;
+pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

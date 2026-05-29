@@ -10,6 +10,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - **Address** by index path — `node_at`, `path_to`, `paths_to`.
 - **Mutate** in place — marks, attrs, children, text, and bulk `replace_all`.
 - **Extract text** — `text_content`, `char_count`, `word_count` (Unicode-aware).
+- **Validate** (opt-in) — check against an allow-list `Schema` (Rust or JSON).
 - **Build** ergonomically — `Node::element`, `Node::text`, `doc(..)`, `with_*` chaining.
 - **Fast** — borrow over copy, stack-based traversal (no recursion blowup), `lto`
   release profile, criterion benches.
@@ -32,6 +33,7 @@ ProseMirror `JSONContent` documents, in Rust.
   - [Text](#text)
   - [Bulk transforms](#bulk-transforms)
 - [Text extraction](#text-extraction)
+- [Schema validation](#schema-validation)
 - [Building nodes](#building-nodes)
 - [Error handling](#error-handling)
 - [Performance](#performance)
@@ -410,6 +412,67 @@ and complex scripts count correctly.
 | `text_content_with_separator(sep)` | `String` |
 | `char_count()` | `usize` |
 | `word_count()` | `usize` |
+
+---
+
+## Schema validation
+
+The crate is schema-*agnostic* by default — validation is **opt-in**. A `Schema`
+is an allow-list of node types, marks, attributes, and child types. `validate`
+collects **every** problem in one pass (empty result = valid); each `Violation`
+carries the offending node's index path (see [Node paths](#node-paths)).
+
+```rust
+use tiptap_rusty_parser::{Document, Schema, NodeSpec, MarkSpec};
+
+let schema = Schema::new()
+    .node("doc", NodeSpec::new().content(["paragraph", "heading"]))
+    .node("paragraph", NodeSpec::new().content(["text"]))
+    .node("heading", NodeSpec::new().content(["text"])
+        .attrs(["level"]).required_attrs(["level"]))
+    .node("text", NodeSpec::new().marks(["bold", "italic"])) // marks live on text nodes
+    .mark("bold", MarkSpec::new())
+    .mark("italic", MarkSpec::new());
+
+let doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"heading"}]}"#,
+)?;
+
+assert!(!doc.is_valid(&schema));
+for v in doc.validate(&schema) {
+    println!("{v}"); // e.g. `at [0]: missing required attribute `level``
+}
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+Unset rules mean "anything goes": `NodeSpec::new()` allows any attrs/marks/children;
+`content`/`marks`/`attrs` restrict only once set. `required_attrs` is always
+enforced.
+
+A schema can also be loaded from JSON:
+
+```rust
+use tiptap_rusty_parser::Schema;
+
+let schema = Schema::from_json_str(r#"{
+  "nodes": {
+    "doc":       { "content": ["paragraph"] },
+    "paragraph": { "content": ["text"] },
+    "text":      { "marks": ["bold"] }
+  },
+  "marks": { "bold": {}, "link": { "attrs": ["href"], "required_attrs": ["href"] } }
+}"#)?;
+# let _ = schema;
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`Violation::kind` is a `ViolationKind`: `MissingNodeType`, `UnknownNodeType`,
+`DisallowedChild`, `UnknownMark`, `DisallowedMark`, `MissingAttr`, `UnknownAttr`.
+
+| Method | Returns |
+|--------|---------|
+| `validate(&schema)` | `Vec<Violation>` (empty = valid) |
+| `is_valid(&schema)` | `bool` |
 
 ---
 
