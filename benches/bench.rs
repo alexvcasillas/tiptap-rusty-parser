@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use tiptap_rusty_parser::{doc, Document, Mark, Node};
+use tiptap_rusty_parser::{doc, Document, Mark, MarkSpec, Node, NodeSpec, Schema};
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
 fn big_doc(paras: usize, spans: usize) -> Document {
@@ -62,6 +62,15 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("text_content", |b| {
         b.iter(|| black_box(document.text_content().len()))
+    });
+
+    let schema = Schema::new()
+        .node("doc", NodeSpec::new().content(["paragraph"]))
+        .node("paragraph", NodeSpec::new().content(["text"]))
+        .node("text", NodeSpec::new().marks(["bold"]))
+        .mark("bold", MarkSpec::new());
+    c.bench_function("validate", |b| {
+        b.iter(|| black_box(document.validate(&schema).len()))
     });
 }
 
