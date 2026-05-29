@@ -7,8 +7,12 @@
 //!   preserved).
 //! - **Query** with predicate closures: [`Node::find`], [`Node::find_all`],
 //!   [`Node::walk`], [`Node::descendants`].
+//! - **Select** by type/mark/attr: [`Node::by_type`], [`Node::by_mark`],
+//!   [`Node::by_attr`].
+//! - **Address** by index path: [`Node::node_at`], [`Node::path_to`].
 //! - **Mutate** in place: marks, attrs, children, text, and bulk
 //!   [`Node::replace_all`].
+//! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
 //!
 //! ```
@@ -36,7 +40,10 @@ mod document;
 mod error;
 mod mutate;
 mod node;
+mod path;
 mod query;
+mod select;
+mod text;
 
 pub use builder::doc;
 pub use document::Document;

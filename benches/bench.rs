@@ -55,6 +55,14 @@ fn benches(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         )
     });
+
+    c.bench_function("by_type", |b| {
+        b.iter(|| black_box(document.by_type("text").len()))
+    });
+
+    c.bench_function("text_content", |b| {
+        b.iter(|| black_box(document.text_content().len()))
+    });
 }
 
 criterion_group!(g, benches);
