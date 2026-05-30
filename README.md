@@ -30,6 +30,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Mutating](#mutating)
 - [Normalizing](#normalizing)
 - [Range editing](#range-editing)
+- [Block editing](#block-editing)
   - [Marks](#marks)
   - [Attributes](#attributes)
   - [Children](#children)
@@ -455,6 +456,35 @@ out-of-range positions return a `RangeError` rather than clamping.
 
 ---
 
+## Block editing
+
+Where range editing works *within* one block, these ops restructure the **block
+tree itself**, addressed by index-path. They mutate in place (clone-free); a
+contiguous run of sibling blocks is a `BlockRange`.
+
+```rust
+use tiptap_rusty_parser::{BlockRange, Node, Position};
+
+let mut doc = Node::element("doc").with_children([
+    Node::element("paragraph").with_text("Hello world"),
+    Node::element("paragraph").with_text("second"),
+]);
+
+doc.set_block_type(&[0], "heading", None)?;          // retype, keep content
+doc.split_block_at(&[0], Position::new(0, 5), 0)?;   // "Hello" | " world"
+doc.join_blocks(&[], 1)?;                            // merge back into the previous
+doc.wrap_range(&BlockRange::new(vec![], 0, 2), "blockquote", None)?; // wrap a run
+doc.lift(&[0, 0])?;                                  // unwrap one out of its parent
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+`set_block_type`, `split_block` / `split_block_at`, `join_blocks`, `wrap` /
+`wrap_range`, and `lift` are also available as `Transform` builders that record
+an invertible patch (they run the edit and recover a `Change` list via `diff`).
+Errors surface as `BlockError` (bad path, index out of range, no parent, …).
+
+---
+
 ## Text extraction
 
 ```rust
@@ -853,6 +883,8 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `add_mark_range` (mark + re-merge a 5000-span block) | ~1.3 ms |
 | `delete_range` (drop 3000 spans from a block) | ~0.3 ms |
 | `transform` (record a 3-op transaction) | ~13 µs |
+| `wrap_range` (wrap 500 blocks in one parent) | ~19 µs |
+| `split_block` (split a block in a 500-block doc) | ~28 µs |
 
 Run `cargo bench` to reproduce on your hardware.
 

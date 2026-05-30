@@ -235,7 +235,7 @@ fn make_text(text: &str, marks: Option<&[Mark]>) -> Node {
 
 /// Split a text node at scalar offset `k`, preserving marks/attrs/extra on both
 /// halves. `k` is assumed `<= char_len(node)`.
-fn split_text_at(node: &Node, k: usize) -> (Node, Node) {
+pub(crate) fn split_text_at(node: &Node, k: usize) -> (Node, Node) {
     let s = node.text.as_deref().unwrap_or("");
     let byte = s.char_indices().nth(k).map_or(s.len(), |(b, _)| b);
     let (l, r) = s.split_at(byte);
@@ -248,7 +248,10 @@ fn split_text_at(node: &Node, k: usize) -> (Node, Node) {
 
 /// Ensure a child boundary exists exactly at `pos`, splitting a text node if it
 /// falls mid-text. Returns the index of the first child at or after `pos`.
-fn ensure_boundary(children: &mut Vec<Node>, pos: Position) -> Result<usize, RangeError> {
+pub(crate) fn ensure_boundary(
+    children: &mut Vec<Node>,
+    pos: Position,
+) -> Result<usize, RangeError> {
     if pos.child > children.len() {
         return Err(RangeError::ChildOutOfRange { child: pos.child });
     }
