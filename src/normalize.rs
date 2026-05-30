@@ -95,21 +95,27 @@ pub(crate) fn normalize_children(children: &mut Vec<Node>, opts: &NormalizeOptio
     if opts.remove_empty_text {
         children.retain(|c| !is_empty_text(c));
     }
-    if opts.merge_adjacent_text {
-        let mut i = 0;
-        while i + 1 < children.len() {
-            if mergeable(&children[i], &children[i + 1]) {
-                let next = children.remove(i + 1);
-                if let Some(t) = next.text {
-                    children[i]
+    if opts.merge_adjacent_text && !children.is_empty() {
+        // Single in-place pass: keep a write cursor `w` at the last retained
+        // node; fold each mergeable successor's text into it. O(n) (vs repeated
+        // Vec::remove), so merging a long run of text nodes stays linear.
+        let mut w = 0;
+        for r in 1..children.len() {
+            if mergeable(&children[w], &children[r]) {
+                if let Some(t) = children[r].text.take() {
+                    children[w]
                         .text
                         .get_or_insert_with(String::new)
                         .push_str(&t);
                 }
             } else {
-                i += 1;
+                w += 1;
+                if w != r {
+                    children.swap(w, r);
+                }
             }
         }
+        children.truncate(w + 1);
     }
     if opts.remove_empty_nodes {
         children.retain(|c| is_text(c) || !c.content.as_ref().is_some_and(Vec::is_empty));

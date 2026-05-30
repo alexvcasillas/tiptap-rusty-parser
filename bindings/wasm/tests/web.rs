@@ -130,6 +130,28 @@ fn to_html_and_options() {
 }
 
 #[wasm_bindgen_test]
+fn range_edit_via_path() {
+    let mut doc = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[
+          {"type":"text","text":"Hello world"}
+        ]}]}"#,
+    )
+    .unwrap();
+    // Bold "world" in the paragraph at path [0].
+    let r = js_obj(serde_json::json!({
+        "start": { "child": 0, "offset": 6 },
+        "end":   { "child": 0, "offset": 11 }
+    }));
+    doc.add_mark_range(path(&[0]), r, "bold".into(), JsValue::NULL)
+        .unwrap();
+    // Insert a prefix at the very start.
+    let pos = js_obj(serde_json::json!({ "child": 0, "offset": 0 }));
+    doc.insert_text(path(&[0]), pos, "» ".into(), JsValue::NULL)
+        .unwrap();
+    assert_eq!(doc.text_content(), "» Hello world");
+}
+
+#[wasm_bindgen_test]
 fn normalize_and_options() {
     let mut doc = TiptapDoc::from_json_string(
         r#"{"type":"doc","content":[{"type":"paragraph","content":[

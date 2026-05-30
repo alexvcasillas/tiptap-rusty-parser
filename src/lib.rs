@@ -14,6 +14,8 @@
 //!   [`Node::replace_all`].
 //! - **Normalize** to a canonical form (merge adjacent text, drop empties):
 //!   [`Node::normalize`], [`NormalizeOptions`].
+//! - **Range-edit** a block's inline content (insert/delete/replace text, mark
+//!   ranges): [`Node::insert_text`], [`Node::add_mark_range`], [`Position`], [`Range`].
 //! - **Diff / apply / invert** structural change lists between two trees
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
@@ -53,6 +55,7 @@ mod node;
 mod normalize;
 mod path;
 mod query;
+mod range;
 mod schema;
 mod select;
 mod text;
@@ -66,4 +69,5 @@ pub use html::{to_html, HtmlOptions, SelfClosingStyle, UnknownMarkPolicy, Unknow
 pub use node::{Mark, Node};
 pub use normalize::NormalizeOptions;
 pub use query::Descendants;
+pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

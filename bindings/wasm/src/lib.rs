@@ -10,7 +10,9 @@
 use serde::Serialize;
 use serde_json::Value;
 use serde_wasm_bindgen::{from_value, Serializer};
-use tiptap_rusty_parser::{Change, Document, HtmlOptions, Mark, Node, NormalizeOptions, Schema};
+use tiptap_rusty_parser::{
+    Change, Document, HtmlOptions, Mark, Node, NormalizeOptions, Position, Range, Schema,
+};
 use wasm_bindgen::prelude::*;
 
 /// Map a `Display` error into a JS exception.
@@ -26,6 +28,28 @@ fn to_js<T: Serialize>(value: &T) -> Result<JsValue, JsError> {
 /// Parse a JS `number[]` into an index path.
 fn parse_path(path: JsValue) -> Result<Vec<usize>, JsError> {
     from_value(path).map_err(err)
+}
+
+/// Parse an optional JS array of mark objects into `Vec<Mark>` (`null`/`undefined`
+/// or an empty array -> `None`, i.e. unmarked).
+fn parse_marks(marks: JsValue) -> Result<Option<Vec<Mark>>, JsError> {
+    if marks.is_null() || marks.is_undefined() {
+        return Ok(None);
+    }
+    let v: Vec<Mark> = from_value(marks).map_err(err)?;
+    Ok(if v.is_empty() { None } else { Some(v) })
+}
+
+/// Build a `Mark` from a type string and an optional `attrs` object.
+fn build_mark(mark_type: String, attrs: JsValue) -> Result<Mark, JsError> {
+    let mut mark = Mark::new(mark_type);
+    if !attrs.is_null() && !attrs.is_undefined() {
+        let m: serde_json::Map<String, Value> = from_value(attrs).map_err(err)?;
+        if !m.is_empty() {
+            mark.attrs = Some(m);
+        }
+    }
+    Ok(mark)
 }
 
 /// A Tiptap/ProseMirror document handle. Construct with [`TiptapDoc::from_json`]
@@ -316,6 +340,98 @@ impl TiptapDoc {
         let opts: NormalizeOptions = from_value(options).map_err(err)?;
         self.inner.normalize_with(&opts);
         Ok(())
+    }
+
+    // ---- range editing (inline content of the block at `path`) ----
+
+    /// Insert `text` (with optional `marks` array) at a `Position` within the
+    /// inline content of the block at `path`.
+    #[wasm_bindgen(js_name = insertText)]
+    pub fn insert_text(
+        &mut self,
+        path: JsValue,
+        position: JsValue,
+        text: String,
+        marks: JsValue,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let pos: Position = from_value(position).map_err(err)?;
+        let marks = parse_marks(marks)?;
+        self.at_mut(&path)?
+            .insert_text(pos, &text, marks.as_deref())
+            .map_err(err)
+    }
+
+    /// Delete a `Range` from the inline content of the block at `path`.
+    #[wasm_bindgen(js_name = deleteRange)]
+    pub fn delete_range(&mut self, path: JsValue, range: JsValue) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let range: Range = from_value(range).map_err(err)?;
+        self.at_mut(&path)?.delete_range(range).map_err(err)
+    }
+
+    /// Replace a `Range` with `text` (and optional `marks` array).
+    #[wasm_bindgen(js_name = replaceRange)]
+    pub fn replace_range(
+        &mut self,
+        path: JsValue,
+        range: JsValue,
+        text: String,
+        marks: JsValue,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let range: Range = from_value(range).map_err(err)?;
+        let marks = parse_marks(marks)?;
+        self.at_mut(&path)?
+            .replace_range(range, &text, marks.as_deref())
+            .map_err(err)
+    }
+
+    /// Add a mark (`mark_type` + optional `attrs`) over a `Range`.
+    #[wasm_bindgen(js_name = addMarkRange)]
+    pub fn add_mark_range(
+        &mut self,
+        path: JsValue,
+        range: JsValue,
+        mark_type: String,
+        attrs: JsValue,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let range: Range = from_value(range).map_err(err)?;
+        self.at_mut(&path)?
+            .add_mark_range(range, build_mark(mark_type, attrs)?)
+            .map_err(err)
+    }
+
+    /// Remove all marks of `mark_type` over a `Range`.
+    #[wasm_bindgen(js_name = removeMarkRange)]
+    pub fn remove_mark_range(
+        &mut self,
+        path: JsValue,
+        range: JsValue,
+        mark_type: &str,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let range: Range = from_value(range).map_err(err)?;
+        self.at_mut(&path)?
+            .remove_mark_range(range, mark_type)
+            .map_err(err)
+    }
+
+    /// Toggle a mark (`mark_type` + optional `attrs`) over a `Range`.
+    #[wasm_bindgen(js_name = toggleMarkRange)]
+    pub fn toggle_mark_range(
+        &mut self,
+        path: JsValue,
+        range: JsValue,
+        mark_type: String,
+        attrs: JsValue,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let range: Range = from_value(range).map_err(err)?;
+        self.at_mut(&path)?
+            .toggle_mark_range(range, build_mark(mark_type, attrs)?)
+            .map_err(err)
     }
 }
 
