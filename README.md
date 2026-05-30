@@ -29,6 +29,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Node paths](#node-paths)
 - [Mutating](#mutating)
 - [Normalizing](#normalizing)
+- [Range editing](#range-editing)
   - [Marks](#marks)
   - [Attributes](#attributes)
   - [Children](#children)
@@ -418,6 +419,40 @@ left untouched, preserving the empty-vs-missing distinction.
 
 ---
 
+## Range editing
+
+Editor-style commands over a **single block's inline content**, addressed by a
+`Position` (`child` index + Unicode-scalar `offset` into that child's text); a
+`Range` spans two positions in the same block. Text nodes are split at the
+boundaries as needed and adjacent equal-mark text is merged again afterwards, so
+edits leave the content canonical.
+
+```rust
+use tiptap_rusty_parser::{Mark, Node, Position, Range};
+
+let mut p = Node::element("paragraph").with_child(Node::text("Hello world"));
+
+// Bold "world".
+p.add_mark_range(
+    Range::new(Position::new(0, 6), Position::new(0, 11)),
+    Mark::new("bold"),
+)?;
+assert!(p.child(1).unwrap().has_mark("bold")); // "Hello " | "world"(bold)
+
+// Insert, delete, replace by position/range.
+p.insert_text(Position::new(0, 0), "» ", None)?;
+p.delete_range(Range::new(Position::new(0, 0), Position::new(0, 2)))?;
+# Ok::<(), tiptap_rusty_parser::RangeError>(())
+```
+
+The methods — `insert_text`, `delete_range`, `replace_range`, `add_mark_range`,
+`remove_mark_range`, `toggle_mark_range` — treat `self` as the block parent. To
+edit a nested block, resolve it first: `doc.node_at_mut(&path)?.delete_range(r)`.
+Offsets count Unicode scalar values (so splits never land mid-code-point);
+out-of-range positions return a `RangeError` rather than clamping.
+
+---
+
 ## Text extraction
 
 ```rust
@@ -767,10 +802,12 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `walk` (count all nodes) | ~29 µs |
 | `find_all` (all text nodes) | ~108 µs |
 | `replace_all` (add a mark to every text node) | ~5.0 ms |
-| `normalize` (merge-heavy: 20 same-mark spans → 1 per paragraph) | ~1.7 ms |
+| `normalize` (merge-heavy: 20 same-mark spans → 1 per paragraph) | ~1.4 ms |
 | `normalize` (already canonical, nothing to merge) | ~65 µs |
 | `diff` (500 paragraphs fully reordered → `Move` ops) | ~17 ms |
 | `apply` (the reorder change list) | ~2.7 ms |
+| `add_mark_range` (mark + re-merge a 5000-span block) | ~1.3 ms |
+| `delete_range` (drop 3000 spans from a block) | ~0.3 ms |
 
 Run `cargo bench` to reproduce on your hardware.
 

@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use tiptap_rusty_parser::{doc, Document, Mark, MarkSpec, Node, NodeSpec, Schema};
+use tiptap_rusty_parser::{doc, Document, Mark, MarkSpec, Node, NodeSpec, Position, Range, Schema};
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
 fn big_doc(paras: usize, spans: usize) -> Document {
@@ -142,6 +142,31 @@ fn benches(c: &mut Criterion) {
         b.iter_batched(
             || canonical.clone(),
             |mut d| d.normalize(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    // Range editing over a large single block: one paragraph, 5000 inline spans.
+    let big_block =
+        Node::element("paragraph").with_children((0..5000).map(|i| Node::text(format!("w{i} "))));
+    let spans = big_block.child_count();
+    c.bench_function("add_mark_range_large_block", |b| {
+        b.iter_batched(
+            || big_block.clone(),
+            |mut p| {
+                let r = Range::new(Position::new(0, 0), Position::new(spans, 0));
+                p.add_mark_range(black_box(r), Mark::new("bold")).unwrap()
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    c.bench_function("delete_range_large_block", |b| {
+        b.iter_batched(
+            || big_block.clone(),
+            |mut p| {
+                let r = Range::new(Position::new(1000, 0), Position::new(4000, 0));
+                p.delete_range(black_box(r)).unwrap()
+            },
             criterion::BatchSize::SmallInput,
         )
     });
