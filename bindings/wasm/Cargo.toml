@@ -1,0 +1,25 @@
+[package]
+name = "tiptap-rusty-parser-wasm"
+version = "0.1.2"
+edition = "2021"
+description = "WebAssembly bindings for tiptap-rusty-parser: parse, query, mutate and validate Tiptap/ProseMirror JSONContent in JS"
+license = "MIT"
+repository = "https://github.com/alexvcasillas/tiptap-rusty-parser"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tiptap-rusty-parser = { path = "../.." }
+wasm-bindgen = "0.2"
+serde-wasm-bindgen = "0.6"
+serde = "1"
+serde_json = "1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+lto = true
+opt-level = "s"
