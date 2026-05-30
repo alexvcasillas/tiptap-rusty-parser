@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.5...v0.2.0) - 2026-05-30
+
+### Added
+
+- content-expression schema validation (cardinality, ordering, groups)
+
 ## [0.1.5](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.4...v0.1.5) - 2026-05-30
 
 ### Added
