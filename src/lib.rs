@@ -15,7 +15,8 @@
 //! - **Diff / apply / invert** structural change lists between two trees
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
-//! - **Validate** (opt-in) against a schema: [`Node::validate`], [`Schema`].
+//! - **Validate** (opt-in) against a schema, incl. ProseMirror content
+//!   expressions: [`Node::validate`], [`Schema`], [`ContentExpr`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
 //!
 //! ```
@@ -39,6 +40,7 @@
 //! ```
 
 mod builder;
+mod content;
 mod diff;
 mod document;
 mod error;
@@ -51,6 +53,7 @@ mod select;
 mod text;
 
 pub use builder::doc;
+pub use content::{ContentExpr, ContentRule, ParseExprError};
 pub use diff::{apply, diff, invert, ApplyError, Change};
 pub use document::Document;
 pub use error::{ParseError, Result};

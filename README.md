@@ -470,12 +470,40 @@ let schema = Schema::from_json_str(r#"{
 ```
 
 `Violation::kind` is a `ViolationKind`: `MissingNodeType`, `UnknownNodeType`,
-`DisallowedChild`, `UnknownMark`, `DisallowedMark`, `MissingAttr`, `UnknownAttr`.
+`DisallowedChild`, `InvalidContent`, `UnknownMark`, `DisallowedMark`,
+`MissingAttr`, `UnknownAttr`.
 
 | Method | Returns |
 |--------|---------|
 | `validate(&schema)` | `Vec<Violation>` (empty = valid) |
 | `is_valid(&schema)` | `bool` |
+
+### Content expressions
+
+`content` as an **array** is a child-type set (any count/order). For
+**cardinality and ordering**, use a ProseMirror **content expression** —
+`NodeSpec::content_match("…")` in Rust, or a `content` **string** in JSON.
+Nodes can declare `group`s that expressions reference by name:
+
+```rust
+use tiptap_rusty_parser::{Document, NodeSpec, Schema};
+
+let schema = Schema::new()
+    .node("doc", NodeSpec::new().content_match("heading? block+"))
+    .node("paragraph", NodeSpec::new().group("block"))
+    .node("heading", NodeSpec::new().group("block"));
+
+// doc must be an optional heading followed by one-or-more block nodes
+let bad = Document::from_json_str(r#"{"type":"doc"}"#)?; // no block children
+assert!(!bad.is_valid(&schema)); // -> ViolationKind::InvalidContent
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+Supported syntax: names (a node type or group), sequence (whitespace), `|`
+(choice), grouping `( … )`, and quantifiers `*` `+` `?` `{n}` `{n,}` `{n,m}`
+(numeric bounds capped at 1000). In JSON, `"content": "paragraph+"` is an
+expression; `"content": ["paragraph"]` stays the array form. Invalid
+expressions are reported when the schema is built/loaded.
 
 ---
 
