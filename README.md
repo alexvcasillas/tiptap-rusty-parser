@@ -38,6 +38,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Text extraction](#text-extraction)
 - [Schema validation](#schema-validation)
 - [Diffing](#diffing)
+- [Transactions](#transactions)
 - [Rendering to HTML](#rendering-to-html)
 - [Building nodes](#building-nodes)
 - [JavaScript / WASM](#javascript--wasm)
@@ -643,6 +644,48 @@ always minimal).
 
 ---
 
+## Transactions
+
+A `Transform` mutates the tree in place **and** records a replayable, invertible
+`Change` log in the same pass — so instead of editing and then diffing to
+recover a patch, you get the patch for free. Builder methods mirror the `Change`
+variants and chain with `?`.
+
+```rust
+use tiptap_rusty_parser::{apply, Node};
+
+let mut doc = Node::element("doc").with_children([
+    Node::element("paragraph").with_child(Node::text("a")),
+    Node::element("paragraph").with_child(Node::text("b")),
+]);
+let original = doc.clone();
+
+let changes = {
+    let mut tx = doc.transform();
+    tx.set_text(vec![0, 0], Some("A".into()))?;
+    tx.move_child(vec![], 0, 1)?;          // reorder, no clone
+    tx.insert(vec![], 2, Node::element("paragraph"))?;
+    tx.finish()                            // -> Vec<Change>
+};
+
+// Replay the log onto a clone of the original to reproduce `doc`…
+let mut replay = original.clone();
+apply(&mut replay, &changes).unwrap();
+assert_eq!(replay, doc);
+
+// …and invert it for undo.
+let undo = original.invert(&changes).unwrap();
+# let _ = undo;
+# Ok::<(), tiptap_rusty_parser::ApplyError>(())
+```
+
+Methods: `set_attr` / `remove_attr`, `set_text`, `set_marks`, `set_extra` /
+`remove_extra`, `insert` / `remove` / `replace`, `move_child`. Each returns
+`Result<&mut Self, ApplyError>`; on an unresolvable path the transaction stops
+with the edits recorded so far. `changes()` peeks at the log; `finish()` returns it.
+
+---
+
 ## Rendering to HTML
 
 `to_html` renders a document to an HTML string with Tiptap-sensible, schema-agnostic
@@ -808,6 +851,7 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `apply` (the reorder change list) | ~2.7 ms |
 | `add_mark_range` (mark + re-merge a 5000-span block) | ~1.3 ms |
 | `delete_range` (drop 3000 spans from a block) | ~0.3 ms |
+| `transform` (record a 3-op transaction) | ~13 µs |
 
 Run `cargo bench` to reproduce on your hardware.
 
