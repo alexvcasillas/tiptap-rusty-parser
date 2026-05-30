@@ -1,0 +1,5 @@
+# The WASM bindings crate is published to npm (not crates.io) via the
+# release-plz.yml `release` job, so release-plz ignores it entirely.
+[[package]]
+name = "tiptap-rusty-parser-wasm"
+release = false
