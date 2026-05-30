@@ -35,6 +35,7 @@ ProseMirror `JSONContent` documents, in Rust.
   - [Bulk transforms](#bulk-transforms)
 - [Text extraction](#text-extraction)
 - [Schema validation](#schema-validation)
+- [Diffing](#diffing)
 - [Building nodes](#building-nodes)
 - [JavaScript / WASM](#javascript--wasm)
 - [Error handling](#error-handling)
@@ -478,6 +479,52 @@ let schema = Schema::from_json_str(r#"{
 
 ---
 
+## Diffing
+
+Compute a path-addressed list of [`Change`]s between two trees, and `apply`
+it to reproduce the target. The change variants mirror the mutation API, so a
+diff is a replayable patch — useful for change tracking, undo/redo, edit
+persistence, and exact test assertions.
+
+```rust
+use tiptap_rusty_parser::{apply, Document};
+
+let a = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hi"}]}]}"#,
+).unwrap();
+let b = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"bye"}]}]}"#,
+).unwrap();
+
+let changes = a.diff(&b);        // Vec<Change>: e.g. [SetText { path: [0,0], text: Some("bye") }]
+
+let mut c = a.clone();
+c.apply(&changes).unwrap();      // reproduce `b`
+assert_eq!(c, b);
+```
+
+The round-trip property `apply(&mut a.clone(), &a.diff(b)) == b` always holds.
+
+**Change variants** (path = the target node, except `Insert`/`Remove` whose
+path is the *parent* + `index`):
+
+| Variant | Meaning |
+|---------|---------|
+| `SetAttr` / `RemoveAttr` | attribute changed / removed |
+| `SetText` | text payload set (`None` clears) |
+| `SetMarks` | whole mark list replaced (`None` clears) |
+| `SetExtra` / `RemoveExtra` | unknown top-level field changed / removed (lossless) |
+| `Insert` / `Remove` | child inserted / removed at `index` |
+| `Replace` | node replaced wholesale (its `type` changed) |
+
+`Change` derives serde, so change lists round-trip through JSON.
+
+**v1 limitations:** no move detection (a relocated child is emitted as
+`Remove` + `Insert`); child matching is LCS-by-equality, so pathological
+reorders degrade to remove+insert (still correct, just not minimal).
+
+---
+
 ## Building nodes
 
 Constructors plus consuming `with_*` builder methods for fluent assembly.
@@ -542,6 +589,10 @@ doc.setAttr(headingPath, "level", 1);
 doc.addMark([0, 0], "bold");
 doc.isValid({ nodes: { doc: { content: ["paragraph"] } } }); // false
 const json = doc.toJSON();
+
+// Diff two docs and apply the change list
+const changes = doc.diff(other);  // Change[] (tagged objects)
+doc.applyChanges(changes);         // reproduce `other`
 ```
 
 An opaque `TiptapDoc` handle keeps the tree in WASM; queries return cloned

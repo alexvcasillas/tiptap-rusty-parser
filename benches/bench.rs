@@ -72,6 +72,34 @@ fn benches(c: &mut Criterion) {
     c.bench_function("validate", |b| {
         b.iter(|| black_box(document.validate(&schema).len()))
     });
+
+    // Near-identical large docs: flip one attr on every 50th paragraph and
+    // append one paragraph. Exercises the `==` early-out + prefix/suffix trim.
+    let mut modified = document.clone();
+    let mut i = 0usize;
+    modified.replace_all(
+        |n| n.node_type.as_deref() == Some("paragraph"),
+        |n| {
+            if i.is_multiple_of(50) {
+                n.set_attr("textAlign", "right");
+            }
+            i += 1;
+        },
+    );
+    modified.push_child(Node::element("paragraph").with_text("appended"));
+
+    c.bench_function("diff_large_small_change", |b| {
+        b.iter(|| black_box(document.root().diff(modified.root()).len()))
+    });
+
+    let changes = document.root().diff(modified.root());
+    c.bench_function("apply_large_small_change", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| tiptap_rusty_parser::apply(d.root_mut(), black_box(&changes)).unwrap(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
 }
 
 criterion_group!(g, benches);
