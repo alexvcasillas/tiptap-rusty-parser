@@ -27,6 +27,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Querying](#querying)
 - [Selectors](#selectors)
 - [Node paths](#node-paths)
+- [Flat positions](#flat-positions)
 - [Mutating](#mutating)
 - [Normalizing](#normalizing)
 - [Range editing](#range-editing)
@@ -294,6 +295,44 @@ doc.paths_to(|n| n.node_type.as_deref() == Some("text"));    // every text locat
 | `node_at(path)` / `node_at_mut(path)` | `Option<&Node>` / `Option<&mut Node>` |
 | `path_to(pred)` | `Option<Vec<usize>>` (first match, pre-order) |
 | `paths_to(pred)` | `Vec<Vec<usize>>` (all matches) |
+
+---
+
+## Flat positions
+
+Alongside index paths, the crate implements **ProseMirror's flat integer
+positions** — the single-number addressing Tiptap/ProseMirror use (`from`/`to`).
+Node sizes follow ProseMirror: text → scalar length, a leaf → `1`, any other
+node → `2 + content_size`; the root is unwrapped (`0..=content_size`).
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let doc = Node::element("doc").with_children([
+    Node::element("paragraph").with_text("hi"),
+    Node::element("horizontalRule"),
+    Node::element("paragraph").with_text("ok"),
+]);
+
+doc.pos_before(&[1])?;          // 4  — the rule's position
+doc.pos_in_text(&[0, 0], 1)?;   // 2  — after "h" in "hi"
+
+let r = doc.resolve(2)?;        // resolve a flat position
+assert_eq!(r.path, vec![0]);                  // inside the first paragraph
+assert_eq!(r.text_offset.unwrap().offset, 1); // 1 scalar into "hi"
+
+// Bridge to the inline range-editing API:
+let (block, inline) = doc.pos_to_inline(2)?;  // (path, Position)
+# let _ = (block, inline);
+# Ok::<(), tiptap_rusty_parser::PosError>(())
+```
+
+`resolve(pos)` returns a `ResolvedPos` (`depth`, `path`, `index`, `parent_offset`,
+and `text_offset` when inside text). **Leafness can't be read from JSON** (an
+empty paragraph is size 2, an `image` leaf is size 1, yet both have no
+`content`), so it's decided by a `LeafPolicy` — defaulting to the Tiptap atoms
+`{image, horizontalRule, hardBreak}` and overridable with `LeafPolicy::from_types([...])`
+(or your editor schema) via the `*_with` method variants.
 
 ---
 
@@ -915,6 +954,8 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `transform` (record a 3-op transaction) | ~13 µs |
 | `wrap_range` (wrap 500 blocks in one parent) | ~19 µs |
 | `split_block` (split a block in a 500-block doc) | ~28 µs |
+| `content_size` (flat size of a 10k-node doc) | ~160 µs |
+| `resolve` (flat position → `ResolvedPos`, mid-doc) | ~256 µs |
 | `compact` (coalesce a 2000-op change list) | ~210 µs |
 | `map_path` (carry a path through a 500-move patch) | ~8 µs |
 
