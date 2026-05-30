@@ -36,6 +36,22 @@ jobs:
       - name: Doctests
         run: cargo test --doc -p tiptap-rusty-parser
 
+      - name: Build examples
+        run: cargo build -p tiptap-rusty-parser --examples
+
+  # Informational: surfaces API-breaking changes vs the published crate so a
+  # deliberate breaking version bump is visible up front. Never blocks merge.
+  semver:
+    name: semver-checks (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: tiptap-rusty-parser
+
   wasm:
     name: wasm build + test
     runs-on: ubuntu-latest
