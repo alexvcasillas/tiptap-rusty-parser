@@ -30,6 +30,10 @@
 //! produced by [`diff`] always reproduces the target exactly:
 //! `apply(&mut a, &diff(a, b))` yields `b`.
 //!
+//! Empty-vs-absent container shapes (e.g. `"content":[]` vs no `content`) are
+//! preserved: when the field/child ops can't express the difference, the node
+//! is replaced wholesale so the round-trip stays exact.
+//!
 //! ## v1 limitations
 //! - **No move detection**: a child relocated within a list is emitted as a
 //!   [`Change::Remove`] + [`Change::Insert`] (its subtree is cloned).
@@ -173,7 +177,18 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>) {
     if a == b {
         return; // prune identical subtrees (the main perf lever)
     }
-    if a.node_type != b.node_type {
+    if a.node_type != b.node_type
+        || empty_shape_mismatch(
+            a.attrs.as_ref().map(Map::is_empty),
+            b.attrs.as_ref().map(Map::is_empty),
+        )
+        || empty_shape_mismatch(
+            a.content.as_ref().map(Vec::is_empty),
+            b.content.as_ref().map(Vec::is_empty),
+        )
+    {
+        // Type change, or an empty-vs-None container shape the field/child ops
+        // can't express (e.g. `"content":[]` -> absent) -> wholesale replace.
         out.push(Change::Replace {
             path: path.clone(),
             node: b.clone(),
@@ -195,6 +210,19 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>) {
     }
     diff_extra(&a.extra, &b.extra, path, out);
     diff_children(a.children(), b.children(), path, out);
+}
+
+/// Whether an `Option<container>` shape difference (where the arg is
+/// `Some(is_empty)` / `None`) can't be reconciled by the key/child ops, which
+/// normalize emptied containers to `None`. A present-but-empty container
+/// (`Some(true)`, e.g. parsed from `[]`/`{}`) needs an exact match on the other
+/// side; otherwise the node must be replaced wholesale to round-trip exactly.
+fn empty_shape_mismatch(a_is_empty: Option<bool>, b_is_empty: Option<bool>) -> bool {
+    match b_is_empty {
+        Some(true) => a_is_empty != Some(true),
+        None => a_is_empty == Some(true),
+        Some(false) => false,
+    }
 }
 
 fn diff_attrs(
@@ -423,7 +451,13 @@ fn apply_one(root: &mut Node, change: &Change) -> std::result::Result<(), ApplyE
             node_at_mut(root, path)?.extra.remove(key);
         }
         Change::Insert { path, index, node } => {
-            node_at_mut(root, path)?.insert_child(*index, node.clone());
+            let parent = node_at_mut(root, path)?;
+            if *index > parent.child_count() {
+                let mut p = path.clone();
+                p.push(*index);
+                return Err(ApplyError { path: p });
+            }
+            parent.insert_child(*index, node.clone());
         }
         Change::Remove { path, index } => {
             if node_at_mut(root, path)?.remove_child(*index).is_none() {

@@ -262,6 +262,53 @@ fn extra_from_parsed_json() {
     assert_eq!(got, b);
 }
 
+// ---- empty-vs-absent container shapes -----------------------------------
+
+#[test]
+fn empty_container_shapes_roundtrip() {
+    use tiptap_rusty_parser::Document;
+    // `content: Some([])` vs `None` — distinct, parseable, must round-trip.
+    let empty = Document::from_json_str(r#"{"type":"doc","content":[]}"#).unwrap();
+    let absent = Document::from_json_str(r#"{"type":"doc"}"#).unwrap();
+    assert_ne!(empty, absent);
+    roundtrip(&empty, &absent); // Some([]) -> None
+    roundtrip(&absent, &empty); // None -> Some([])
+
+    // `attrs: Some({})` vs `None`.
+    let attrs_empty = Document::from_json_str(r#"{"type":"paragraph","attrs":{}}"#).unwrap();
+    let attrs_absent = Document::from_json_str(r#"{"type":"paragraph"}"#).unwrap();
+    assert_ne!(attrs_empty, attrs_absent);
+    roundtrip(&attrs_empty, &attrs_absent);
+    roundtrip(&attrs_absent, &attrs_empty);
+
+    // present-empty -> non-empty still reconciles via inserts (no Replace needed).
+    let with_kids =
+        Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#).unwrap();
+    roundtrip(&empty, &with_kids);
+}
+
+#[test]
+fn apply_rejects_out_of_range_insert() {
+    let doc = Node::element("doc").with_child(p("a")); // 1 child
+    let bad = vec![Change::Insert {
+        path: vec![],
+        index: 5, // out of range
+        node: p("x"),
+    }];
+    let mut got = doc.clone();
+    assert!(apply(&mut got, &bad).is_err());
+    assert_eq!(got, doc); // unchanged on error
+                          // boundary: index == len is valid (append)
+    let ok = vec![Change::Insert {
+        path: vec![],
+        index: 1,
+        node: p("x"),
+    }];
+    let mut got2 = doc.clone();
+    apply(&mut got2, &ok).unwrap();
+    assert_eq!(got2.child_count(), 2);
+}
+
 // ---- hand-rolled fuzz (no extra deps) -----------------------------------
 
 /// Tiny xorshift PRNG — deterministic, dependency-free.
@@ -295,6 +342,14 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Node {
     let count = rng.below(4);
     for _ in 0..count {
         n = n.with_child(random_tree(rng, depth - 1));
+    }
+    // Occasionally force present-but-empty containers to exercise the
+    // empty-vs-absent shape handling (Replace fallback).
+    if rng.below(6) == 0 {
+        n.content = Some(Vec::new());
+    }
+    if rng.below(6) == 0 {
+        n.attrs = Some(serde_json::Map::new());
     }
     n
 }
