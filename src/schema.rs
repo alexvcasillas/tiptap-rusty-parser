@@ -184,7 +184,7 @@ impl MarkSpec {
 }
 
 /// A single schema violation, located by the offending node's index path.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Violation {
     /// Index path to the node (root = `[]`), as used by [`Node::node_at`].
     pub path: Vec<usize>,
@@ -193,7 +193,7 @@ pub struct Violation {
 }
 
 /// The kinds of schema violation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ViolationKind {
     /// A node had no `type`.
     MissingNodeType,
