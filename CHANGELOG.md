@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.3...v0.1.4) - 2026-05-30
+
+### Added
+
+- *(wasm)* expose diff and applyChanges on TiptapDoc
+- structural diff and apply for JSONContent trees
+
+### Fixed
+
+- *(diff)* validate insert index and preserve empty-vs-absent container shapes
+
+### Other
+
+- document structural diffing
+
 ## [0.1.3](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.2...v0.1.3) - 2026-05-30
 
 ### Other
