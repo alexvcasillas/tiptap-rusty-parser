@@ -12,8 +12,8 @@
 //! - **Address** by index path: [`Node::node_at`], [`Node::path_to`].
 //! - **Mutate** in place: marks, attrs, children, text, and bulk
 //!   [`Node::replace_all`].
-//! - **Diff / apply** structural change lists between two trees:
-//!   [`Node::diff`], [`apply`].
+//! - **Diff / apply / invert** structural change lists between two trees
+//!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Validate** (opt-in) against a schema: [`Node::validate`], [`Schema`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
@@ -51,7 +51,7 @@ mod select;
 mod text;
 
 pub use builder::doc;
-pub use diff::{apply, diff, ApplyError, Change};
+pub use diff::{apply, diff, invert, ApplyError, Change};
 pub use document::Document;
 pub use error::{ParseError, Result};
 pub use node::{Mark, Node};

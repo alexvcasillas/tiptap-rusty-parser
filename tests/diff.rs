@@ -5,11 +5,19 @@ use serde_json::json;
 use tiptap_rusty_parser::{apply, Change, Mark, Node};
 
 /// Assert the round-trip property and return the change list for inspection.
+/// Also asserts the undo (invert) property: inverting the diff and applying it
+/// to the target restores the source.
 fn roundtrip(a: &Node, b: &Node) -> Vec<Change> {
     let changes = a.diff(b);
     let mut got = a.clone();
     apply(&mut got, &changes).unwrap();
     assert_eq!(&got, b, "diff+apply did not reproduce target");
+
+    // undo: invert relative to the pre-image, apply to `b`, expect `a`.
+    let undo = a.invert(&changes).unwrap();
+    let mut back = b.clone();
+    apply(&mut back, &undo).unwrap();
+    assert_eq!(&back, a, "invert+apply did not restore source");
     changes
 }
 
@@ -355,14 +363,42 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Node {
 }
 
 #[test]
-fn fuzz_roundtrip() {
+fn fuzz_roundtrip_and_undo() {
     let mut rng = Rng(0x9E3779B97F4A7C15);
     for _ in 0..2000 {
         let a = random_tree(&mut rng, 4);
         let b = random_tree(&mut rng, 4);
         let changes = a.diff(&b);
+
         let mut got = a.clone();
         apply(&mut got, &changes).unwrap();
         assert_eq!(got, b, "fuzz round-trip failed\n a={a:?}\n b={b:?}");
+
+        // undo: invert relative to `a`, apply to `b`, expect `a`.
+        let undo = a.invert(&changes).unwrap();
+        let mut back = b.clone();
+        apply(&mut back, &undo).unwrap();
+        assert_eq!(back, a, "fuzz undo failed\n a={a:?}\n b={b:?}");
     }
+}
+
+#[test]
+fn invert_apply_forward_then_undo() {
+    // The other common undo flow: apply forward, then apply the inverse to the
+    // same (now-mutated) doc to get back to the start.
+    let a = Node::element("doc").with_children([p("a"), p("b")]);
+    let b = Node::element("doc").with_children([p("a"), p("B"), p("c")]);
+    let fwd = a.diff(&b);
+    let inv = a.invert(&fwd).unwrap();
+    let mut doc = a.clone();
+    apply(&mut doc, &fwd).unwrap();
+    assert_eq!(doc, b);
+    apply(&mut doc, &inv).unwrap();
+    assert_eq!(doc, a);
+}
+
+#[test]
+fn invert_empty_is_empty() {
+    let a = Node::element("doc").with_child(p("x"));
+    assert!(a.invert(&[]).unwrap().is_empty());
 }

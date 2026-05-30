@@ -505,6 +505,18 @@ assert_eq!(c, b);
 
 The round-trip property `apply(&mut a.clone(), &a.diff(b)) == b` always holds.
 
+**Undo** — `invert` produces the reverse change list, so a forward diff and its
+inverse form an undo/redo pair:
+
+```rust
+let forward = a.diff(&b);
+let undo = a.invert(&forward).unwrap(); // inverse relative to `a` (the pre-image)
+
+let mut c = b.clone();
+c.apply(&undo).unwrap();
+assert_eq!(c, a);                        // restored
+```
+
 **Change variants** (path = the target node, except `Insert`/`Remove` whose
 path is the *parent* + `index`):
 
@@ -592,7 +604,9 @@ const json = doc.toJSON();
 
 // Diff two docs and apply the change list
 const changes = doc.diff(other);  // Change[] (tagged objects)
+const undo = doc.invert(changes);  // reverse change list (undo)
 doc.applyChanges(changes);         // reproduce `other`
+doc.applyChanges(undo);            // back to the original
 ```
 
 An opaque `TiptapDoc` handle keeps the tree in WASM; queries return cloned

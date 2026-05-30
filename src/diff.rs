@@ -152,6 +152,11 @@ impl Node {
     pub fn apply(&mut self, changes: &[Change]) -> std::result::Result<(), ApplyError> {
         apply(self, changes)
     }
+
+    /// Invert `changes` relative to `self` (the pre-image). See [`invert`].
+    pub fn invert(&self, changes: &[Change]) -> std::result::Result<Vec<Change>, ApplyError> {
+        invert(self, changes)
+    }
 }
 
 /// Structural diff between two nodes. Free-function form of [`Node::diff`].
@@ -169,6 +174,30 @@ pub fn apply(root: &mut Node, changes: &[Change]) -> std::result::Result<(), App
         apply_one(root, change)?;
     }
     Ok(())
+}
+
+/// Invert a change list: produce the reverse changes that, applied to the
+/// result of `apply(base, changes)`, restore `base` — the basis for undo.
+///
+/// Computed as `diff(apply(base, changes), base)`: replay the forward changes,
+/// then diff back to `base`. This reuses the diff round-trip guarantee (so it
+/// handles every value/shape edge exactly) and yields a minimal undo list.
+/// Errors only if `changes` itself doesn't apply to `base`.
+///
+/// ```
+/// use tiptap_rusty_parser::Document;
+/// let a = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#).unwrap();
+/// let b = Document::from_json_str(r#"{"type":"doc","content":[{"type":"heading"}]}"#).unwrap();
+/// let forward = a.diff(&b);
+/// let undo = a.invert(&forward).unwrap();
+/// let mut c = b.clone();
+/// c.apply(&undo).unwrap();
+/// assert_eq!(c, a);
+/// ```
+pub fn invert(base: &Node, changes: &[Change]) -> std::result::Result<Vec<Change>, ApplyError> {
+    let mut result = base.clone();
+    apply(&mut result, changes)?;
+    Ok(result.diff(base))
 }
 
 // ---- diff internals -----------------------------------------------------
