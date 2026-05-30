@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.2.0...v0.2.1) - 2026-05-30
+
+### Added
+
+- render JSONContent to HTML (to_html)
+
+### Fixed
+
+- *(html)* whitelist text-align values and clarify escaping/security docs
+
+### Other
+
+- document HTML rendering
+
 ## [0.2.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.5...v0.2.0) - 2026-05-30
 
 ### Added
