@@ -590,12 +590,21 @@ path is the *parent* + `index`):
 | `SetExtra` / `RemoveExtra` | unknown top-level field changed / removed (lossless) |
 | `Insert` / `Remove` | child inserted / removed at `index` |
 | `Replace` | node replaced wholesale (its `type` changed) |
+| `Move` | child relocated within its parent (`from` → `to`), no clone |
 
 `Change` derives serde, so change lists round-trip through JSON.
 
-**v1 limitations:** no move detection (a relocated child is emitted as
-`Remove` + `Insert`); child matching is LCS-by-equality, so pathological
-reorders degrade to remove+insert (still correct, just not minimal).
+**Move detection** — a child relocated within a list is emitted as a single
+`Move` (no subtree clone) rather than a `Remove` + `Insert`. After LCS
+alignment, leftover deletions and insertions that are *equal by value* are
+paired as moves, and only the genuinely-relocated nodes are moved (matched
+anchors stay put), so a drag past several siblings is one `Move`, and a shuffle
+of distinct children is a list of `Move`s with no clones. `invert` needs no
+special handling — it re-diffs the reverse direction.
+
+**v1 limitations:** matching is LCS-by-equality; modifies are paired
+positionally within the gaps between matched anchors (still correct, just not
+always minimal).
 
 ---
 
@@ -760,6 +769,8 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `replace_all` (add a mark to every text node) | ~5.0 ms |
 | `normalize` (merge-heavy: 20 same-mark spans → 1 per paragraph) | ~1.7 ms |
 | `normalize` (already canonical, nothing to merge) | ~65 µs |
+| `diff` (500 paragraphs fully reordered → `Move` ops) | ~17 ms |
+| `apply` (the reorder change list) | ~2.7 ms |
 
 Run `cargo bench` to reproduce on your hardware.
 
