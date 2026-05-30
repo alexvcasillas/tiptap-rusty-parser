@@ -9,7 +9,8 @@
 //!   [`Node::walk`], [`Node::descendants`].
 //! - **Select** by type/mark/attr: [`Node::by_type`], [`Node::by_mark`],
 //!   [`Node::by_attr`].
-//! - **Address** by index path: [`Node::node_at`], [`Node::path_to`].
+//! - **Address** by index path: [`Node::node_at`], [`Node::path_to`]; or by flat
+//!   ProseMirror integer position: [`Node::resolve`], [`Node::pos_before`], [`ResolvedPos`].
 //! - **Mutate** in place: marks, attrs, children, text, and bulk
 //!   [`Node::replace_all`].
 //! - **Normalize** to a canonical form (merge adjacent text, drop empties):
@@ -62,6 +63,7 @@ mod mutate;
 mod node;
 mod normalize;
 mod path;
+mod pos;
 mod query;
 mod range;
 mod schema;
@@ -79,6 +81,7 @@ pub use error::{ParseError, Result};
 pub use html::{to_html, HtmlOptions, SelfClosingStyle, UnknownMarkPolicy, UnknownNodePolicy};
 pub use node::{Mark, Node};
 pub use normalize::NormalizeOptions;
+pub use pos::{LeafPolicy, PosError, PosRange, ResolvedPos, TextPoint};
 pub use query::Descendants;
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

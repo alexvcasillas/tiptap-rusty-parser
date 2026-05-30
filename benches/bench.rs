@@ -235,6 +235,16 @@ fn benches(c: &mut Criterion) {
             ))
         })
     });
+
+    // Flat ProseMirror positions over `big_doc`: total size, and resolving a
+    // mid-document position to a ResolvedPos.
+    c.bench_function("content_size", |b| {
+        b.iter(|| black_box(document.root().content_size()))
+    });
+    let mid = document.root().content_size() / 2;
+    c.bench_function("resolve_pos", |b| {
+        b.iter(|| black_box(document.root().resolve(black_box(mid)).unwrap()))
+    });
 }
 
 criterion_group!(g, benches);

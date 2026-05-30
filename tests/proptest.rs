@@ -68,6 +68,19 @@ proptest! {
         prop_assert_eq!(once, twice);
     }
 
+    /// Every flat position `0..=content_size` resolves, and `resolve(pos).pos == pos`.
+    #[test]
+    fn resolve_covers_all_positions(a in arb_tree()) {
+        let total = a.content_size();
+        for pos in 0..=total {
+            let r = a.resolve(pos);
+            prop_assert!(r.is_ok(), "resolve({pos}) failed for {a:?}");
+            prop_assert_eq!(r.unwrap().pos, pos);
+        }
+        // One past the end must error.
+        prop_assert!(a.resolve(total + 1).is_err());
+    }
+
     /// `compose`/`compact` are apply-equivalent to sequential application, and
     /// every `map_path` Some result resolves in the applied tree.
     #[test]
