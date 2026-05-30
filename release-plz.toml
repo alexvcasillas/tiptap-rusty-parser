@@ -1,6 +1,14 @@
 # The WASM bindings crate is published to npm (not crates.io) via the
 # release-plz.yml `release` job, so release-plz ignores it entirely.
 # `publish = false` must mirror the crate's Cargo.toml or release-plz aborts.
+#
+# NOTE — keeping crate and npm versions in sync: the npm package is built and
+# published *only* when a `tiptap-rusty-parser` (crate) release is cut, and its
+# version is read from the crate's version. So a change that only touches
+# `bindings/wasm/**` will NOT reach npm on its own. When you land a WASM-only
+# change, pair it with a patch bump of the main crate (a "paired release", even
+# if the Rust library is unchanged) so the new bindings publish and the crate
+# and npm versions stay matched. See the v0.3.7 entry in CHANGELOG.md.
 [[package]]
 name = "tiptap-rusty-parser-wasm"
 release = false
