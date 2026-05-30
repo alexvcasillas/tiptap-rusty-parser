@@ -44,6 +44,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [JavaScript / WASM](#javascript--wasm)
 - [Error handling](#error-handling)
 - [Performance](#performance)
+- [Examples](#examples)
 - [Development](#development)
 - [License](#license)
 
@@ -857,12 +858,25 @@ Run `cargo bench` to reproduce on your hardware.
 
 ---
 
+## Examples
+
+Runnable end-to-end examples live in [`examples/`](examples/):
+
+```sh
+cargo run --example undo_redo   # diff + invert as an undo/redo pair
+cargo run --example edit_text   # inline range editing + a recorded transaction
+cargo run --example validate    # schema validation + violation reporting
+```
+
+---
+
 ## Development
 
 ```sh
-cargo test     # unit + integration + doctests
+cargo test            # unit + integration + doctests
 cargo clippy --all-targets -- -D warnings
-cargo bench    # criterion baselines
+cargo build --examples
+cargo bench           # criterion baselines
 ```
 
 ---
