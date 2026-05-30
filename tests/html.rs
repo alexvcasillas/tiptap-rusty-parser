@@ -107,6 +107,11 @@ fn text_align() {
         ),
         r#"<p style="text-align:center">c</p>"#
     );
+    // non-keyword values are dropped (no CSS injection via the style attr)
+    assert_eq!(
+        html(r#"{"type":"paragraph","attrs":{"textAlign":"center;color:red"}}"#),
+        "<p></p>"
+    );
 }
 
 #[test]

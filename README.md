@@ -604,8 +604,12 @@ unknown-node/mark policy (`Transparent` default, `DataTypeDiv`/`DataMarkSpan`, o
 (emit a node's remaining attributes — off by default; always escaped). In JS:
 `doc.toHTML()` / `doc.toHTMLWith({ selfClosing: "xhtml" })`.
 
-> **Security:** all text and attribute values are escaped, but `spread_attrs` emits
-> attribute *names* verbatim (e.g. `onclick`) — keep it off for untrusted documents.
+> **Security — escaping is not sanitization.** Text and attribute *values* are
+> HTML-escaped, which prevents markup break-out but **not** dangerous URLs or
+> styles: a `link` `href` is emitted verbatim (so `javascript:…` survives), and
+> `spread_attrs` (off by default) emits attribute *names* verbatim (e.g.
+> `onclick`). `textAlign` is whitelisted to the standard keywords. For untrusted
+> documents, sanitize the rendered HTML (or the source URLs/attrs) yourself.
 
 ---
 

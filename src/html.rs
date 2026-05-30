@@ -2,8 +2,12 @@
 //!
 //! Schema-agnostic with Tiptap-sensible defaults: `paragraph`→`<p>`,
 //! `heading`→`<h1>`..`<h6>`, marks like `bold`→`<strong>`, etc. Output is
-//! compact and HTML-escaped. Behavior is tuned with [`HtmlOptions`] — a plain
-//! data struct (no closures), so the same surface works over WASM/FFI.
+//! compact; **text content and attribute values are HTML-escaped** (the element
+//! tags themselves are emitted as markup). Behavior is tuned with [`HtmlOptions`]
+//! — a plain data struct (no closures), so the same surface works over WASM/FFI.
+//!
+//! Escaping is not sanitization: URLs (e.g. a `link` `href`) are emitted as-is,
+//! so a `javascript:` href survives. Sanitize output from untrusted documents.
 //!
 //! ```
 //! use tiptap_rusty_parser::Document;
@@ -366,9 +370,14 @@ fn write_text_align(n: &Node, opts: &HtmlOptions, out: &mut String) {
         return;
     }
     if let Some(Value::String(a)) = n.attr("textAlign") {
-        if !a.is_empty() {
+        // Whitelist known keywords: emitting an arbitrary value into a `style`
+        // attribute would allow CSS injection (`;color:red`) despite escaping.
+        if matches!(
+            a.as_str(),
+            "left" | "right" | "center" | "justify" | "start" | "end"
+        ) {
             out.push_str(" style=\"text-align:");
-            escape_attr(a, out);
+            out.push_str(a);
             out.push('"');
         }
     }
