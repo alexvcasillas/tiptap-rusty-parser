@@ -12,6 +12,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - **Extract text** — `text_content`, `char_count`, `word_count` (Unicode-aware).
 - **Validate** (opt-in) — check against an allow-list `Schema` (Rust or JSON).
 - **Build** ergonomically — `Node::element`, `Node::text`, `doc(..)`, `with_*` chaining.
+- **JS/WASM** — `npm i tiptap-rusty-parser` for browser/bundler apps (see [JavaScript / WASM](#javascript--wasm)).
 - **Fast** — borrow over copy, stack-based traversal (no recursion blowup), `lto`
   release profile, criterion benches.
 
@@ -35,6 +36,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Text extraction](#text-extraction)
 - [Schema validation](#schema-validation)
 - [Building nodes](#building-nodes)
+- [JavaScript / WASM](#javascript--wasm)
 - [Error handling](#error-handling)
 - [Performance](#performance)
 - [Development](#development)
@@ -515,6 +517,37 @@ let document = doc([
 | `.with_child(node)` / `.with_children(iter)` | append child/children |
 | `.with_text(s)` | append a text child |
 | `.with_mark(mark)` | add a mark |
+
+---
+
+## JavaScript / WASM
+
+The crate ships WASM bindings on npm for browser/bundler apps:
+
+```bash
+npm install tiptap-rusty-parser
+```
+
+```js
+import { TiptapDoc } from "tiptap-rusty-parser";
+
+const doc = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [{ type: "heading", content: [{ type: "text", text: "Title" }] }],
+});
+
+doc.textContent();               // "Title"
+const [headingPath] = doc.pathsByType("heading"); // [0]
+doc.setAttr(headingPath, "level", 1);
+doc.addMark([0, 0], "bold");
+doc.isValid({ nodes: { doc: { content: ["paragraph"] } } }); // false
+const json = doc.toJSON();
+```
+
+An opaque `TiptapDoc` handle keeps the tree in WASM; queries return cloned
+nodes or `number[]` index paths, and mutation is path-addressed. Full method
+list in [`bindings/wasm/README.md`](bindings/wasm/README.md). Built for the
+`bundler` target.
 
 ---
 
