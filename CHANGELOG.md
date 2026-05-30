@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.6...v0.3.7) - 2026-05-30
+
+### Added
+
+- *(wasm)* block ops, change algebra, and TypeScript types ([#34](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/34))
+
+The Rust library is unchanged from `0.3.6`; this is a **paired patch release** so
+the npm package (versioned off the crate) ships the new WASM bindings and the
+crate and npm versions stay in sync.
+
 ## [0.3.6](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.5...v0.3.6) - 2026-05-30
 
 ### Other

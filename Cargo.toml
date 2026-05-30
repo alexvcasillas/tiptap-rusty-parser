@@ -1,6 +1,6 @@
 [package]
 name = "tiptap-rusty-parser"
-version = "0.3.6"
+version = "0.3.7"
 edition = "2021"
 description = "Fast schema-agnostic parser and manipulator for Tiptap/ProseMirror JSONContent documents"
 license = "MIT"
