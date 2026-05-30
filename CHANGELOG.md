@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.3...v0.3.4) - 2026-05-30
+
+### Added
+
+- *(block)* structural editing — split/join/wrap/lift/set_block_type ([#28](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/28))
+
 ## [0.3.3](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.2...v0.3.3) - 2026-05-30
 
 ### Other
