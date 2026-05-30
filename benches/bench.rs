@@ -104,6 +104,28 @@ fn benches(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         )
     });
+
+    // `big_doc`'s 20 same-mark spans per paragraph all merge into one — the
+    // merge-heavy path.
+    c.bench_function("normalize_merge_heavy", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| d.normalize(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    // Already-canonical doc (one text node per paragraph): nothing to merge.
+    let canonical = Document::new(doc((0..500).map(|p| {
+        Node::element("paragraph").with_children([Node::text(format!("paragraph {p}"))])
+    })));
+    c.bench_function("normalize_noop", |b| {
+        b.iter_batched(
+            || canonical.clone(),
+            |mut d| d.normalize(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
 }
 
 criterion_group!(g, benches);

@@ -28,6 +28,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Selectors](#selectors)
 - [Node paths](#node-paths)
 - [Mutating](#mutating)
+- [Normalizing](#normalizing)
   - [Marks](#marks)
   - [Attributes](#attributes)
   - [Children](#children)
@@ -385,6 +386,38 @@ assert_eq!(changed, 2);
 
 ---
 
+## Normalizing
+
+`normalize` canonicalizes a tree in place: it merges adjacent text nodes that
+share the same marks/attrs (and any extra fields) and drops empty text nodes.
+This yields smaller [diffs](#diffing), cleaner roundtrips, and one stable
+representation for trees that are semantically identical but split differently.
+It is idempotent.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let mut doc = Document::from_json_str(r#"{
+  "type":"doc","content":[{"type":"paragraph","content":[
+    {"type":"text","text":"foo"},
+    {"type":"text","text":"bar"},
+    {"type":"text","text":""}
+  ]}]}"#)?;
+
+doc.normalize();
+assert_eq!(doc.children()[0].child_count(), 1); // collapsed to one text node
+assert_eq!(doc.text_content(), "foobar");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+Tune it with `NormalizeOptions` (a plain data struct, so it works over WASM/FFI
+too): toggle `merge_adjacent_text` / `remove_empty_text`, or opt into
+`remove_empty_nodes` to also prune nodes whose `content` is an empty list (off
+by default — an empty paragraph is valid). Absent (`None`) content is always
+left untouched, preserving the empty-vs-missing distinction.
+
+---
+
 ## Text extraction
 
 ```rust
@@ -725,6 +758,8 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `walk` (count all nodes) | ~29 µs |
 | `find_all` (all text nodes) | ~108 µs |
 | `replace_all` (add a mark to every text node) | ~5.0 ms |
+| `normalize` (merge-heavy: 20 same-mark spans → 1 per paragraph) | ~1.7 ms |
+| `normalize` (already canonical, nothing to merge) | ~65 µs |
 
 Run `cargo bench` to reproduce on your hardware.
 

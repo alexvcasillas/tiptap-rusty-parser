@@ -98,6 +98,16 @@ impl Document {
         crate::diff::invert(&self.root, changes)
     }
 
+    /// Normalize the document tree in place. See [`Node::normalize`](crate::Node::normalize).
+    pub fn normalize(&mut self) {
+        self.root.normalize();
+    }
+
+    /// Normalize with custom options. See [`Node::normalize_with`](crate::Node::normalize_with).
+    pub fn normalize_with(&mut self, opts: &crate::NormalizeOptions) {
+        self.root.normalize_with(opts);
+    }
+
     /// Render to an HTML string. See [`Node::to_html`](crate::Node::to_html).
     pub fn to_html(&self) -> String {
         self.root.to_html()

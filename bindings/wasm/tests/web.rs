@@ -101,6 +101,32 @@ fn to_html_and_options() {
 }
 
 #[wasm_bindgen_test]
+fn normalize_and_options() {
+    let mut doc = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[
+          {"type":"text","text":"foo"},
+          {"type":"text","text":"bar"},
+          {"type":"text","text":""}
+        ]}]}"#,
+    )
+    .unwrap();
+    doc.normalize();
+    assert_eq!(doc.child_count(path(&[0])).unwrap(), Some(1));
+    assert_eq!(doc.text_content(), "foobar");
+
+    // normalizeWith({mergeAdjacentText:false}) keeps text nodes split.
+    let mut doc2 = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[
+          {"type":"text","text":"a"},{"type":"text","text":"b"}
+        ]}]}"#,
+    )
+    .unwrap();
+    let opts = js_obj(serde_json::json!({ "mergeAdjacentText": false }));
+    doc2.normalize_with(opts).unwrap();
+    assert_eq!(doc2.child_count(path(&[0])).unwrap(), Some(2));
+}
+
+#[wasm_bindgen_test]
 fn roundtrip_and_text() {
     let doc = TiptapDoc::from_json_string(DOC).unwrap();
     assert_eq!(doc.text_content(), "TitleHello world");
