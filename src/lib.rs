@@ -18,6 +18,8 @@
 //!   ranges): [`Node::insert_text`], [`Node::add_mark_range`], [`Position`], [`Range`].
 //! - **Diff / apply / invert** structural change lists between two trees
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
+//! - **Transact**: mutate in place while recording a replayable/invertible
+//!   change log: [`Node::transform`], [`Transform`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Validate** (opt-in) against a schema, incl. ProseMirror content
 //!   expressions: [`Node::validate`], [`Schema`], [`ContentExpr`].
@@ -59,6 +61,7 @@ mod range;
 mod schema;
 mod select;
 mod text;
+mod transform;
 
 pub use builder::doc;
 pub use content::{ContentExpr, ContentRule, ParseExprError};
@@ -71,3 +74,4 @@ pub use normalize::NormalizeOptions;
 pub use query::Descendants;
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};
+pub use transform::Transform;

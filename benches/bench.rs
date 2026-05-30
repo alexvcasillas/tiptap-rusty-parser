@@ -170,6 +170,23 @@ fn benches(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         )
     });
+
+    // Transaction: record a handful of edits on `big_doc`. Returns the doc (and
+    // log) so their deallocation falls outside the timed section.
+    c.bench_function("transform_small_txn", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| {
+                let mut tx = d.root_mut().transform();
+                tx.set_attr(vec![0], "textAlign", "center").unwrap();
+                tx.set_text(vec![0, 0], Some("edited".into())).unwrap();
+                tx.insert(vec![], 0, Node::element("paragraph")).unwrap();
+                let changes = tx.finish();
+                (d, changes)
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
 }
 
 criterion_group!(g, benches);
