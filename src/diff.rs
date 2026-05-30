@@ -34,15 +34,24 @@
 //! preserved: when the field/child ops can't express the difference, the node
 //! is replaced wholesale so the round-trip stays exact.
 //!
+//! ## Move detection
+//! A child relocated within a list is emitted as a single [`Change::Move`]
+//! (no subtree clone) instead of a remove+insert: after LCS alignment, leftover
+//! deletions and insertions that are *equal by value* are paired as moves, and
+//! their live indices are derived by simulating the op stream — so the result
+//! reproduces the target exactly regardless of how moves interleave with plain
+//! inserts/removes. Pairing is greedy/FIFO, so duplicate-equal children give a
+//! correct (if not always minimal) result. [`invert`] needs no special handling:
+//! it re-diffs the reverse direction, re-deriving the inverse moves.
+//!
 //! ## v1 limitations
-//! - **No move detection**: a child relocated within a list is emitted as a
-//!   [`Change::Remove`] + [`Change::Insert`] (its subtree is cloned).
-//! - Child matching is LCS-by-equality; pathological reorders degrade to
-//!   remove+insert (still correct, just not minimal).
+//! - Matching is LCS-by-equality; modifies are paired positionally within the
+//!   gaps between matched anchors (still correct, just not always minimal).
 
 use crate::node::{Mark, Node};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 
 /// A single structural change between two [`Node`] trees.
@@ -119,6 +128,19 @@ pub enum Change {
         path: Vec<usize>,
         /// The replacement node.
         node: Node,
+    },
+    /// Relocate a child within the same parent's list, without cloning its
+    /// subtree. `from`/`to` are interpreted against the *live* list: the child
+    /// at `from` is removed first, then re-inserted so it lands at index `to`
+    /// in the post-removal list — observationally `Remove{from}` + `Insert{to}`,
+    /// so it composes with the same live-index cursor model as the other ops.
+    Move {
+        /// Index path of the **parent** node.
+        path: Vec<usize>,
+        /// Live index of the child to move (before this op).
+        from: usize,
+        /// Target index in the list after the child is removed.
+        to: usize,
     },
 }
 
@@ -315,6 +337,21 @@ enum Step {
     Ins(usize),
 }
 
+/// A live-list element identity used by the move simulation: either an original
+/// `a`-child (reused/relocated/modified in place) or a freshly inserted node.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum Key {
+    Orig(usize),
+    New(usize),
+}
+
+/// Positional pairing of a leftover deletion with a leftover insertion in the
+/// same gap: a same-type modify (recurse) or a different-type wholesale replace.
+enum Role {
+    Modify(usize),
+    Replace(usize),
+}
+
 fn diff_children(a: &[Node], b: &[Node], path: &mut Vec<usize>, out: &mut Vec<Change>) {
     // Trim common prefix/suffix (cheap; shrinks the LCS DP and handles the
     // common append/prepend cases in linear time).
@@ -336,68 +373,178 @@ fn diff_children(a: &[Node], b: &[Node], path: &mut Vec<usize>, out: &mut Vec<Ch
     }
 
     let steps = lcs_align(am, bm);
-    let mut cursor = start; // position in the live list (prefix kept at 0..start)
-    let mut dels: Vec<usize> = Vec::new();
-    let mut inss: Vec<usize> = Vec::new();
-    for step in steps {
+
+    // Reconstruct the alignment: which bm index each am index matched (kept in
+    // place), plus the per-gap unmatched deletions/insertions between anchors.
+    let mut gaps: Vec<(Vec<usize>, Vec<usize>)> = Vec::new();
+    let mut cur_dels: Vec<usize> = Vec::new();
+    let mut cur_inss: Vec<usize> = Vec::new();
+    let mut bm_match_src: HashMap<usize, usize> = HashMap::new(); // bm_j -> am_i
+    let (mut ai, mut bj) = (0usize, 0usize);
+    for step in &steps {
         match step {
             Step::Match => {
-                flush_gap(am, bm, &dels, &inss, path, &mut cursor, out);
-                dels.clear();
-                inss.clear();
-                cursor += 1; // matched child kept in place
+                gaps.push((std::mem::take(&mut cur_dels), std::mem::take(&mut cur_inss)));
+                bm_match_src.insert(bj, ai);
+                ai += 1;
+                bj += 1;
             }
-            Step::Del(i) => dels.push(i),
-            Step::Ins(j) => inss.push(j),
+            Step::Del(i) => {
+                cur_dels.push(*i);
+                ai += 1;
+            }
+            Step::Ins(j) => {
+                cur_inss.push(*j);
+                bj += 1;
+            }
         }
     }
-    flush_gap(am, bm, &dels, &inss, path, &mut cursor, out);
-}
+    gaps.push((cur_dels, cur_inss));
 
-/// Emit ops for a gap of unmatched children. Same-type del/ins pairs recurse
-/// (a modify-in-place); otherwise they become remove+insert. Indices are
-/// against the live list (see module docs).
-fn flush_gap(
-    am: &[Node],
-    bm: &[Node],
-    dels: &[usize],
-    inss: &[usize],
-    path: &mut Vec<usize>,
-    cursor: &mut usize,
-    out: &mut Vec<Change>,
-) {
-    let pairs = dels.len().min(inss.len());
-    for k in 0..pairs {
-        let (ai, bj) = (dels[k], inss[k]);
-        if am[ai].node_type == bm[bj].node_type {
-            // same type: recurse for a minimal in-place modify
-            path.push(*cursor);
-            diff_node(&am[ai], &bm[bj], path, out);
-            path.pop();
-        } else {
-            // type changed: replace the child wholesale (1 op, vs remove+insert)
-            let mut child = path.clone();
-            child.push(*cursor);
-            out.push(Change::Replace {
-                path: child,
-                node: bm[bj].clone(),
-            });
+    // Move detection: pair value-equal nodes that LCS split into a deletion and
+    // an insertion. Greedy/FIFO over equal values -> stable on duplicates.
+    let all_dels: Vec<usize> = gaps.iter().flat_map(|(d, _)| d.iter().copied()).collect();
+    let mut del_used = vec![false; all_dels.len()];
+    let mut bm_move_src: HashMap<usize, usize> = HashMap::new(); // bm_j -> am_d
+    let mut am_moved: HashSet<usize> = HashSet::new();
+    for (_, inss) in &gaps {
+        for &j in inss {
+            if let Some(slot) = all_dels
+                .iter()
+                .enumerate()
+                .find(|(slot, &d)| !del_used[*slot] && am[d] == bm[j])
+                .map(|(slot, _)| slot)
+            {
+                del_used[slot] = true;
+                bm_move_src.insert(j, all_dels[slot]);
+                am_moved.insert(all_dels[slot]);
+            }
         }
-        *cursor += 1;
     }
-    for _ in &dels[pairs..] {
+
+    // Per-gap modify/replace pairing on the remaining (non-moved) leftovers.
+    let mut bm_role: HashMap<usize, Role> = HashMap::new();
+    let mut removed_am: Vec<usize> = Vec::new();
+    for (dels, inss) in &gaps {
+        let rem_dels: Vec<usize> = dels
+            .iter()
+            .copied()
+            .filter(|d| !am_moved.contains(d))
+            .collect();
+        let rem_inss: Vec<usize> = inss
+            .iter()
+            .copied()
+            .filter(|j| !bm_move_src.contains_key(j))
+            .collect();
+        let pairs = rem_dels.len().min(rem_inss.len());
+        for k in 0..pairs {
+            let (d, j) = (rem_dels[k], rem_inss[k]);
+            if am[d].node_type == bm[j].node_type {
+                bm_role.insert(j, Role::Modify(d)); // same type -> recurse in place
+            } else {
+                bm_role.insert(j, Role::Replace(d)); // type change -> wholesale
+            }
+        }
+        removed_am.extend_from_slice(&rem_dels[pairs..]);
+    }
+
+    // Target key sequence for the middle (what the live list must become), plus
+    // a key -> target-index lookup used to place relocated nodes minimally.
+    let mut target: Vec<Key> = Vec::with_capacity(bm.len());
+    for j in 0..bm.len() {
+        let key = if let Some(&i) = bm_match_src.get(&j) {
+            Key::Orig(i)
+        } else if let Some(&d) = bm_move_src.get(&j) {
+            Key::Orig(d)
+        } else {
+            match bm_role.get(&j) {
+                Some(Role::Modify(d) | Role::Replace(d)) => Key::Orig(*d),
+                None => Key::New(j),
+            }
+        };
+        target.push(key);
+    }
+    let target_pos: HashMap<Key, usize> = target.iter().enumerate().map(|(i, &k)| (k, i)).collect();
+    let is_moved = |k: Key| matches!(k, Key::Orig(x) if am_moved.contains(&x));
+
+    // Simulate the live list and emit ops whose indices are valid by
+    // construction. Absolute index = start + position in the middle.
+    let mut live: Vec<Key> = (0..am.len()).map(Key::Orig).collect();
+
+    // 1. Plain removes (indices computed against the shrinking live list).
+    for &d in &removed_am {
+        let idx = live.iter().position(|&k| k == Key::Orig(d)).unwrap();
         out.push(Change::Remove {
             path: path.clone(),
-            index: *cursor,
-        }); // no cursor advance: the next child shifts into this slot
-    }
-    for &bj in &inss[pairs..] {
-        out.push(Change::Insert {
-            path: path.clone(),
-            index: *cursor,
-            node: bm[bj].clone(),
+            index: start + idx,
         });
-        *cursor += 1;
+        live.remove(idx);
+    }
+
+    // 2. Settle each target position left to right, maintaining the invariant
+    //    `live[..p] == target[..p]`. New nodes are inserted; otherwise we
+    //    relocate exactly one genuinely-moved node (the displaced occupant, or
+    //    the wanted node if it's the one that moved) to its sorted destination —
+    //    one Move per moved node, never disturbing the matched skeleton.
+    let mut p = 0;
+    while p < target.len() {
+        let want = target[p];
+        if live.get(p).copied() == Some(want) {
+            p += 1;
+            continue;
+        }
+        if let Key::New(j) = want {
+            out.push(Change::Insert {
+                path: path.clone(),
+                index: start + p,
+                node: bm[j].clone(),
+            });
+            live.insert(p, want);
+            p += 1;
+            continue;
+        }
+        // `want` is an original node not yet at `p`. Move the displaced occupant
+        // if it is the relocated one, else pull `want` (itself relocated) here.
+        let cur = live[p];
+        let mover = if is_moved(cur) { cur } else { want };
+        let from = live.iter().position(|&k| k == mover).unwrap();
+        let tmover = target_pos[&mover];
+        // Destination = number of currently-present elements that precede it in
+        // the target order (excluding the mover itself).
+        let dest = live
+            .iter()
+            .filter(|&&k| k != mover && target_pos[&k] < tmover)
+            .count();
+        out.push(Change::Move {
+            path: path.clone(),
+            from: start + from,
+            to: start + dest,
+        });
+        let k = live.remove(from);
+        live.insert(dest, k);
+        // Re-check `p` (the move may or may not have settled this slot).
+    }
+    debug_assert_eq!(live, target, "diff move simulation diverged from target");
+
+    // 3. Value fixes for modify/replace pairs, at their final positions (the
+    //    structural layout is now settled, so index = start + bm index).
+    for (j, target_node) in bm.iter().enumerate() {
+        match bm_role.get(&j) {
+            Some(Role::Modify(d)) => {
+                path.push(start + j);
+                diff_node(&am[*d], target_node, path, out);
+                path.pop();
+            }
+            Some(Role::Replace(_)) => {
+                let mut child = path.clone();
+                child.push(start + j);
+                out.push(Change::Replace {
+                    path: child,
+                    node: target_node.clone(),
+                });
+            }
+            None => {}
+        }
     }
 }
 
@@ -506,6 +653,19 @@ fn apply_one(root: &mut Node, change: &Change) -> std::result::Result<(), ApplyE
                     return Err(ApplyError { path: path.clone() });
                 }
             }
+        }
+        Change::Move { path, from, to } => {
+            let parent = node_at_mut(root, path)?;
+            let len = parent.child_count();
+            // `from` indexes the live list; `to` indexes the list after removal,
+            // so its valid range is 0..=len-1.
+            if *from >= len || *to >= len {
+                let mut p = path.clone();
+                p.push(if *from >= len { *from } else { *to });
+                return Err(ApplyError { path: p });
+            }
+            let node = parent.remove_child(*from).expect("from bounds-checked");
+            parent.insert_child(*to, node);
         }
     }
     Ok(())

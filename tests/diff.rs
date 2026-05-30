@@ -235,6 +235,126 @@ fn long_list_single_middle_insert() {
     );
 }
 
+// ---- move detection -----------------------------------------------------
+
+fn count<F: Fn(&Change) -> bool>(c: &[Change], f: F) -> usize {
+    c.iter().filter(|x| f(x)).count()
+}
+
+#[test]
+fn move_single_child_rotation() {
+    // [a,b,c] -> [b,c,a]: one node relocated -> exactly one Move, no clone
+    // (no Insert/Replace/Remove).
+    let a = Node::element("doc").with_children([p("a"), p("b"), p("c")]);
+    let b = Node::element("doc").with_children([p("b"), p("c"), p("a")]);
+    let c = roundtrip(&a, &b);
+    assert_eq!(count(&c, |x| matches!(x, Change::Move { .. })), 1, "{c:?}");
+    assert_eq!(count(&c, |x| matches!(x, Change::Insert { .. })), 0);
+    assert_eq!(count(&c, |x| matches!(x, Change::Replace { .. })), 0);
+    assert_eq!(count(&c, |x| matches!(x, Change::Remove { .. })), 0);
+}
+
+#[test]
+fn move_drag_past_anchors_is_one_move() {
+    // Drag one node past two others -> a single Move, not three remove/inserts.
+    let a = Node::element("doc").with_children([p("A"), p("B"), p("C"), p("D"), p("E")]);
+    let b = Node::element("doc").with_children([p("A"), p("C"), p("D"), p("B"), p("E")]);
+    let c = roundtrip(&a, &b);
+    assert_eq!(count(&c, |x| matches!(x, Change::Move { .. })), 1, "{c:?}");
+    assert_eq!(count(&c, |x| matches!(x, Change::Insert { .. })), 0);
+}
+
+#[test]
+fn move_reversal_no_clones() {
+    // Full reversal: all relocations, never a clone (no Insert/Replace).
+    let a = Node::element("doc").with_children([p("A"), p("B"), p("C"), p("D")]);
+    let b = Node::element("doc").with_children([p("D"), p("C"), p("B"), p("A")]);
+    let c = roundtrip(&a, &b);
+    assert!(
+        count(&c, |x| matches!(x, Change::Move { .. })) >= 1,
+        "{c:?}"
+    );
+    assert_eq!(count(&c, |x| matches!(x, Change::Insert { .. })), 0);
+    assert_eq!(count(&c, |x| matches!(x, Change::Replace { .. })), 0);
+}
+
+#[test]
+fn move_interleaved_with_insert_and_remove() {
+    // a: [a,b,c,d]  b: [c,a,x,y]  -> c moves before a, plus surrounding edits.
+    // The relocation of `c` is detected as a Move regardless of how the rest is
+    // expressed; the round-trip is the correctness gate.
+    let a = Node::element("doc").with_children([p("a"), p("b"), p("c"), p("d")]);
+    let b = Node::element("doc").with_children([p("c"), p("a"), p("x"), p("y")]);
+    let c = roundtrip(&a, &b);
+    assert!(
+        count(&c, |x| matches!(x, Change::Move { .. })) >= 1,
+        "{c:?}"
+    );
+}
+
+#[test]
+fn move_duplicate_equal_children() {
+    // Equal duplicates: greedy/FIFO pairing must still reproduce exactly.
+    let a = Node::element("doc").with_children([p("x"), p("x"), p("y")]);
+    let b = Node::element("doc").with_children([p("y"), p("x"), p("x")]);
+    roundtrip(&a, &b);
+}
+
+#[test]
+fn move_with_nested_modify() {
+    // A relocated node alongside an in-place text edit on a kept sibling.
+    let a = Node::element("doc").with_children([p("one"), p("two"), p("three")]);
+    let b = Node::element("doc").with_children([p("three"), p("one"), p("TWO")]);
+    roundtrip(&a, &b);
+}
+
+#[test]
+fn move_invert_restores() {
+    let a = Node::element("doc").with_children([p("a"), p("b"), p("c")]);
+    let b = Node::element("doc").with_children([p("c"), p("a"), p("b")]);
+    let fwd = a.diff(&b);
+    let inv = a.invert(&fwd).unwrap();
+    let mut doc = a.clone();
+    apply(&mut doc, &fwd).unwrap();
+    assert_eq!(doc, b);
+    apply(&mut doc, &inv).unwrap();
+    assert_eq!(doc, a);
+}
+
+#[test]
+fn fuzz_shuffle_is_pure_moves() {
+    // Permuting distinct children must round-trip with ONLY Move ops (no clones,
+    // no removes/inserts), and the inverse must restore the original.
+    let mut rng = Rng(0xD1B54A32D192ED03);
+    for _ in 0..1000 {
+        let n = 1 + rng.below(8);
+        let kids: Vec<Node> = (0..n).map(|i| p(&format!("n{i}"))).collect();
+        let mut shuffled = kids.clone();
+        // Fisher-Yates with the test PRNG.
+        for i in (1..shuffled.len()).rev() {
+            shuffled.swap(i, rng.below(i + 1));
+        }
+        let a = Node::element("doc").with_children(kids);
+        let b = Node::element("doc").with_children(shuffled);
+        let c = roundtrip(&a, &b);
+        assert_eq!(
+            count(&c, |x| matches!(x, Change::Insert { .. })),
+            0,
+            "{c:?}"
+        );
+        assert_eq!(
+            count(&c, |x| matches!(x, Change::Remove { .. })),
+            0,
+            "{c:?}"
+        );
+        assert_eq!(
+            count(&c, |x| matches!(x, Change::Replace { .. })),
+            0,
+            "{c:?}"
+        );
+    }
+}
+
 // ---- extra (unknown fields), lossless -----------------------------------
 
 #[test]

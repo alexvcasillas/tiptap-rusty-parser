@@ -105,6 +105,25 @@ fn benches(c: &mut Criterion) {
         )
     });
 
+    // Reorder: reverse the 500 paragraphs. Every child relocates, exercising
+    // move detection — the diff is a list of clone-free `Move` ops.
+    let mut reordered = document.clone();
+    if let Some(kids) = reordered.root_mut().content.as_mut() {
+        kids.reverse();
+    }
+    c.bench_function("diff_reordered_children", |b| {
+        b.iter(|| black_box(document.root().diff(reordered.root()).len()))
+    });
+
+    let reorder_changes = document.root().diff(reordered.root());
+    c.bench_function("apply_reordered_children", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| tiptap_rusty_parser::apply(d.root_mut(), black_box(&reorder_changes)).unwrap(),
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
     // `big_doc`'s 20 same-mark spans per paragraph all merge into one — the
     // merge-heavy path.
     c.bench_function("normalize_merge_heavy", |b| {

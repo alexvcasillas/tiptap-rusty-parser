@@ -61,6 +61,35 @@ fn diff_shape_has_op() {
 }
 
 #[wasm_bindgen_test]
+fn diff_emits_move_for_reorder() {
+    let a = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+          {"type":"paragraph","content":[{"type":"text","text":"a"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"b"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"c"}]}
+        ]}"#,
+    )
+    .unwrap();
+    let b = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+          {"type":"paragraph","content":[{"type":"text","text":"b"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"c"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"a"}]}
+        ]}"#,
+    )
+    .unwrap();
+    let changes = a.diff(&b).unwrap();
+    let parsed: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(changes.clone()).unwrap();
+    assert!(parsed
+        .iter()
+        .any(|c| c.get("op") == Some(&serde_json::json!("move"))));
+    // And it round-trips through applyChanges.
+    let mut got = a;
+    got.apply_changes(changes).unwrap();
+    assert_eq!(got.to_json_string().unwrap(), b.to_json_string().unwrap());
+}
+
+#[wasm_bindgen_test]
 fn invert_undo() {
     let a = TiptapDoc::from_json_string(DOC).unwrap();
     let b = TiptapDoc::from_json_string(
