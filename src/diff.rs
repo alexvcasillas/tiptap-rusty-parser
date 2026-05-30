@@ -84,20 +84,6 @@ pub enum Change {
         /// New text payload, or `None` to clear.
         text: Option<String>,
     },
-    /// Splice a text node's payload: replace the scalar range
-    /// `[from, from+len_del)` with `insert`. Offsets count Unicode scalars.
-    /// Emitted by [`Node::diff_with`](crate::Node::diff_with) in inline/smart
-    /// granularity instead of a whole-string [`SetText`](Change::SetText).
-    SpliceText {
-        /// Index path of the target text node.
-        path: Vec<usize>,
-        /// Scalar offset where the splice starts.
-        from: usize,
-        /// Number of scalars removed.
-        len_del: usize,
-        /// Text inserted at `from`.
-        insert: String,
-    },
     /// Replace the whole mark list of the node at `path` (`None` clears it).
     SetMarks {
         /// Index path of the target node.
@@ -156,6 +142,24 @@ pub enum Change {
         from: usize,
         /// Target index in the list after the child is removed.
         to: usize,
+    },
+    /// Splice a text node's payload: replace the scalar range
+    /// `[from, from+len_del)` with `insert`. Offsets count Unicode scalars.
+    /// Emitted by [`Node::diff_with`](crate::Node::diff_with) in inline/smart
+    /// granularity instead of a whole-string [`SetText`](Change::SetText).
+    ///
+    /// Appended last (rather than grouped next to [`SetText`](Change::SetText))
+    /// so existing variants keep their discriminants — only the new-variant
+    /// break remains, not a discriminant shift for downstream `as` casts.
+    SpliceText {
+        /// Index path of the target text node.
+        path: Vec<usize>,
+        /// Scalar offset where the splice starts.
+        from: usize,
+        /// Number of scalars removed.
+        len_del: usize,
+        /// Text inserted at `from`.
+        insert: String,
     },
 }
 
