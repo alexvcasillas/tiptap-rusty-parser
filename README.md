@@ -693,6 +693,7 @@ path is the *parent* + `index`):
 |---------|---------|
 | `SetAttr` / `RemoveAttr` | attribute changed / removed |
 | `SetText` | text payload set (`None` clears) |
+| `SpliceText` | scalar range `[from, from+len_del)` replaced with `insert` (inline diff) |
 | `SetMarks` | whole mark list replaced (`None` clears) |
 | `SetExtra` / `RemoveExtra` | unknown top-level field changed / removed (lossless) |
 | `Insert` / `Remove` | child inserted / removed at `index` |
@@ -712,6 +713,39 @@ special handling — it re-diffs the reverse direction.
 **v1 limitations:** matching is LCS-by-equality; modifies are paired
 positionally within the gaps between matched anchors (still correct, just not
 always minimal).
+
+**Inline (character-level) diff** — the default `diff` replaces a changed text
+node wholesale (one `SetText`). For AI / review flows you usually want
+*character-level* edits instead, so a suggestion reads as "inserted X / deleted
+Y" rather than "rewrote the paragraph". `diff_with(other, &DiffOptions)` selects
+the granularity:
+
+```rust
+use tiptap_rusty_parser::{DiffGranularity, DiffOptions, Node};
+
+let a = Node::element("doc")
+    .with_child(Node::element("paragraph").with_child(Node::text("the quick brown fox")));
+let b = Node::element("doc")
+    .with_child(Node::element("paragraph").with_child(Node::text("the quick red fox")));
+
+let opts = DiffOptions { text: DiffGranularity::Inline };
+let changes = a.diff_with(&b, &opts);    // minimal SpliceText islands, not a SetText
+let mut c = a.clone();
+c.apply(&changes).unwrap();
+assert_eq!(c, b);
+```
+
+- `Block` *(default)* — today's behavior: whole-node `SetText`. `diff()` is
+  exactly `diff_with(&DiffOptions::default())`, so existing behavior is unchanged.
+- `Inline` — minimal character-level `SpliceText` islands (scalar offsets,
+  multibyte-safe). Common prefix/suffix is trimmed, then an LCS aligns the middle.
+- `Smart { replace_threshold }` — inline, but falls back to a whole `SetText`
+  once the changed-scalar fraction exceeds the threshold (a near-total rewrite is
+  cheaper as one replace than many splices).
+
+`diff_text(a, b)` exposes the raw `Vec<TextSegment>` (Keep / Insert / Delete) if
+you want to render a word-level highlight directly. Apply/invert round-trips hold
+for every granularity (invert re-diffs in block mode).
 
 ---
 
@@ -949,6 +983,7 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `normalize` (already canonical, nothing to merge) | ~65 µs |
 | `diff` (500 paragraphs fully reordered → `Move` ops) | ~17 ms |
 | `apply` (the reorder change list) | ~2.7 ms |
+| `diff_with(Inline)` (one-word edit in a ~10k-char paragraph) | ~46 µs |
 | `add_mark_range` (mark + re-merge a 5000-span block) | ~1.3 ms |
 | `delete_range` (drop 3000 spans from a block) | ~0.3 ms |
 | `transform` (record a 3-op transaction) | ~13 µs |

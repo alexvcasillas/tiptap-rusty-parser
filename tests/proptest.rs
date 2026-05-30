@@ -2,7 +2,9 @@
 //! generate arbitrary `Node` trees and assert the core invariants hold.
 
 use proptest::prelude::*;
-use tiptap_rusty_parser::{apply, compact, compose, map_path, Mark, Node, Position, Range};
+use tiptap_rusty_parser::{
+    apply, compact, compose, map_path, DiffGranularity, DiffOptions, Mark, Node, Position, Range,
+};
 
 /// A text node, sometimes carrying a single mark (so merge/normalize and mark
 /// diffing get exercised). Empty strings are allowed on purpose.
@@ -79,6 +81,27 @@ proptest! {
         }
         // One past the end must error.
         prop_assert!(a.resolve(total + 1).is_err());
+    }
+
+    /// Inline / smart text-granularity diffs still reproduce `b` on apply and
+    /// invert back to `a`, just like the default block diff.
+    #[test]
+    fn inline_diff_roundtrip_and_undo(a in arb_tree(), b in arb_tree()) {
+        for text in [
+            DiffGranularity::Inline,
+            DiffGranularity::Smart { replace_threshold: 0.5 },
+        ] {
+            let opts = DiffOptions { text };
+            let changes = a.diff_with(&b, &opts);
+            let mut got = a.clone();
+            apply(&mut got, &changes).unwrap();
+            prop_assert_eq!(&got, &b);
+
+            let undo = a.invert(&changes).unwrap();
+            let mut back = b.clone();
+            apply(&mut back, &undo).unwrap();
+            prop_assert_eq!(&back, &a);
+        }
     }
 
     /// `compose`/`compact` are apply-equivalent to sequential application, and

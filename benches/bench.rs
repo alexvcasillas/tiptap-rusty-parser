@@ -1,6 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tiptap_rusty_parser::{
-    doc, BlockRange, Document, Mark, MarkSpec, Node, NodeSpec, Position, Range, Schema,
+    doc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
+    Position, Range, Schema,
 };
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
@@ -244,6 +245,23 @@ fn benches(c: &mut Criterion) {
     let mid = document.root().content_size() / 2;
     c.bench_function("resolve_pos", |b| {
         b.iter(|| black_box(document.root().resolve(black_box(mid)).unwrap()))
+    });
+
+    // Inline (character-level) diff: a single-word edit in the middle of a
+    // ~10k-char paragraph — prefix/suffix trim should keep this near-linear.
+    let long: String = (0..2000).map(|i| format!("w{i} ")).collect();
+    let big_para =
+        Node::element("doc").with_child(Node::element("paragraph").with_child(Node::text(&long)));
+    let mut edited = long.clone();
+    let cut = edited.len() / 2;
+    edited.insert_str(cut, "EDIT ");
+    let big_para_edited =
+        Node::element("doc").with_child(Node::element("paragraph").with_child(Node::text(&edited)));
+    let inline = DiffOptions {
+        text: DiffGranularity::Inline,
+    };
+    c.bench_function("diff_inline_10k_para_small_edit", |b| {
+        b.iter(|| black_box(big_para.diff_with(black_box(&big_para_edited), &inline)))
     });
 }
 
