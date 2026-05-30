@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.5...v0.3.6) - 2026-05-30
+
+### Other
+
+- property-based tests (proptest) for core invariants ([#32](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/32))
+
 ## [0.3.5](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.4...v0.3.5) - 2026-05-30
 
 ### Added
