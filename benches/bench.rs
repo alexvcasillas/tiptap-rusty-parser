@@ -1,5 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use tiptap_rusty_parser::{doc, Document, Mark, MarkSpec, Node, NodeSpec, Position, Range, Schema};
+use tiptap_rusty_parser::{
+    doc, BlockRange, Document, Mark, MarkSpec, Node, NodeSpec, Position, Range, Schema,
+};
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
 fn big_doc(paras: usize, spans: usize) -> Document {
@@ -183,6 +185,32 @@ fn benches(c: &mut Criterion) {
                 tx.insert(vec![], 0, Node::element("paragraph")).unwrap();
                 let changes = tx.finish();
                 (d, changes)
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+
+    // Block-structural ops on `big_doc` (500 paragraphs). Return the doc so its
+    // deallocation falls outside the timed section.
+    c.bench_function("wrap_range_500_blocks", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| {
+                let r = BlockRange::new(vec![], 0, 500);
+                d.root_mut()
+                    .wrap_range(black_box(&r), "section", None)
+                    .unwrap();
+                d
+            },
+            criterion::BatchSize::SmallInput,
+        )
+    });
+    c.bench_function("split_block", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| {
+                d.root_mut().split_block(black_box(&[0]), 10, 0).unwrap();
+                d
             },
             criterion::BatchSize::SmallInput,
         )

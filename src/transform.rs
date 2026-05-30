@@ -34,9 +34,11 @@
 //! assert_eq!(back, original);
 //! ```
 
+use crate::block::{BlockError, BlockRange};
 use crate::diff::{apply, ApplyError, Change};
 use crate::node::{Mark, Node};
-use serde_json::Value;
+use crate::range::Position;
+use serde_json::{Map, Value};
 
 /// A mutation transaction over a [`Node`] tree: edits apply in place and are
 /// recorded as a [`Change`] log. Create with [`Node::transform`].
@@ -176,5 +178,87 @@ impl<'a> Transform<'a> {
     /// Finish the transaction, returning the recorded [`Change`] log.
     pub fn finish(self) -> Vec<Change> {
         self.changes
+    }
+}
+
+/// Block-structural builders. Unlike the field/child ops above (which map to a
+/// single [`Change`]), these restructure the tree and are recorded by running
+/// the in-place edit and recovering the patch via [`diff`](crate::diff) — so
+/// they clone the tree once (only on this transaction path; the direct
+/// [`Node`] methods stay clone-free).
+impl Transform<'_> {
+    fn record_structural<F>(&mut self, f: F) -> Result<&mut Self, BlockError>
+    where
+        F: FnOnce(&mut Node) -> Result<(), BlockError>,
+    {
+        let before = self.root.clone();
+        f(self.root)?;
+        let patch = before.diff(self.root);
+        self.changes.extend(patch);
+        Ok(self)
+    }
+
+    /// Record [`Node::set_block_type`].
+    pub fn set_block_type(
+        &mut self,
+        path: Vec<usize>,
+        new_type: impl Into<String>,
+        attrs: Option<Map<String, Value>>,
+    ) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.set_block_type(&path, new_type, attrs))
+    }
+
+    /// Record [`Node::split_block`].
+    pub fn split_block(
+        &mut self,
+        path: Vec<usize>,
+        at: usize,
+        depth: usize,
+    ) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.split_block(&path, at, depth))
+    }
+
+    /// Record [`Node::split_block_at`].
+    pub fn split_block_at(
+        &mut self,
+        path: Vec<usize>,
+        pos: Position,
+        depth: usize,
+    ) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.split_block_at(&path, pos, depth))
+    }
+
+    /// Record [`Node::join_blocks`].
+    pub fn join_blocks(
+        &mut self,
+        parent: Vec<usize>,
+        index: usize,
+    ) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.join_blocks(&parent, index))
+    }
+
+    /// Record [`Node::wrap`].
+    pub fn wrap(
+        &mut self,
+        path: Vec<usize>,
+        wrapper_type: impl Into<String>,
+        attrs: Option<Map<String, Value>>,
+    ) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.wrap(&path, wrapper_type, attrs))
+    }
+
+    /// Record [`Node::wrap_range`].
+    pub fn wrap_range(
+        &mut self,
+        range: BlockRange,
+        wrapper_type: impl Into<String>,
+        attrs: Option<Map<String, Value>>,
+    ) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.wrap_range(&range, wrapper_type, attrs))
+    }
+
+    /// Record [`Node::lift`].
+    pub fn lift(&mut self, path: Vec<usize>) -> Result<&mut Self, BlockError> {
+        self.record_structural(|root| root.lift(&path))
     }
 }

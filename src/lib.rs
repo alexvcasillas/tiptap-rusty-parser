@@ -16,6 +16,8 @@
 //!   [`Node::normalize`], [`NormalizeOptions`].
 //! - **Range-edit** a block's inline content (insert/delete/replace text, mark
 //!   ranges): [`Node::insert_text`], [`Node::add_mark_range`], [`Position`], [`Range`].
+//! - **Restructure** the block tree (split/join/wrap/lift/retype):
+//!   [`Node::split_block`], [`Node::join_blocks`], [`Node::wrap`], [`Node::lift`], [`BlockRange`].
 //! - **Diff / apply / invert** structural change lists between two trees
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
 //! - **Transact**: mutate in place while recording a replayable/invertible
@@ -46,6 +48,7 @@
 //! assert_eq!(doc.find_all(|n| n.node_type.as_deref() == Some("paragraph")).len(), 2);
 //! ```
 
+mod block;
 mod builder;
 mod content;
 mod diff;
@@ -63,6 +66,7 @@ mod select;
 mod text;
 mod transform;
 
+pub use block::{BlockError, BlockRange};
 pub use builder::doc;
 pub use content::{ContentExpr, ContentRule, ParseExprError};
 pub use diff::{apply, diff, invert, ApplyError, Change};
