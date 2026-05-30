@@ -23,6 +23,7 @@
 //! assert!(doc.is_valid(&schema));
 //! ```
 
+use crate::content::{ContentExpr, ContentRule, ParseExprError};
 use crate::node::Node;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -43,9 +44,14 @@ pub struct Schema {
 /// Rules for one node type.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NodeSpec {
-    /// Allowed child node types. `None` = any child type allowed.
+    /// Allowed content: a set of child types (array form) or a content
+    /// expression (string form). `None` = any child allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content: Option<HashSet<String>>,
+    pub content: Option<ContentRule>,
+    /// Groups this node belongs to (space-separated, ProseMirror-style), so
+    /// content expressions can reference it by group name (e.g. `block`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     /// Allowed mark types on this node. `None` = any mark allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marks: Option<HashSet<String>>,
@@ -115,14 +121,44 @@ impl NodeSpec {
         Self::default()
     }
 
-    /// Restrict allowed child node types.
+    /// Restrict allowed child node types (any count/order). For ordering and
+    /// cardinality use [`content_match`](Self::content_match).
     pub fn content<I, S>(mut self, types: I) -> Self
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.content = Some(into_set(types));
+        self.content = Some(ContentRule::Types(into_set(types)));
         self
+    }
+
+    /// Restrict content with a ProseMirror content expression (e.g.
+    /// `"heading paragraph+"`). Panics on an invalid expression — use
+    /// [`try_content_match`](Self::try_content_match) to handle the error.
+    pub fn content_match(self, expr: &str) -> Self {
+        self.try_content_match(expr)
+            .expect("invalid content expression")
+    }
+
+    /// Fallible [`content_match`](Self::content_match).
+    pub fn try_content_match(mut self, expr: &str) -> Result<Self, ParseExprError> {
+        self.content = Some(ContentRule::Expr(ContentExpr::parse(expr)?));
+        Ok(self)
+    }
+
+    /// Set the groups this node belongs to (space-separated, e.g. `"block"`).
+    pub fn group(mut self, group: impl Into<String>) -> Self {
+        self.group = Some(group.into());
+        self
+    }
+
+    /// The allowed child-type set, if `content` is the array form (not an
+    /// expression). Convenience accessor for the `content` field.
+    pub fn content_types(&self) -> Option<&HashSet<String>> {
+        match &self.content {
+            Some(ContentRule::Types(set)) => Some(set),
+            _ => None,
+        }
     }
 
     /// Restrict allowed mark types on this node.
@@ -201,6 +237,8 @@ pub enum ViolationKind {
     UnknownNodeType(String),
     /// A child type is not allowed under its parent.
     DisallowedChild { parent: String, child: String },
+    /// A node's children don't satisfy its content expression.
+    InvalidContent { parent: String, expr: String },
     /// A mark type is not in the schema.
     UnknownMark(String),
     /// A mark is registered but not allowed on this node type.
@@ -218,6 +256,12 @@ impl fmt::Display for ViolationKind {
             ViolationKind::UnknownNodeType(t) => write!(f, "unknown node type `{t}`"),
             ViolationKind::DisallowedChild { parent, child } => {
                 write!(f, "node type `{child}` not allowed inside `{parent}`")
+            }
+            ViolationKind::InvalidContent { parent, expr } => {
+                write!(
+                    f,
+                    "children of `{parent}` do not match content expression `{expr}`"
+                )
             }
             ViolationKind::UnknownMark(m) => write!(f, "unknown mark type `{m}`"),
             ViolationKind::DisallowedMark { node, mark } => {
@@ -338,18 +382,39 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
             }
         }
 
-        // children types
-        if let (Some(allowed), Some(children)) = (&spec.content, &node.content) {
+        // content rules
+        if let Some(rule) = &spec.content {
             let parent = node.node_type.as_deref().unwrap_or_default();
-            for child in children {
-                if let Some(ct) = &child.node_type {
-                    if !allowed.contains(ct) {
+            match rule {
+                // array form: per-child type membership (unchanged behavior)
+                ContentRule::Types(allowed) => {
+                    if let Some(children) = &node.content {
+                        for child in children {
+                            if let Some(ct) = &child.node_type {
+                                if !allowed.contains(ct) {
+                                    push(
+                                        out,
+                                        path,
+                                        ViolationKind::DisallowedChild {
+                                            parent: parent.to_string(),
+                                            child: ct.clone(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                // expression form: cardinality + ordering over the child sequence
+                ContentRule::Expr(expr) => {
+                    let children = node.content.as_deref().unwrap_or(&[]);
+                    if !expr.matches(children, schema) {
                         push(
                             out,
                             path,
-                            ViolationKind::DisallowedChild {
+                            ViolationKind::InvalidContent {
                                 parent: parent.to_string(),
-                                child: ct.clone(),
+                                expr: expr.as_str().to_string(),
                             },
                         );
                     }
