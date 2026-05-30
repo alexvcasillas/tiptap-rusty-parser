@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.2...v0.1.3) - 2026-05-30
+
+### Other
+
+- pin npm to 11.5.1 instead of latest for reproducible releases
+- Merge branch 'main' into claude/tiptap-json-parser-rust-l5DMR
+- Update GitHub Sponsors username in FUNDING.yml
+
 ## [0.1.2](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.1.1...v0.1.2) - 2026-05-29
 
 ### Added
