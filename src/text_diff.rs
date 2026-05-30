@@ -40,7 +40,7 @@ pub struct TextSegment {
 
 /// How [`Node::diff_with`](crate::Node::diff_with) treats changed text nodes.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiffGranularity {
     /// Whole-node text replacement (`SetText`) — the default [`diff`](crate::diff) behavior.
     #[default]

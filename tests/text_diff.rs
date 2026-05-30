@@ -209,3 +209,44 @@ fn end_splice_appends() {
     d.apply(&ok).unwrap();
     assert_eq!(d, doc("hi!"));
 }
+
+#[test]
+fn splicetext_serializes_camelcase() {
+    // The struct-variant field must be camelCased (`lenDel`), matching the
+    // camelCase JSON surface and the WASM TS `Change` union — and round-trip.
+    let c = Change::SpliceText {
+        path: vec![0, 0],
+        from: 1,
+        len_del: 2,
+        insert: "x".into(),
+    };
+    let json = serde_json::to_string(&c).unwrap();
+    assert!(json.contains("\"lenDel\":2"), "got: {json}");
+    assert!(!json.contains("len_del"));
+    assert_eq!(serde_json::from_str::<Change>(&json).unwrap(), c);
+}
+
+#[test]
+fn smart_granularity_serializes_camelcase() {
+    let g = DiffGranularity::Smart {
+        replace_threshold: 0.5,
+    };
+    let json = serde_json::to_string(&g).unwrap();
+    assert!(json.contains("replaceThreshold"), "got: {json}");
+    assert_eq!(serde_json::from_str::<DiffGranularity>(&json).unwrap(), g);
+}
+
+#[test]
+fn noop_splice_preserves_absent_text() {
+    // A no-op splice against a text-less node must not materialize `text: ""`.
+    let mut n = Node::element("text"); // text == None
+    let before = n.clone();
+    n.apply(&[Change::SpliceText {
+        path: vec![],
+        from: 0,
+        len_del: 0,
+        insert: String::new(),
+    }])
+    .unwrap();
+    assert_eq!(n, before); // still text: None, not Some("")
+}

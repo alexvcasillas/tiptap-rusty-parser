@@ -59,7 +59,7 @@ use std::fmt;
 ///
 /// Serializes as a tagged object, e.g. `{"op":"setText","path":[0,0],"text":"hi"}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "camelCase")]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Change {
     /// Set (insert or overwrite) attribute `key` on the node at `path`.
     SetAttr {
@@ -703,9 +703,14 @@ fn apply_one(root: &mut Node, change: &Change) -> std::result::Result<(), ApplyE
                     .map_or(cur.len(), |(b, _)| b);
                 (start, end)
             };
-            node.text
-                .get_or_insert_with(String::new)
-                .replace_range(start..end, insert);
+            // A pure no-op (nothing removed, nothing inserted) must not
+            // materialize a `None` text field into `Some("")` — the model
+            // preserves missing-vs-empty for faithful round-tripping.
+            if start != end || !insert.is_empty() {
+                node.text
+                    .get_or_insert_with(String::new)
+                    .replace_range(start..end, insert);
+            }
         }
         Change::SetMarks { path, marks } => {
             node_at_mut(root, path)?.marks = marks.clone();
