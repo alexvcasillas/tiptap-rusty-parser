@@ -17,6 +17,7 @@
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Validate** (opt-in) against a schema, incl. ProseMirror content
 //!   expressions: [`Node::validate`], [`Schema`], [`ContentExpr`].
+//! - **Render** to HTML: [`Node::to_html`], [`HtmlOptions`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
 //!
 //! ```
@@ -44,6 +45,7 @@ mod content;
 mod diff;
 mod document;
 mod error;
+mod html;
 mod mutate;
 mod node;
 mod path;
@@ -57,6 +59,7 @@ pub use content::{ContentExpr, ContentRule, ParseExprError};
 pub use diff::{apply, diff, invert, ApplyError, Change};
 pub use document::Document;
 pub use error::{ParseError, Result};
+pub use html::{to_html, HtmlOptions, SelfClosingStyle, UnknownMarkPolicy, UnknownNodePolicy};
 pub use node::{Mark, Node};
 pub use query::Descendants;
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

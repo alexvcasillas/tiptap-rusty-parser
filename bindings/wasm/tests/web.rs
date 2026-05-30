@@ -1,9 +1,16 @@
 //! `wasm-pack test --node bindings/wasm` runs these in a Node WASM runtime.
 
+use serde::Serialize;
 use serde_wasm_bindgen::to_value;
 use tiptap_rusty_parser_wasm::TiptapDoc;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_test::*;
+
+/// Build a plain JS object (not a `Map`) — what real JS callers pass.
+fn js_obj(v: serde_json::Value) -> JsValue {
+    v.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .unwrap()
+}
 
 const DOC: &str = r#"{"type":"doc","content":[
   {"type":"heading","content":[{"type":"text","text":"Title"}]},
@@ -73,6 +80,24 @@ fn invert_undo() {
     assert_eq!(doc.to_json_string().unwrap(), b.to_json_string().unwrap());
     doc.apply_changes(undo).unwrap();
     assert_eq!(doc.to_json_string().unwrap(), a.to_json_string().unwrap());
+}
+
+#[wasm_bindgen_test]
+fn to_html_and_options() {
+    let doc = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+          {"type":"paragraph","content":[{"type":"text","text":"hi","marks":[{"type":"bold"}]}]},
+          {"type":"horizontalRule"}
+        ]}"#,
+    )
+    .unwrap();
+    assert_eq!(doc.to_html(), "<p><strong>hi</strong></p><hr>");
+    // toHTMLWith({selfClosing:"xhtml"}) flips void style
+    let opts = js_obj(serde_json::json!({ "selfClosing": "xhtml" }));
+    assert_eq!(
+        doc.to_html_with(opts).unwrap(),
+        "<p><strong>hi</strong></p><hr/>"
+    );
 }
 
 #[wasm_bindgen_test]

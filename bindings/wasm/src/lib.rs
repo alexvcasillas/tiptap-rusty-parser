@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use serde_wasm_bindgen::{from_value, Serializer};
-use tiptap_rusty_parser::{Change, Document, Mark, Node, Schema};
+use tiptap_rusty_parser::{Change, Document, HtmlOptions, Mark, Node, Schema};
 use wasm_bindgen::prelude::*;
 
 /// Map a `Display` error into a JS exception.
@@ -285,6 +285,21 @@ impl TiptapDoc {
         let changes: Vec<Change> = from_value(changes).map_err(err)?;
         let inverse = tiptap_rusty_parser::invert(self.inner.root(), &changes).map_err(err)?;
         to_js(&inverse)
+    }
+
+    // ---- HTML rendering ----
+
+    /// Render the document to an HTML string (Tiptap-default mapping).
+    #[wasm_bindgen(js_name = toHTML)]
+    pub fn to_html(&self) -> String {
+        self.inner.to_html()
+    }
+
+    /// Render to HTML with an options object (see `HtmlOptions`).
+    #[wasm_bindgen(js_name = toHTMLWith)]
+    pub fn to_html_with(&self, options: JsValue) -> Result<String, JsError> {
+        let opts: HtmlOptions = from_value(options).map_err(err)?;
+        Ok(self.inner.to_html_with(&opts))
     }
 }
 

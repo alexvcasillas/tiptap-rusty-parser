@@ -64,6 +64,10 @@ fn benches(c: &mut Criterion) {
         b.iter(|| black_box(document.text_content().len()))
     });
 
+    c.bench_function("to_html", |b| {
+        b.iter(|| black_box(document.to_html().len()))
+    });
+
     let schema = Schema::new()
         .node("doc", NodeSpec::new().content(["paragraph"]))
         .node("paragraph", NodeSpec::new().content(["text"]))
