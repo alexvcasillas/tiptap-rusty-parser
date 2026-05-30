@@ -937,11 +937,15 @@ cargo run --example validate    # schema validation + violation reporting
 ## Development
 
 ```sh
-cargo test            # unit + integration + doctests
+cargo test            # unit + integration + doctests + property tests
 cargo clippy --all-targets -- -D warnings
 cargo build --examples
 cargo bench           # criterion baselines
 ```
+
+Core invariants (diff round-trip + undo, `normalize` idempotence, change-list
+algebra, block round-trips) are covered by [`proptest`](https://docs.rs/proptest)
+property tests in addition to hand-written cases.
 
 ---
 
