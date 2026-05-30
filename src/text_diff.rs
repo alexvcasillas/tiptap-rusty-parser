@@ -61,7 +61,12 @@ pub struct DiffOptions {
     pub text: DiffGranularity,
 }
 
-/// Minimal character-level (Unicode-scalar) diff of two strings.
+/// Character-level (Unicode-scalar) diff of two strings.
+///
+/// Trims the common prefix/suffix, then runs an LCS over the changed middle to
+/// produce minimal segments. For very large changed runs (when the middle's
+/// `|a| * |b|` exceeds [`LCS_GUARD`]) it falls back to a single delete + insert
+/// to bound cost — correct, but not minimal for those pathological inputs.
 ///
 /// ```
 /// use tiptap_rusty_parser::{diff_text, SegKind};

@@ -602,6 +602,7 @@ export type Change =
   | { op: "setAttr"; path: number[]; key: string; value: unknown }
   | { op: "removeAttr"; path: number[]; key: string }
   | { op: "setText"; path: number[]; text: string | null }
+  | { op: "spliceText"; path: number[]; from: number; lenDel: number; insert: string }
   | { op: "setMarks"; path: number[]; marks: Mark[] | null }
   | { op: "setExtra"; path: number[]; key: string; value: unknown }
   | { op: "removeExtra"; path: number[]; key: string }

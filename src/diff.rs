@@ -681,20 +681,27 @@ fn apply_one(root: &mut Node, change: &Change) -> std::result::Result<(), ApplyE
             insert,
         } => {
             let node = node_at_mut(root, path)?;
-            let s = node.text.get_or_insert_with(String::new);
-            // Translate scalar offsets to byte offsets (scalar-safe). A scalar
-            // index equal to the length maps to the byte length (end splice);
-            // anything past that is out of range.
-            let scalars = s.chars().count();
-            if *from > scalars || from + len_del > scalars {
-                return Err(ApplyError { path: path.clone() });
-            }
-            let start = s.char_indices().nth(*from).map_or(s.len(), |(b, _)| b);
-            let end = s
-                .char_indices()
-                .nth(from + len_del)
-                .map_or(s.len(), |(b, _)| b);
-            s.replace_range(start..end, insert);
+            // Validate against the current text *without* mutating, so an
+            // out-of-range or overflowing splice leaves the node untouched.
+            // Scalar offsets translate to byte offsets (scalar-safe); a scalar
+            // index equal to the length maps to the byte length (end splice).
+            let (start, end) = {
+                let cur = node.text.as_deref().unwrap_or("");
+                let scalars = cur.chars().count();
+                let end_scalar = match from.checked_add(*len_del) {
+                    Some(e) if *from <= scalars && e <= scalars => e,
+                    _ => return Err(ApplyError { path: path.clone() }),
+                };
+                let start = cur.char_indices().nth(*from).map_or(cur.len(), |(b, _)| b);
+                let end = cur
+                    .char_indices()
+                    .nth(end_scalar)
+                    .map_or(cur.len(), |(b, _)| b);
+                (start, end)
+            };
+            node.text
+                .get_or_insert_with(String::new)
+                .replace_range(start..end, insert);
         }
         Change::SetMarks { path, marks } => {
             node_at_mut(root, path)?.marks = marks.clone();

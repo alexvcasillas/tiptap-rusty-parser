@@ -737,15 +737,17 @@ assert_eq!(c, b);
 
 - `Block` *(default)* — today's behavior: whole-node `SetText`. `diff()` is
   exactly `diff_with(&DiffOptions::default())`, so existing behavior is unchanged.
-- `Inline` — minimal character-level `SpliceText` islands (scalar offsets,
-  multibyte-safe). Common prefix/suffix is trimmed, then an LCS aligns the middle.
+- `Inline` — character-level `SpliceText` islands (scalar offsets,
+  multibyte-safe). Common prefix/suffix is trimmed, then an LCS aligns the middle
+  into minimal islands (a very large changed run falls back to one delete+insert
+  to bound cost).
 - `Smart { replace_threshold }` — inline, but falls back to a whole `SetText`
   once the changed-scalar fraction exceeds the threshold (a near-total rewrite is
   cheaper as one replace than many splices).
 
 `diff_text(a, b)` exposes the raw `Vec<TextSegment>` (Keep / Insert / Delete) if
-you want to render a word-level highlight directly. Apply/invert round-trips hold
-for every granularity (invert re-diffs in block mode).
+you want to render a character-level highlight directly. Apply/invert round-trips
+hold for every granularity (invert re-diffs in block mode).
 
 ---
 
