@@ -12,6 +12,8 @@
 //! - **Address** by index path: [`Node::node_at`], [`Node::path_to`].
 //! - **Mutate** in place: marks, attrs, children, text, and bulk
 //!   [`Node::replace_all`].
+//! - **Normalize** to a canonical form (merge adjacent text, drop empties):
+//!   [`Node::normalize`], [`NormalizeOptions`].
 //! - **Diff / apply / invert** structural change lists between two trees
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
@@ -48,6 +50,7 @@ mod error;
 mod html;
 mod mutate;
 mod node;
+mod normalize;
 mod path;
 mod query;
 mod schema;
@@ -61,5 +64,6 @@ pub use document::Document;
 pub use error::{ParseError, Result};
 pub use html::{to_html, HtmlOptions, SelfClosingStyle, UnknownMarkPolicy, UnknownNodePolicy};
 pub use node::{Mark, Node};
+pub use normalize::NormalizeOptions;
 pub use query::Descendants;
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

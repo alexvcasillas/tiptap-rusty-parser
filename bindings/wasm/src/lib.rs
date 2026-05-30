@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use serde_wasm_bindgen::{from_value, Serializer};
-use tiptap_rusty_parser::{Change, Document, HtmlOptions, Mark, Node, Schema};
+use tiptap_rusty_parser::{Change, Document, HtmlOptions, Mark, Node, NormalizeOptions, Schema};
 use wasm_bindgen::prelude::*;
 
 /// Map a `Display` error into a JS exception.
@@ -300,6 +300,22 @@ impl TiptapDoc {
     pub fn to_html_with(&self, options: JsValue) -> Result<String, JsError> {
         let opts: HtmlOptions = from_value(options).map_err(err)?;
         Ok(self.inner.to_html_with(&opts))
+    }
+
+    // ---- normalization ----
+
+    /// Normalize the document tree in place (merge adjacent text, drop empties).
+    #[wasm_bindgen(js_name = normalize)]
+    pub fn normalize(&mut self) {
+        self.inner.normalize();
+    }
+
+    /// Normalize with an options object (see `NormalizeOptions`).
+    #[wasm_bindgen(js_name = normalizeWith)]
+    pub fn normalize_with(&mut self, options: JsValue) -> Result<(), JsError> {
+        let opts: NormalizeOptions = from_value(options).map_err(err)?;
+        self.inner.normalize_with(&opts);
+        Ok(())
     }
 }
 
