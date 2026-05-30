@@ -92,6 +92,11 @@ impl Document {
     pub fn apply(&mut self, changes: &[Change]) -> std::result::Result<(), ApplyError> {
         crate::diff::apply(&mut self.root, changes)
     }
+
+    /// Invert a [`Change`] list relative to this document. See [`crate::invert`].
+    pub fn invert(&self, changes: &[Change]) -> std::result::Result<Vec<Change>, ApplyError> {
+        crate::diff::invert(&self.root, changes)
+    }
 }
 
 impl Deref for Document {

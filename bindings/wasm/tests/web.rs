@@ -54,6 +54,28 @@ fn diff_shape_has_op() {
 }
 
 #[wasm_bindgen_test]
+fn invert_undo() {
+    let a = TiptapDoc::from_json_string(DOC).unwrap();
+    let b = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+          {"type":"heading","content":[{"type":"text","text":"Title"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"Changed"}]}
+        ]}"#,
+    )
+    .unwrap();
+
+    let forward = a.diff(&b).unwrap();
+    let undo = a.invert(forward.clone()).unwrap(); // invert relative to A (pre-image)
+
+    // forward takes a copy of A to B; undo takes it back to A.
+    let mut doc = TiptapDoc::from_json_string(DOC).unwrap();
+    doc.apply_changes(forward).unwrap();
+    assert_eq!(doc.to_json_string().unwrap(), b.to_json_string().unwrap());
+    doc.apply_changes(undo).unwrap();
+    assert_eq!(doc.to_json_string().unwrap(), a.to_json_string().unwrap());
+}
+
+#[wasm_bindgen_test]
 fn roundtrip_and_text() {
     let doc = TiptapDoc::from_json_string(DOC).unwrap();
     assert_eq!(doc.text_content(), "TitleHello world");

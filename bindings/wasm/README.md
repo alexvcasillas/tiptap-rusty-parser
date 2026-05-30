@@ -52,7 +52,7 @@ boundary. `path` arguments are plain `number[]` index paths (root = `[]`).
 | Mutate (by path) | `setAttr`, `removeAttr`, `setText`, `addMark`, `removeMark`, `pushChild`, `insertChild`, `removeChild` |
 | Text | `textContent()`, `charCount()`, `wordCount()` |
 | Validate | `validate(schema)`, `isValid(schema)` |
-| Diff | `diff(other)` → `Change[]`; `applyChanges(changes)` |
+| Diff | `diff(other)` → `Change[]`; `applyChanges(changes)`; `invert(changes)` → reverse `Change[]` (undo) |
 
 Methods throw on malformed input or a missing path target.
 

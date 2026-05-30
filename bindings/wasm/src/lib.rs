@@ -278,6 +278,14 @@ impl TiptapDoc {
         let changes: Vec<Change> = from_value(changes).map_err(err)?;
         tiptap_rusty_parser::apply(self.inner.root_mut(), &changes).map_err(err)
     }
+
+    /// Invert a change array relative to this document (the pre-image); returns
+    /// the reverse change array for undo. See `applyChanges`.
+    pub fn invert(&self, changes: JsValue) -> Result<JsValue, JsError> {
+        let changes: Vec<Change> = from_value(changes).map_err(err)?;
+        let inverse = tiptap_rusty_parser::invert(self.inner.root(), &changes).map_err(err)?;
+        to_js(&inverse)
+    }
 }
 
 impl TiptapDoc {
