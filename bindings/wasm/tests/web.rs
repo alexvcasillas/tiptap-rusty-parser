@@ -224,3 +224,47 @@ fn validate_via_schema() {
     let violations: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(violations).unwrap();
     assert!(!violations.is_empty());
 }
+
+#[wasm_bindgen_test]
+fn block_ops_via_path() {
+    let mut doc = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+            {"type":"paragraph","content":[{"type":"text","text":"a"}]},
+            {"type":"paragraph","content":[{"type":"text","text":"b"}]}
+        ]}"#,
+    )
+    .unwrap();
+    // Wrap both paragraphs in one blockquote, then retype it.
+    doc.wrap_range(path(&[]), 0, 2, "blockquote".into(), JsValue::UNDEFINED)
+        .unwrap();
+    doc.set_block_type(path(&[0]), "section".into(), JsValue::UNDEFINED)
+        .unwrap();
+    assert!(doc
+        .to_json_string()
+        .unwrap()
+        .contains("\"type\":\"section\""));
+    // Lift the first paragraph back out of the section.
+    doc.lift(path(&[0, 0])).unwrap();
+    assert_eq!(doc.text_content(), "ab");
+}
+
+#[wasm_bindgen_test]
+fn change_algebra_functions() {
+    use tiptap_rusty_parser_wasm::{compose, map_path};
+
+    // compose of two SetText on the same path -> one (last wins).
+    let a = js_obj(serde_json::json!([{ "op": "setText", "path": [0], "text": "x" }]));
+    let b = js_obj(serde_json::json!([{ "op": "setText", "path": [0], "text": "y" }]));
+    let composed = compose(a, b).unwrap();
+    let parsed: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(composed).unwrap();
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[0]["text"], "y");
+
+    // mapPath: an insert before index 1 shifts [1,0] -> [2,0].
+    let changes = js_obj(serde_json::json!([
+        { "op": "insert", "path": [], "index": 0, "node": { "type": "paragraph" } }
+    ]));
+    let mapped = map_path(path(&[1, 0]), changes).unwrap();
+    let mapped: Vec<usize> = serde_wasm_bindgen::from_value(mapped).unwrap();
+    assert_eq!(mapped, vec![2, 0]);
+}

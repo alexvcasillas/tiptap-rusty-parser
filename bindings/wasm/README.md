@@ -50,12 +50,36 @@ boundary. `path` arguments are plain `number[]` index paths (root = `[]`).
 | Read query | `byType(t)`, `firstByType(t)`, `byMark(t)`, `byAttr(key, value)` → node object(s) |
 | Locate | `pathsByType(t)`, `pathsByMark(t)`, `pathsByAttr(key, value)` → `number[][]`; `nodeAt(path)`, `childCount(path)` |
 | Mutate (by path) | `setAttr`, `removeAttr`, `setText`, `addMark`, `removeMark`, `pushChild`, `insertChild`, `removeChild` |
+| Normalize | `normalize()`, `normalizeWith(options)` (merge adjacent text, drop empties) |
+| Range edit (one block) | `insertText(path, pos, text, marks?)`, `deleteRange(path, range)`, `replaceRange(path, range, text, marks?)`, `addMarkRange`/`removeMarkRange`/`toggleMarkRange(path, range, …)` |
+| Block edit (structure) | `setBlockType(path, type, attrs?)`, `splitBlock(path, at, depth)`, `splitBlockAt(path, pos, depth)`, `joinBlocks(parent, index)`, `wrap(path, type, attrs?)`, `wrapRange(parentPath, start, end, type, attrs?)`, `lift(path)` |
 | Text | `textContent()`, `charCount()`, `wordCount()` |
 | Validate | `validate(schema)`, `isValid(schema)` |
 | Diff | `diff(other)` → `Change[]`; `applyChanges(changes)`; `invert(changes)` → reverse `Change[]` (undo) |
+| Change algebra | `compose(a, b)`, `compact(changes)`, `mapPath(path, changes)` → `number[] \| null` (module functions) |
 | Render | `toHTML()` → HTML string; `toHTMLWith(options)` (node/mark tag maps, unknown-policy, `selfClosing`, `spreadAttrs`, `textAlign`) |
 
 Methods throw on malformed input or a missing path target.
+
+### TypeScript
+
+The package ships real types for the plain objects that cross the boundary —
+`JSONContent`, `Mark`, `Change` (a tagged union), `Position`, `Range`,
+`Violation`, `NormalizeOptions` — so you can annotate the values you build/read.
+
+### Transactions / undo
+
+For an invertible patch around a sequence of edits (including the block ops,
+which mutate in place), snapshot first and diff:
+
+```js
+const before = TiptapDoc.fromJSON(doc.toJSON());
+doc.splitBlock([0], 1, 0);
+doc.wrap([1], "blockquote");
+const patch = before.diff(doc);     // Change[] describing the edits
+const undo  = before.invert(patch); // reverse patch
+// later: doc.applyChanges(undo) to roll back
+```
 
 ## License
 

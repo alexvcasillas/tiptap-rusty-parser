@@ -11,7 +11,8 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_wasm_bindgen::{from_value, Serializer};
 use tiptap_rusty_parser::{
-    Change, Document, HtmlOptions, Mark, Node, NormalizeOptions, Position, Range, Schema,
+    BlockRange, Change, Document, HtmlOptions, Mark, Node, NormalizeOptions, Position, Range,
+    Schema,
 };
 use wasm_bindgen::prelude::*;
 
@@ -38,6 +39,16 @@ fn parse_marks(marks: JsValue) -> Result<Option<Vec<Mark>>, JsError> {
     }
     let v: Vec<Mark> = from_value(marks).map_err(err)?;
     Ok(if v.is_empty() { None } else { Some(v) })
+}
+
+/// Parse an optional JS `attrs` object into `Option<Map>`. Only `null`/`undefined`
+/// map to `None`; an explicit `{}` is preserved as `Some(empty)` so callers can
+/// set present-but-empty attrs (distinct from omitted, and roundtrip-faithful).
+fn parse_attrs(attrs: JsValue) -> Result<Option<serde_json::Map<String, Value>>, JsError> {
+    if attrs.is_null() || attrs.is_undefined() {
+        return Ok(None);
+    }
+    Ok(Some(from_value(attrs).map_err(err)?))
 }
 
 /// Build a `Mark` from a type string and an optional `attrs` object.
@@ -433,6 +444,103 @@ impl TiptapDoc {
             .toggle_mark_range(range, build_mark(mark_type, attrs)?)
             .map_err(err)
     }
+
+    // ---- block-level structural editing (absolute index-path) ----
+
+    /// Change the type (and optional `attrs`) of the block at `path`, keeping
+    /// its content.
+    #[wasm_bindgen(js_name = setBlockType)]
+    pub fn set_block_type(
+        &mut self,
+        path: JsValue,
+        node_type: String,
+        attrs: JsValue,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        self.inner
+            .root_mut()
+            .set_block_type(&path, node_type, parse_attrs(attrs)?)
+            .map_err(err)
+    }
+
+    /// Split the block at `path` at child-boundary `at` (also splitting `depth`
+    /// ancestors).
+    #[wasm_bindgen(js_name = splitBlock)]
+    pub fn split_block(&mut self, path: JsValue, at: usize, depth: usize) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        self.inner
+            .root_mut()
+            .split_block(&path, at, depth)
+            .map_err(err)
+    }
+
+    /// Split the block at `path` at an inline `Position` (mid-text), also
+    /// splitting `depth` ancestors.
+    #[wasm_bindgen(js_name = splitBlockAt)]
+    pub fn split_block_at(
+        &mut self,
+        path: JsValue,
+        position: JsValue,
+        depth: usize,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        let pos: Position = from_value(position).map_err(err)?;
+        self.inner
+            .root_mut()
+            .split_block_at(&path, pos, depth)
+            .map_err(err)
+    }
+
+    /// Merge `parent[index]` into its previous sibling `parent[index-1]`.
+    #[wasm_bindgen(js_name = joinBlocks)]
+    pub fn join_blocks(&mut self, parent: JsValue, index: usize) -> Result<(), JsError> {
+        let parent = parse_path(parent)?;
+        self.inner
+            .root_mut()
+            .join_blocks(&parent, index)
+            .map_err(err)
+    }
+
+    /// Wrap the single block at `path` in a new parent of `wrapperType`.
+    #[wasm_bindgen(js_name = wrap)]
+    pub fn wrap(
+        &mut self,
+        path: JsValue,
+        wrapper_type: String,
+        attrs: JsValue,
+    ) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        self.inner
+            .root_mut()
+            .wrap(&path, wrapper_type, parse_attrs(attrs)?)
+            .map_err(err)
+    }
+
+    /// Wrap the run of sibling blocks `[start, end)` under `parentPath` in a new
+    /// parent of `wrapperType`.
+    #[wasm_bindgen(js_name = wrapRange)]
+    pub fn wrap_range(
+        &mut self,
+        parent_path: JsValue,
+        start: usize,
+        end: usize,
+        wrapper_type: String,
+        attrs: JsValue,
+    ) -> Result<(), JsError> {
+        let parent = parse_path(parent_path)?;
+        let range = BlockRange::new(parent, start, end);
+        self.inner
+            .root_mut()
+            .wrap_range(&range, wrapper_type, parse_attrs(attrs)?)
+            .map_err(err)
+    }
+
+    /// Lift the block at `path` out of its parent into its grandparent.
+    #[wasm_bindgen(js_name = lift)]
+    pub fn lift(&mut self, path: JsValue) -> Result<(), JsError> {
+        let path = parse_path(path)?;
+        self.inner.root_mut().lift(&path).map_err(err)
+    }
 }
 
 impl TiptapDoc {
@@ -443,3 +551,68 @@ impl TiptapDoc {
             .ok_or_else(|| JsError::new("no node at path"))
     }
 }
+
+// ---- change-list algebra (free functions over Change[]) ----
+
+/// Compose two change arrays into one apply-equivalent (compacted) array.
+#[wasm_bindgen(js_name = compose)]
+pub fn compose(a: JsValue, b: JsValue) -> Result<JsValue, JsError> {
+    let a: Vec<Change> = from_value(a).map_err(err)?;
+    let b: Vec<Change> = from_value(b).map_err(err)?;
+    to_js(&tiptap_rusty_parser::compose(&a, &b))
+}
+
+/// Coalesce redundant node-local writes in a change array (safely).
+#[wasm_bindgen(js_name = compact)]
+pub fn compact(changes: JsValue) -> Result<JsValue, JsError> {
+    let changes: Vec<Change> = from_value(changes).map_err(err)?;
+    to_js(&tiptap_rusty_parser::compact(&changes))
+}
+
+/// Map an index-path through a change array; returns the new `number[]`, or
+/// `null` if the node was removed/replaced.
+#[wasm_bindgen(js_name = mapPath)]
+pub fn map_path(path: JsValue, changes: JsValue) -> Result<JsValue, JsError> {
+    let path = parse_path(path)?;
+    let changes: Vec<Change> = from_value(changes).map_err(err)?;
+    match tiptap_rusty_parser::map_path(&path, &changes) {
+        Some(p) => to_js(&p),
+        None => Ok(JsValue::NULL),
+    }
+}
+
+// ---- TypeScript types ----
+// Injected verbatim into the generated `.d.ts` so consumers get real shapes for
+// the plain-object values that cross the boundary (nodes, marks, changes, …),
+// instead of the auto-generated `any`.
+#[wasm_bindgen(typescript_custom_section)]
+const TS_TYPES: &'static str = r#"
+export interface Mark { type: string; attrs?: Record<string, unknown>; [k: string]: unknown; }
+export interface JSONContent {
+  type?: string;
+  attrs?: Record<string, unknown>;
+  content?: JSONContent[];
+  marks?: Mark[];
+  text?: string;
+  [k: string]: unknown;
+}
+export interface Position { child: number; offset: number; }
+export interface Range { start: Position; end: Position; }
+export type Change =
+  | { op: "setAttr"; path: number[]; key: string; value: unknown }
+  | { op: "removeAttr"; path: number[]; key: string }
+  | { op: "setText"; path: number[]; text: string | null }
+  | { op: "setMarks"; path: number[]; marks: Mark[] | null }
+  | { op: "setExtra"; path: number[]; key: string; value: unknown }
+  | { op: "removeExtra"; path: number[]; key: string }
+  | { op: "insert"; path: number[]; index: number; node: JSONContent }
+  | { op: "remove"; path: number[]; index: number }
+  | { op: "replace"; path: number[]; node: JSONContent }
+  | { op: "move"; path: number[]; from: number; to: number };
+export interface Violation { path: number[]; kind: unknown; }
+export interface NormalizeOptions {
+  mergeAdjacentText?: boolean;
+  removeEmptyText?: boolean;
+  removeEmptyNodes?: boolean;
+}
+"#;
