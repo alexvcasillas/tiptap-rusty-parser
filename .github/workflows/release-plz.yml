@@ -60,7 +60,7 @@ jobs:
       - name: Publish to npm (OIDC)
         if: steps.release.outputs.releases_created == 'true'
         run: |
-          npm install -g npm@latest # npm >= 11.5.1 for Trusted Publishing
+          npm install -g npm@11.5.1 # pinned; Trusted Publishing needs npm >= 11.5.1
           npm publish --provenance --access public
         working-directory: bindings/wasm/pkg
 
