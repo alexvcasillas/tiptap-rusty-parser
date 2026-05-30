@@ -1,5 +1,6 @@
 //! [`Document`] — owning wrapper around a root [`Node`] with (de)serialization.
 
+use crate::diff::{ApplyError, Change};
 use crate::error::Result;
 use crate::node::Node;
 use serde_json::Value;
@@ -80,6 +81,16 @@ impl Document {
     #[inline]
     pub fn into_root(self) -> Node {
         self.root
+    }
+
+    /// Structural diff from this document to `other`. See [`Node::diff`].
+    pub fn diff(&self, other: &Document) -> Vec<Change> {
+        self.root.diff(&other.root)
+    }
+
+    /// Apply a [`Change`] list in place. See [`crate::apply`].
+    pub fn apply(&mut self, changes: &[Change]) -> std::result::Result<(), ApplyError> {
+        crate::diff::apply(&mut self.root, changes)
     }
 }
 
