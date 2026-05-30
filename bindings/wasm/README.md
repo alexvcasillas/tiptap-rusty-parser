@@ -53,6 +53,7 @@ boundary. `path` arguments are plain `number[]` index paths (root = `[]`).
 | Text | `textContent()`, `charCount()`, `wordCount()` |
 | Validate | `validate(schema)`, `isValid(schema)` |
 | Diff | `diff(other)` → `Change[]`; `applyChanges(changes)`; `invert(changes)` → reverse `Change[]` (undo) |
+| Render | `toHTML()` → HTML string; `toHTMLWith(options)` (node/mark tag maps, unknown-policy, `selfClosing`, `spreadAttrs`, `textAlign`) |
 
 Methods throw on malformed input or a missing path target.
 

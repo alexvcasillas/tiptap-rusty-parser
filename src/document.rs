@@ -97,6 +97,16 @@ impl Document {
     pub fn invert(&self, changes: &[Change]) -> std::result::Result<Vec<Change>, ApplyError> {
         crate::diff::invert(&self.root, changes)
     }
+
+    /// Render to an HTML string. See [`Node::to_html`](crate::Node::to_html).
+    pub fn to_html(&self) -> String {
+        self.root.to_html()
+    }
+
+    /// Render to HTML with custom options. See [`Node::to_html_with`](crate::Node::to_html_with).
+    pub fn to_html_with(&self, opts: &crate::HtmlOptions) -> String {
+        self.root.to_html_with(opts)
+    }
 }
 
 impl Deref for Document {

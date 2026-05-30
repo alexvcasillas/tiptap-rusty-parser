@@ -36,6 +36,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Text extraction](#text-extraction)
 - [Schema validation](#schema-validation)
 - [Diffing](#diffing)
+- [Rendering to HTML](#rendering-to-html)
 - [Building nodes](#building-nodes)
 - [JavaScript / WASM](#javascript--wasm)
 - [Error handling](#error-handling)
@@ -565,6 +566,53 @@ reorders degrade to remove+insert (still correct, just not minimal).
 
 ---
 
+## Rendering to HTML
+
+`to_html` renders a document to an HTML string with Tiptap-sensible, schema-agnostic
+defaults. Output is compact and **HTML-escaped** (text and attribute values).
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Hi"}]},
+    {"type":"paragraph","content":[
+        {"type":"text","text":"bold","marks":[{"type":"bold"}]},
+        {"type":"hardBreak"},
+        {"type":"text","text":"link","marks":[{"type":"link","attrs":{"href":"/x"}}]}
+    ]}
+]}"#)?;
+
+assert_eq!(
+    doc.to_html(),
+    r#"<h2>Hi</h2><p><strong>bold</strong><br><a href="/x">link</a></p>"#
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+**Defaults:** `paragraph`→`<p>`, `heading`→`<h1>`–`<h6>` (clamped), `blockquote`,
+`bulletList`/`orderedList`/`listItem`→`<ul>`/`<ol>`/`<li>`, `codeBlock`→`<pre><code>`
+(+`language` class), `horizontalRule`→`<hr>`, `hardBreak`→`<br>`, `image`→`<img>`;
+marks `bold`→`<strong>`, `italic`→`<em>`, `strike`→`<s>`, `code`, `underline`→`<u>`,
+`subscript`/`superscript`, `link`→`<a>`. A text node's marks nest in array order
+(`marks[0]` outermost). `paragraph`/`heading` `textAlign` → `style="text-align:…"`.
+
+**Customize** with `to_html_with(&HtmlOptions)` — a plain data struct (no closures,
+so it works over WASM/FFI): override/extend node & mark tag maps, choose the
+unknown-node/mark policy (`Transparent` default, `DataTypeDiv`/`DataMarkSpan`, or
+`Skip`), pick `SelfClosingStyle` (`Html5`/`Xhtml`), and opt into `spread_attrs`
+(emit a node's remaining attributes — off by default; always escaped). In JS:
+`doc.toHTML()` / `doc.toHTMLWith({ selfClosing: "xhtml" })`.
+
+> **Security — escaping is not sanitization.** Text and attribute *values* are
+> HTML-escaped, which prevents markup break-out but **not** dangerous URLs or
+> styles: a `link` `href` is emitted verbatim (so `javascript:…` survives), and
+> `spread_attrs` (off by default) emits attribute *names* verbatim (e.g.
+> `onclick`). `textAlign` is whitelisted to the standard keywords. For untrusted
+> documents, sanitize the rendered HTML (or the source URLs/attrs) yourself.
+
+---
+
 ## Building nodes
 
 Constructors plus consuming `with_*` builder methods for fluent assembly.
@@ -629,6 +677,7 @@ doc.setAttr(headingPath, "level", 1);
 doc.addMark([0, 0], "bold");
 doc.isValid({ nodes: { doc: { content: ["paragraph"] } } }); // false
 const json = doc.toJSON();
+const htmlString = doc.toHTML();   // render to HTML (or toHTMLWith(options))
 
 // Diff two docs and apply the change list
 const changes = doc.diff(other);  // Change[] (tagged objects)
