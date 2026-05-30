@@ -3,10 +3,12 @@
 //!
 //! The structural [`diff`](crate::diff) replaces a changed text node wholesale
 //! ([`Change::SetText`](crate::Change::SetText)). For AI/review flows you often
-//! want *character-level* edits instead — minimal [`Change::SpliceText`](crate::Change::SpliceText)
+//! want *character-level* edits instead — [`Change::SpliceText`](crate::Change::SpliceText)
 //! islands — so suggestions read as "inserted X / deleted Y" rather than
-//! "replaced the whole paragraph". [`diff_text`] computes the segments;
-//! [`DiffGranularity`] selects block vs inline vs a smart blend.
+//! "replaced the whole paragraph". The islands are minimal for typical edits
+//! (a single delete+insert fallback bounds cost on very large changed runs —
+//! see [`diff_text`]). [`diff_text`] computes the segments; [`DiffGranularity`]
+//! selects block vs inline vs a smart blend.
 
 use crate::diff::Change;
 use serde::{Deserialize, Serialize};
