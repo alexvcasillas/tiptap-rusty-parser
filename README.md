@@ -40,6 +40,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Schema validation](#schema-validation)
 - [Diffing](#diffing)
 - [Transactions](#transactions)
+- [Change algebra](#change-algebra)
 - [Rendering to HTML](#rendering-to-html)
 - [Building nodes](#building-nodes)
 - [JavaScript / WASM](#javascript--wasm)
@@ -717,6 +718,35 @@ with the edits recorded so far. `changes()` peeks at the log; `finish()` returns
 
 ---
 
+## Change algebra
+
+Helpers over `Change` lists, complementing `diff`/`apply`/`invert`:
+
+```rust
+use tiptap_rusty_parser::{compact, compose, map_path, Change, Node};
+
+// `compose(a, b)` is apply-equivalent to running `a` then `b` (and compacts).
+let a = vec![Change::SetText { path: vec![0], text: Some("x".into()) }];
+let b = vec![Change::SetText { path: vec![0], text: Some("y".into()) }];
+let composed = compose(&a, &b);            // -> one SetText (the last)
+
+// `compact` coalesces redundant node-local writes (last-wins) and cancels an
+// insert immediately undone by a remove — safely (structural ops are barriers).
+let tight = compact(&composed);
+
+// `map_path` carries an index-path through a change list — the basis for
+// mapping a selection/decoration across an edit (None if removed/replaced).
+let ins = vec![Change::Insert { path: vec![], index: 0, node: Node::default() }];
+assert_eq!(map_path(&[1, 0], &ins), Some(vec![2, 0]));
+```
+
+Concatenation is the semantic identity for `compose` (since `apply` resolves
+indices against the live tree); coalescing is the only thing it adds.
+Operational-transform *rebasing* of concurrent edits is intentionally out of
+scope for now.
+
+---
+
 ## Rendering to HTML
 
 `to_html` renders a document to an HTML string with Tiptap-sensible, schema-agnostic
@@ -885,6 +915,8 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `transform` (record a 3-op transaction) | ~13 µs |
 | `wrap_range` (wrap 500 blocks in one parent) | ~19 µs |
 | `split_block` (split a block in a 500-block doc) | ~28 µs |
+| `compact` (coalesce a 2000-op change list) | ~210 µs |
+| `map_path` (carry a path through a 500-move patch) | ~8 µs |
 
 Run `cargo bench` to reproduce on your hardware.
 

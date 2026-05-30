@@ -22,6 +22,8 @@
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
 //! - **Transact**: mutate in place while recording a replayable/invertible
 //!   change log: [`Node::transform`], [`Transform`].
+//! - **Operate on change lists**: [`compose`], [`compact`], and carry a path
+//!   through edits with [`map_path`].
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Validate** (opt-in) against a schema, incl. ProseMirror content
 //!   expressions: [`Node::validate`], [`Schema`], [`ContentExpr`].
@@ -50,6 +52,7 @@
 
 mod block;
 mod builder;
+mod change_ops;
 mod content;
 mod diff;
 mod document;
@@ -68,6 +71,7 @@ mod transform;
 
 pub use block::{BlockError, BlockRange};
 pub use builder::doc;
+pub use change_ops::{compact, compose, map_path};
 pub use content::{ContentExpr, ContentRule, ParseExprError};
 pub use diff::{apply, diff, invert, ApplyError, Change};
 pub use document::Document;

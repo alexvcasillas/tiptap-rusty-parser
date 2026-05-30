@@ -215,6 +215,26 @@ fn benches(c: &mut Criterion) {
             criterion::BatchSize::SmallInput,
         )
     });
+
+    // Change-list algebra. `compact` over a redundant list (many writes to a few
+    // paths); `map_path` carrying a path through the 500-move reorder patch.
+    let redundant: Vec<tiptap_rusty_parser::Change> = (0..2000)
+        .map(|i| tiptap_rusty_parser::Change::SetText {
+            path: vec![i % 100, 0],
+            text: Some(format!("v{i}")),
+        })
+        .collect();
+    c.bench_function("compact_redundant", |b| {
+        b.iter(|| black_box(tiptap_rusty_parser::compact(black_box(&redundant)).len()))
+    });
+    c.bench_function("map_path_through_reorder", |b| {
+        b.iter(|| {
+            black_box(tiptap_rusty_parser::map_path(
+                black_box(&[250, 0]),
+                &reorder_changes,
+            ))
+        })
+    });
 }
 
 criterion_group!(g, benches);
