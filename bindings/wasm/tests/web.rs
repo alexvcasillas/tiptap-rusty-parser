@@ -15,6 +15,45 @@ fn path(p: &[usize]) -> JsValue {
 }
 
 #[wasm_bindgen_test]
+fn diff_then_apply() {
+    let a = TiptapDoc::from_json_string(DOC).unwrap();
+    let b = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+          {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Title"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"Changed"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"Appended"}]}
+        ]}"#,
+    )
+    .unwrap();
+
+    let changes = a.diff(&b).unwrap();
+    // Apply the changes onto a fresh copy of A and expect B's JSON.
+    let mut got = TiptapDoc::from_json_string(DOC).unwrap();
+    got.apply_changes(changes).unwrap();
+    assert_eq!(got.to_json_string().unwrap(), b.to_json_string().unwrap());
+}
+
+#[wasm_bindgen_test]
+fn diff_shape_has_op() {
+    let a = TiptapDoc::from_json_string(DOC).unwrap();
+    let b = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[
+          {"type":"heading","content":[{"type":"text","text":"Title"}]},
+          {"type":"paragraph","content":[{"type":"text","text":"Hello there"}]}
+        ]}"#,
+    )
+    .unwrap();
+    let changes = a.diff(&b).unwrap();
+    // Deserialize the JS array back into tagged Rust enums to confirm the shape.
+    let parsed: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(changes).unwrap();
+    assert!(!parsed.is_empty());
+    assert!(parsed.iter().all(|c| c.get("op").is_some()));
+    assert!(parsed
+        .iter()
+        .any(|c| c.get("op") == Some(&serde_json::json!("setText"))));
+}
+
+#[wasm_bindgen_test]
 fn roundtrip_and_text() {
     let doc = TiptapDoc::from_json_string(DOC).unwrap();
     assert_eq!(doc.text_content(), "TitleHello world");

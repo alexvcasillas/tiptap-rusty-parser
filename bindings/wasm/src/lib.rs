@@ -10,7 +10,7 @@
 use serde::Serialize;
 use serde_json::Value;
 use serde_wasm_bindgen::{from_value, Serializer};
-use tiptap_rusty_parser::{Document, Mark, Node, Schema};
+use tiptap_rusty_parser::{Change, Document, Mark, Node, Schema};
 use wasm_bindgen::prelude::*;
 
 /// Map a `Display` error into a JS exception.
@@ -262,6 +262,21 @@ impl TiptapDoc {
     pub fn is_valid(&self, schema: JsValue) -> Result<bool, JsError> {
         let schema: Schema = from_value(schema).map_err(err)?;
         Ok(self.inner.is_valid(&schema))
+    }
+
+    // ---- diff / apply ----
+
+    /// Structural diff from this document to `other`; returns an array of
+    /// change objects (each tagged with an `op`).
+    pub fn diff(&self, other: &TiptapDoc) -> Result<JsValue, JsError> {
+        to_js(&self.inner.root().diff(other.inner.root()))
+    }
+
+    /// Apply a change array (as produced by [`diff`](Self::diff)) in place.
+    #[wasm_bindgen(js_name = applyChanges)]
+    pub fn apply_changes(&mut self, changes: JsValue) -> Result<(), JsError> {
+        let changes: Vec<Change> = from_value(changes).map_err(err)?;
+        tiptap_rusty_parser::apply(self.inner.root_mut(), &changes).map_err(err)
     }
 }
 
