@@ -24,6 +24,8 @@
 //! - **Edit by flat position**: apply a batch of [`PosEdit`]s addressed by
 //!   ProseMirror integer positions, recovering an invertible patch:
 //!   [`Node::apply_pos_edits`], [`PosContent`].
+//! - **Map positions through edits**: carry a position/range across a batch with
+//!   [`Node::apply_pos_edits_mapped`], [`PosMap`], [`Assoc`].
 //! - **Transact**: mutate in place while recording a replayable/invertible
 //!   change log: [`Node::transform`], [`Transform`].
 //! - **Operate on change lists**: [`compose`], [`compact`], and carry a path
@@ -68,6 +70,7 @@ mod normalize;
 mod path;
 mod pos;
 mod pos_edit;
+mod pos_map;
 mod query;
 mod range;
 mod schema;
@@ -88,6 +91,7 @@ pub use node::{Mark, Node};
 pub use normalize::NormalizeOptions;
 pub use pos::{LeafPolicy, PosError, PosRange, ResolvedPos, TextPoint};
 pub use pos_edit::{PosContent, PosEdit, PosEditError};
+pub use pos_map::{Assoc, PosMap};
 pub use query::Descendants;
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

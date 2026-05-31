@@ -174,6 +174,36 @@ proptest! {
         }
     }
 
+    /// A `PosMap` from an applied delete is monotonic and maps the document end
+    /// to the new content size.
+    #[test]
+    fn pos_map_monotonic_and_endpoint_consistent(
+        texts in prop::collection::vec("[a-z]{0,6}", 1..4),
+        f in 0usize..40,
+        t in 0usize..40,
+    ) {
+        use tiptap_rusty_parser::{Assoc, PosEdit};
+        let doc = Node::element("doc")
+            .with_children(texts.iter().map(|s| Node::element("paragraph").with_child(Node::text(s))));
+        let old_size = doc.content_size();
+        let from = f % (old_size + 1);
+        let to = t % (old_size + 1);
+        prop_assume!(from < to);
+
+        let mut work = doc.clone();
+        if let Ok((_patch, map)) = work.apply_pos_edits_mapped(&[PosEdit::Delete { from, to }]) {
+            // The end of the old doc maps to the end of the new doc.
+            prop_assert_eq!(map.map(old_size, Assoc::Left), work.content_size());
+            // Mapping is monotonically non-decreasing across all positions.
+            let mut prev = 0usize;
+            for pos in 0..=old_size {
+                let m = map.map(pos, Assoc::Right);
+                prop_assert!(m >= prev, "map({pos}) = {m} < prev {prev}");
+                prev = m;
+            }
+        }
+    }
+
     /// Inserting text into a paragraph then deleting exactly that range restores
     /// the original text content.
     #[test]

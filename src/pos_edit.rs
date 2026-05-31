@@ -83,6 +83,17 @@ pub enum PosContent {
     },
 }
 
+impl PosContent {
+    /// Flat (ProseMirror) size of this content once inserted — text scalars, or
+    /// the summed `node_size` of the nodes (default [`LeafPolicy`](crate::LeafPolicy)).
+    pub(crate) fn flat_len(&self) -> usize {
+        match self {
+            PosContent::Text { text, .. } => text.chars().count(),
+            PosContent::Nodes { nodes } => nodes.iter().map(Node::node_size).sum(),
+        }
+    }
+}
+
 /// A single position-addressed edit. Offsets are **flat ProseMirror positions**.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -265,6 +276,18 @@ impl Node {
         let patch = self.diff(&work);
         *self = work;
         Ok(patch)
+    }
+
+    /// Like [`apply_pos_edits`](Node::apply_pos_edits), but also returns a
+    /// [`PosMap`](crate::PosMap) carrying pre-edit flat positions through the
+    /// batch — so a selection, cursor, or decoration range can be re-anchored in
+    /// the edited document.
+    pub fn apply_pos_edits_mapped(
+        &mut self,
+        edits: &[PosEdit],
+    ) -> Result<(Vec<Change>, crate::PosMap), PosEditError> {
+        let patch = self.apply_pos_edits(edits)?;
+        Ok((patch, crate::PosMap::from_pos_edits(edits)))
     }
 }
 

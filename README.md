@@ -852,6 +852,31 @@ edits apply highest-position-first so un-rebased positions stay valid, and
 overlapping spans return `PosEditError::OverlappingEdits`. On any error the tree
 is left unchanged.
 
+**Mapping positions through a batch** — `apply_pos_edits_mapped` also returns a
+`PosMap` that carries pre-edit flat positions to post-edit ones, so a cursor,
+selection, decoration, or streamed-suggestion range stays anchored across the
+edit:
+
+```rust
+use tiptap_rusty_parser::{Assoc, Node, PosContent, PosEdit};
+
+let mut doc = Node::element("doc")
+    .with_child(Node::element("paragraph").with_child(Node::text("hello world")));
+
+let (_patch, map) = doc.apply_pos_edits_mapped(&[PosEdit::Insert {
+    pos: 7,
+    content: PosContent::Text { text: "big ".into(), marks: None },
+}]).unwrap();
+
+assert_eq!(map.map(3, Assoc::Left), 3);   // before the edit: unchanged
+assert_eq!(map.map(7, Assoc::Right), 11); // at the edit: past the inserted text
+assert_eq!(map.map(13, Assoc::Left), 17); // after the edit: shifted by +4
+```
+
+`Assoc::{Left, Right}` chooses which edge a position inside a replaced span lands
+on; `map_range` carries a `PosRange`. Build a map directly from a batch with
+`PosMap::from_pos_edits`.
+
 ---
 
 ## Change algebra
@@ -1055,6 +1080,7 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `content_size` (flat size of a 10k-node doc) | ~160 µs |
 | `resolve` (flat position → `ResolvedPos`, mid-doc) | ~256 µs |
 | `apply_pos_edits` (50 disjoint replaces across a 500-block doc) | ~33 ms |
+| `PosMap::map` (carry every position in a 10k-unit doc through a 50-step map) | ~1.8 ms |
 | `compact` (coalesce a 2000-op change list) | ~210 µs |
 | `map_path` (carry a path through a 500-move patch) | ~8 µs |
 

@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tiptap_rusty_parser::{
-    doc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
-    PosContent, PosEdit, Position, Range, Schema,
+    doc, Assoc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
+    PosContent, PosEdit, PosMap, Position, Range, Schema,
 };
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
@@ -285,6 +285,20 @@ fn benches(c: &mut Criterion) {
             |mut d| d.root_mut().apply_pos_edits(black_box(&pos_edits)).unwrap(),
             criterion::BatchSize::SmallInput,
         )
+    });
+
+    // Flat position mapping: build a 50-step map, then carry every position in a
+    // 10k-unit doc through it.
+    let pos_map = PosMap::from_pos_edits(&pos_edits);
+    let span = document.root().content_size();
+    c.bench_function("pos_map_map_all_positions", |b| {
+        b.iter(|| {
+            let mut acc = 0usize;
+            for p in 0..=span {
+                acc = acc.wrapping_add(pos_map.map(black_box(p), Assoc::Right));
+            }
+            black_box(acc)
+        })
     });
 }
 
