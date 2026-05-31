@@ -55,7 +55,9 @@ struct Step {
 /// pre-edit positions to post-edit ones. See the [module docs](self).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PosMap {
-    /// Steps in old coordinates, kept sorted ascending by `start` and disjoint.
+    /// Steps in old coordinates, kept sorted ascending by `start`. Callers are
+    /// expected to keep them disjoint (`push` does not enforce it); overlapping
+    /// steps still map safely but to unspecified edges.
     steps: Vec<Step>,
 }
 
@@ -65,7 +67,9 @@ impl PosMap {
         Self::default()
     }
 
-    /// Whether this map has no effect (no size-changing steps).
+    /// Whether this map is the identity — it holds no steps, so every position
+    /// maps to itself. (A same-length step still counts: it maps interior
+    /// positions to an edge, so it is *not* empty.)
     pub fn is_empty(&self) -> bool {
         self.steps.is_empty()
     }

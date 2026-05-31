@@ -191,16 +191,20 @@ proptest! {
         prop_assume!(from < to);
 
         let mut work = doc.clone();
-        if let Ok((_patch, map)) = work.apply_pos_edits_mapped(&[PosEdit::Delete { from, to }]) {
-            // The end of the old doc maps to the end of the new doc.
-            prop_assert_eq!(map.map(old_size, Assoc::Left), work.content_size());
-            // Mapping is monotonically non-decreasing across all positions.
-            let mut prev = 0usize;
-            for pos in 0..=old_size {
-                let m = map.map(pos, Assoc::Right);
-                prop_assert!(m >= prev, "map({pos}) = {m} < prev {prev}");
-                prev = m;
+        match work.apply_pos_edits_mapped(&[PosEdit::Delete { from, to }]) {
+            Ok((_patch, map)) => {
+                // The end of the old doc maps to the end of the new doc.
+                prop_assert_eq!(map.map(old_size, Assoc::Left), work.content_size());
+                // Mapping is monotonically non-decreasing across all positions.
+                let mut prev = 0usize;
+                for pos in 0..=old_size {
+                    let m = map.map(pos, Assoc::Right);
+                    prop_assert!(m >= prev, "map({pos}) = {m} < prev {prev}");
+                    prev = m;
+                }
             }
+            // On error (e.g. an unsupported cross-block span) the tree is untouched.
+            Err(_) => prop_assert_eq!(&work, &doc),
         }
     }
 
