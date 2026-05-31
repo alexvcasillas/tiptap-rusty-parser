@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.4.0...v0.4.1) - 2026-05-31
+
+### Added
+
+- *(pos-edit)* position-addressed apply/invert (PosEdit + inline Transform builders) ([#40](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/40))
+
 ## [0.4.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.8...v0.4.0) - 2026-05-31
 
 ### Added
