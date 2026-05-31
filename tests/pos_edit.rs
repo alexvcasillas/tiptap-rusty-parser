@@ -206,6 +206,38 @@ fn set_block_attrs_replaces_map() {
     assert_invertible(&before, &d, &patch);
 }
 
+#[test]
+fn set_block_attrs_from_inline_position_targets_block() {
+    // pos inside the paragraph's inline content (start of "hello") must set
+    // attrs on the *paragraph*, not the text node.
+    let mut d = two_paras();
+    let before = d.clone();
+    let inside = d.pos_before(&[0]).unwrap() + 1; // just inside p0
+    let mut attrs = serde_json::Map::new();
+    attrs.insert("textAlign".into(), json!("right"));
+    let patch = d
+        .apply_pos_edits(&[PosEdit::SetBlockAttrs { pos: inside, attrs }])
+        .unwrap();
+    // Paragraph carries the attr; its text child is untouched.
+    assert_eq!(
+        d.child(0).unwrap().attrs.as_ref().unwrap().get("textAlign"),
+        Some(&json!("right"))
+    );
+    assert!(d.child(0).unwrap().child(0).unwrap().attrs.is_none());
+    assert_invertible(&before, &d, &patch);
+}
+
+#[test]
+fn inverted_span_errors_as_inverted_range() {
+    use tiptap_rusty_parser::RangeError;
+    let mut d = two_paras();
+    let err = d
+        .apply_pos_edits(&[PosEdit::Delete { from: 6, to: 2 }])
+        .unwrap_err();
+    assert_eq!(err, PosEditError::Range(RangeError::InvertedRange));
+    assert_eq!(d, two_paras()); // untouched
+}
+
 // ---- insert nodes -------------------------------------------------------
 
 #[test]

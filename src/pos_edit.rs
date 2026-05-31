@@ -231,6 +231,16 @@ impl Node {
     /// return [`PosEditError::OverlappingEdits`]). On any error `self` is left
     /// unchanged (edits run against a working clone, committed only on success).
     pub fn apply_pos_edits(&mut self, edits: &[PosEdit]) -> Result<Vec<Change>, PosEditError> {
+        // Reject inverted spans up front so they surface as InvertedRange
+        // (consistent with the inline range API) rather than as a spurious
+        // UnsupportedSpan / overlap from the ordering pass below.
+        for e in edits {
+            let (lo, hi) = e.span();
+            if lo > hi {
+                return Err(PosEditError::Range(RangeError::InvertedRange));
+            }
+        }
+
         // Process highest-position-first; an edit never shifts positions below it.
         let mut order: Vec<usize> = (0..edits.len()).collect();
         order.sort_by(|&a, &b| edits[b].span().0.cmp(&edits[a].span().0));
@@ -443,11 +453,19 @@ fn set_block_attrs(
     attrs: Map<String, Value>,
 ) -> Result<(), PosEditError> {
     let r = work.resolve(pos)?;
-    // In-text: the containing block. At a boundary before a child: that child.
+    // Target the node that *begins* at `pos` (the "position before a node"
+    // convention): descend to the child at the boundary only when it's a real
+    // node (non-text). An inline-text boundary inside a block has
+    // `text_offset == None` too, but `index` points at an inline child — there
+    // we target the containing block instead.
     let mut target = r.path.clone();
     if r.text_offset.is_none() {
         let parent = block_mut(work, &r.path)?;
-        if r.index < parent.children().len() {
+        let descend = parent
+            .children()
+            .get(r.index)
+            .is_some_and(|c| c.node_type.as_deref() != Some("text"));
+        if descend {
             target.push(r.index);
         }
     }
