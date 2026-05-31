@@ -268,3 +268,122 @@ fn change_algebra_functions() {
     let mapped: Vec<usize> = serde_wasm_bindgen::from_value(mapped).unwrap();
     assert_eq!(mapped, vec![2, 0]);
 }
+
+// ---- PR E: flat positions / pos-edit / mapping integration surface ----
+
+#[wasm_bindgen_test]
+fn flat_positions() {
+    // doc > [ heading("Title")=7, paragraph("Hello world")=13 ]; size 20.
+    let doc = TiptapDoc::from_json_string(DOC).unwrap();
+    assert_eq!(doc.content_size(), 20);
+    assert_eq!(doc.pos_before(path(&[1])).unwrap(), 7);
+    assert_eq!(doc.pos_after(path(&[1])).unwrap(), 20);
+    assert_eq!(doc.pos_in_text(path(&[0, 0]), 0).unwrap(), 1);
+
+    // resolve(3) lands inside "Title" at scalar offset 2.
+    let r = doc.resolve(3).unwrap();
+    let r: serde_json::Value = serde_wasm_bindgen::from_value(r).unwrap();
+    assert_eq!(r["path"], serde_json::json!([0]));
+    assert_eq!(r["textOffset"]["offset"], 2);
+}
+
+#[wasm_bindgen_test]
+fn pos_to_inline_roundtrip() {
+    let doc = TiptapDoc::from_json_string(DOC).unwrap();
+    // Inside "Hello world" at scalar 6 (before "world"): flat 8 + 6 = 14.
+    let bi = doc.pos_to_inline(14).unwrap();
+    let bi: serde_json::Value = serde_wasm_bindgen::from_value(bi).unwrap();
+    assert_eq!(bi["block"], serde_json::json!([1]));
+    assert_eq!(bi["inline"]["offset"], 6);
+    // Inverse.
+    let back = doc
+        .inline_to_pos(
+            path(&[1]),
+            js_obj(serde_json::json!({ "child": 0, "offset": 6 })),
+        )
+        .unwrap();
+    assert_eq!(back, 14);
+}
+
+#[wasm_bindgen_test]
+fn diff_with_inline_emits_splice() {
+    let a = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the quick brown fox"}]}]}"#,
+    )
+    .unwrap();
+    let b = TiptapDoc::from_json_string(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the quick red fox"}]}]}"#,
+    )
+    .unwrap();
+    let changes = a
+        .diff_with(&b, js_obj(serde_json::json!({ "text": "inline" })))
+        .unwrap();
+    let changes: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(changes).unwrap();
+    assert!(!changes.is_empty());
+    assert!(changes.iter().all(|c| c["op"] == "spliceText"));
+}
+
+#[wasm_bindgen_test]
+fn apply_pos_edits_returns_patch_and_mutates() {
+    let mut doc = TiptapDoc::from_json_string(DOC).unwrap();
+    // Replace "world" (flat [14, 19)) with "there".
+    let edits = js_obj(serde_json::json!([
+        { "type": "replace", "from": 14, "to": 19, "content": { "type": "text", "text": "there" } }
+    ]));
+    let patch = doc.apply_pos_edits(edits).unwrap();
+    let patch: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(patch).unwrap();
+    assert!(!patch.is_empty());
+    assert!(doc.text_content().contains("Hello there"));
+
+    // The returned patch inverts to an undo.
+    let undo = doc.invert(js_obj(serde_json::to_value(&patch).unwrap()));
+    assert!(undo.is_ok());
+}
+
+#[wasm_bindgen_test]
+fn map_position_through_insert() {
+    use tiptap_rusty_parser_wasm::{map_position, map_position_range};
+    // Insert 2 units at pos 8.
+    let edits = js_obj(serde_json::json!([
+        { "type": "insert", "pos": 8, "content": { "type": "text", "text": "XX" } }
+    ]));
+    assert_eq!(map_position(7, edits.clone(), JsValue::NULL).unwrap(), 7); // before
+    assert_eq!(map_position(20, edits.clone(), JsValue::NULL).unwrap(), 22); // after: +2
+
+    let r = map_position_range(
+        js_obj(serde_json::json!({ "from": 10, "to": 12 })),
+        edits,
+        js_obj(serde_json::json!("left")),
+    )
+    .unwrap();
+    let r: serde_json::Value = serde_wasm_bindgen::from_value(r).unwrap();
+    assert_eq!((r["from"].as_u64(), r["to"].as_u64()), (Some(12), Some(14)));
+}
+
+#[wasm_bindgen_test]
+fn validate_node_schema_guard() {
+    use tiptap_rusty_parser_wasm::validate_node;
+    let schema = js_obj(serde_json::json!({
+        "nodes": {
+            "paragraph": { "content": ["text"] },
+            "text": {}
+        }
+    }));
+    // A valid paragraph -> no violations.
+    let ok = validate_node(
+        schema.clone(),
+        js_obj(serde_json::json!({ "type": "paragraph", "content": [{ "type": "text", "text": "hi" }] })),
+    )
+    .unwrap();
+    let ok: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(ok).unwrap();
+    assert!(ok.is_empty());
+
+    // A disallowed child -> at least one violation.
+    let bad = validate_node(
+        schema,
+        js_obj(serde_json::json!({ "type": "paragraph", "content": [{ "type": "widget" }] })),
+    )
+    .unwrap();
+    let bad: Vec<serde_json::Value> = serde_wasm_bindgen::from_value(bad).unwrap();
+    assert!(!bad.is_empty());
+}

@@ -11,8 +11,8 @@ use serde::Serialize;
 use serde_json::Value;
 use serde_wasm_bindgen::{from_value, Serializer};
 use tiptap_rusty_parser::{
-    BlockRange, Change, Document, HtmlOptions, Mark, Node, NormalizeOptions, Position, Range,
-    Schema,
+    Assoc, BlockRange, Change, DiffOptions, Document, HtmlOptions, Mark, Node, NormalizeOptions,
+    PosEdit, PosMap, PosRange, Position, Range, ResolvedPos, Schema,
 };
 use wasm_bindgen::prelude::*;
 
@@ -61,6 +61,58 @@ fn build_mark(mark_type: String, attrs: JsValue) -> Result<Mark, JsError> {
         }
     }
     Ok(mark)
+}
+
+/// Parse an optional `Assoc` (`"left"`/`"right"`); `null`/`undefined` -> `Left`.
+fn parse_assoc(assoc: JsValue) -> Result<Assoc, JsError> {
+    if assoc.is_null() || assoc.is_undefined() {
+        return Ok(Assoc::default());
+    }
+    from_value(assoc).map_err(err)
+}
+
+/// camelCase JS view of [`ResolvedPos`] (the core type keeps snake_case fields
+/// for serde back-compat; this gives JS the camelCase shape the rest of the
+/// binding uses).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsResolvedPos {
+    pos: usize,
+    depth: usize,
+    path: Vec<usize>,
+    parent_offset: usize,
+    index: usize,
+    text_offset: Option<JsTextPoint>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct JsTextPoint {
+    path: Vec<usize>,
+    offset: usize,
+}
+
+impl From<ResolvedPos> for JsResolvedPos {
+    fn from(r: ResolvedPos) -> Self {
+        JsResolvedPos {
+            pos: r.pos,
+            depth: r.depth,
+            path: r.path,
+            parent_offset: r.parent_offset,
+            index: r.index,
+            text_offset: r.text_offset.map(|t| JsTextPoint {
+                path: t.path,
+                offset: t.offset,
+            }),
+        }
+    }
+}
+
+/// JS shape returned by `posToInline`: the block path plus the inline position.
+#[derive(Serialize)]
+struct BlockInline {
+    block: Vec<usize>,
+    inline: Position,
 }
 
 /// A Tiptap/ProseMirror document handle. Construct with [`TiptapDoc::from_json`]
@@ -541,6 +593,81 @@ impl TiptapDoc {
         let path = parse_path(path)?;
         self.inner.root_mut().lift(&path).map_err(err)
     }
+
+    // ---- flat ProseMirror positions ----
+
+    /// Total flat content size (the maximum valid position).
+    #[wasm_bindgen(js_name = contentSize)]
+    pub fn content_size(&self) -> usize {
+        self.inner.root().content_size()
+    }
+
+    /// Resolve a flat position into a `ResolvedPos`.
+    pub fn resolve(&self, pos: usize) -> Result<JsValue, JsError> {
+        let r = self.inner.root().resolve(pos).map_err(err)?;
+        to_js(&JsResolvedPos::from(r))
+    }
+
+    /// Flat position just before the node at `path`.
+    #[wasm_bindgen(js_name = posBefore)]
+    pub fn pos_before(&self, path: JsValue) -> Result<usize, JsError> {
+        let path = parse_path(path)?;
+        self.inner.root().pos_before(&path).map_err(err)
+    }
+
+    /// Flat position just after the node at `path`.
+    #[wasm_bindgen(js_name = posAfter)]
+    pub fn pos_after(&self, path: JsValue) -> Result<usize, JsError> {
+        let path = parse_path(path)?;
+        self.inner.root().pos_after(&path).map_err(err)
+    }
+
+    /// Flat position at scalar `offset` inside the text node at `path`.
+    #[wasm_bindgen(js_name = posInText)]
+    pub fn pos_in_text(&self, path: JsValue, offset: usize) -> Result<usize, JsError> {
+        let path = parse_path(path)?;
+        self.inner.root().pos_in_text(&path, offset).map_err(err)
+    }
+
+    /// Map a flat position to `{ block: number[], inline: Position }`.
+    #[wasm_bindgen(js_name = posToInline)]
+    pub fn pos_to_inline(&self, pos: usize) -> Result<JsValue, JsError> {
+        let (block, inline) = self.inner.root().pos_to_inline(pos).map_err(err)?;
+        to_js(&BlockInline { block, inline })
+    }
+
+    /// Inverse of `posToInline`: flat position for a block path + inline `Position`.
+    #[wasm_bindgen(js_name = inlineToPos)]
+    pub fn inline_to_pos(&self, block_path: JsValue, position: JsValue) -> Result<usize, JsError> {
+        let block = parse_path(block_path)?;
+        let pos: Position = from_value(position).map_err(err)?;
+        self.inner.root().inline_to_pos(&block, pos).map_err(err)
+    }
+
+    // ---- granular diff ----
+
+    /// Structural diff with options (e.g. `{ text: "inline" }` or
+    /// `{ text: { smart: { replaceThreshold: 0.5 } } }`); returns `Change[]`.
+    #[wasm_bindgen(js_name = diffWith)]
+    pub fn diff_with(&self, other: &TiptapDoc, options: JsValue) -> Result<JsValue, JsError> {
+        let opts: DiffOptions = if options.is_null() || options.is_undefined() {
+            DiffOptions::default()
+        } else {
+            from_value(options).map_err(err)?
+        };
+        to_js(&self.inner.root().diff_with(other.inner.root(), &opts))
+    }
+
+    // ---- position-addressed editing ----
+
+    /// Apply a batch of flat-position `PosEdit`s in place; returns the recovered,
+    /// invertible `Change[]`. On error the document is left unchanged.
+    #[wasm_bindgen(js_name = applyPosEdits)]
+    pub fn apply_pos_edits(&mut self, edits: JsValue) -> Result<JsValue, JsError> {
+        let edits: Vec<PosEdit> = from_value(edits).map_err(err)?;
+        let patch = self.inner.root_mut().apply_pos_edits(&edits).map_err(err)?;
+        to_js(&patch)
+    }
 }
 
 impl TiptapDoc {
@@ -581,6 +708,42 @@ pub fn map_path(path: JsValue, changes: JsValue) -> Result<JsValue, JsError> {
     }
 }
 
+// ---- flat-position mapping (over a PosEdit[] batch) ----
+
+/// Map a flat position through a disjoint `PosEdit[]` batch (pre-edit -> post-edit
+/// coordinates). `assoc` (`"left"`/`"right"`, default `"left"`) picks which edge a
+/// position inside a replaced span lands on.
+#[wasm_bindgen(js_name = mapPosition)]
+pub fn map_position(pos: usize, edits: JsValue, assoc: JsValue) -> Result<usize, JsError> {
+    let edits: Vec<PosEdit> = from_value(edits).map_err(err)?;
+    let assoc = parse_assoc(assoc)?;
+    Ok(PosMap::from_pos_edits(&edits).map(pos, assoc))
+}
+
+/// Map a `{ from, to }` range through a `PosEdit[]` batch; returns the mapped
+/// `PosRange`.
+#[wasm_bindgen(js_name = mapPositionRange)]
+pub fn map_position_range(
+    range: JsValue,
+    edits: JsValue,
+    assoc: JsValue,
+) -> Result<JsValue, JsError> {
+    let range: PosRange = from_value(range).map_err(err)?;
+    let edits: Vec<PosEdit> = from_value(edits).map_err(err)?;
+    let assoc = parse_assoc(assoc)?;
+    to_js(&PosMap::from_pos_edits(&edits).map_range(range, assoc))
+}
+
+/// Schema-guard: validate a proposed node subtree against `schema` *before*
+/// inserting it (e.g. AI-proposed content). Returns the `Violation[]` (empty =
+/// valid), so callers can reject invalid content without mutating the document.
+#[wasm_bindgen(js_name = validateNode)]
+pub fn validate_node(schema: JsValue, node: JsValue) -> Result<JsValue, JsError> {
+    let schema: Schema = from_value(schema).map_err(err)?;
+    let node: Node = from_value(node).map_err(err)?;
+    to_js(&node.validate(&schema))
+}
+
 // ---- TypeScript types ----
 // Injected verbatim into the generated `.d.ts` so consumers get real shapes for
 // the plain-object values that cross the boundary (nodes, marks, changes, …),
@@ -616,4 +779,37 @@ export interface NormalizeOptions {
   removeEmptyText?: boolean;
   removeEmptyNodes?: boolean;
 }
+
+// ---- flat positions ----
+export interface TextPoint { path: number[]; offset: number; }
+export interface ResolvedPos {
+  pos: number;
+  depth: number;
+  path: number[];
+  parentOffset: number;
+  index: number;
+  textOffset: TextPoint | null;
+}
+export interface PosRange { from: number; to: number; }
+export interface BlockInline { block: number[]; inline: Position; }
+export type Assoc = "left" | "right";
+
+// ---- granular diff ----
+export type DiffGranularity =
+  | "block"
+  | "inline"
+  | { smart: { replaceThreshold: number } };
+export interface DiffOptions { text?: DiffGranularity; }
+
+// ---- position-addressed editing ----
+export type PosContent =
+  | { type: "text"; text: string; marks?: Mark[] }
+  | { type: "nodes"; nodes: JSONContent[] };
+export type PosEdit =
+  | { type: "insert"; pos: number; content: PosContent }
+  | { type: "delete"; from: number; to: number }
+  | { type: "replace"; from: number; to: number; content: PosContent }
+  | { type: "addMark"; from: number; to: number; mark: Mark }
+  | { type: "removeMark"; from: number; to: number; markType: string }
+  | { type: "setBlockAttrs"; pos: number; attrs: Record<string, unknown> };
 "#;
