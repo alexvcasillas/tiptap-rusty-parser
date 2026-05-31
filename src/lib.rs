@@ -69,6 +69,7 @@ mod range;
 mod schema;
 mod select;
 mod text;
+mod text_diff;
 mod transform;
 
 pub use block::{BlockError, BlockRange};
@@ -85,4 +86,5 @@ pub use pos::{LeafPolicy, PosError, PosRange, ResolvedPos, TextPoint};
 pub use query::Descendants;
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};
+pub use text_diff::{diff_text, DiffGranularity, DiffOptions, SegKind, TextSegment};
 pub use transform::Transform;

@@ -49,6 +49,7 @@
 //!   gaps between matched anchors (still correct, just not always minimal).
 
 use crate::node::{Mark, Node};
+use crate::text_diff::{self, DiffGranularity, DiffOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{HashMap, HashSet};
@@ -58,7 +59,7 @@ use std::fmt;
 ///
 /// Serializes as a tagged object, e.g. `{"op":"setText","path":[0,0],"text":"hi"}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "camelCase")]
+#[serde(tag = "op", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum Change {
     /// Set (insert or overwrite) attribute `key` on the node at `path`.
     SetAttr {
@@ -142,6 +143,24 @@ pub enum Change {
         /// Target index in the list after the child is removed.
         to: usize,
     },
+    /// Splice a text node's payload: replace the scalar range
+    /// `[from, from+len_del)` with `insert`. Offsets count Unicode scalars.
+    /// Emitted by [`Node::diff_with`](crate::Node::diff_with) in inline/smart
+    /// granularity instead of a whole-string [`SetText`](Change::SetText).
+    ///
+    /// Appended last (rather than grouped next to [`SetText`](Change::SetText))
+    /// so existing variants keep their discriminants — only the new-variant
+    /// break remains, not a discriminant shift for downstream `as` casts.
+    SpliceText {
+        /// Index path of the target text node.
+        path: Vec<usize>,
+        /// Scalar offset where the splice starts.
+        from: usize,
+        /// Number of scalars removed.
+        len_del: usize,
+        /// Text inserted at `from`.
+        insert: String,
+    },
 }
 
 /// Error from [`apply`] when a change can't be located (no node at the path, or
@@ -164,9 +183,15 @@ impl Node {
     /// Structural diff from `self` to `other`: a [`Change`] list that, when
     /// [`applied`](apply) to a clone of `self`, reproduces `other`.
     pub fn diff(&self, other: &Node) -> Vec<Change> {
+        self.diff_with(other, &DiffOptions::default())
+    }
+
+    /// Structural diff with [`DiffOptions`] — e.g. inline/smart text granularity
+    /// (character-level [`Change::SpliceText`] instead of whole [`Change::SetText`]).
+    pub fn diff_with(&self, other: &Node, opts: &DiffOptions) -> Vec<Change> {
         let mut out = Vec::new();
         let mut path = Vec::new();
-        diff_node(self, other, &mut path, &mut out);
+        diff_node(self, other, &mut path, &mut out, opts);
         out
     }
 
@@ -225,7 +250,7 @@ pub fn invert(base: &Node, changes: &[Change]) -> std::result::Result<Vec<Change
 
 // ---- diff internals -----------------------------------------------------
 
-fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>) {
+fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>, opts: &DiffOptions) {
     if a == b {
         return; // prune identical subtrees (the main perf lever)
     }
@@ -249,10 +274,7 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>) {
     }
     diff_attrs(a.attrs.as_ref(), b.attrs.as_ref(), path, out);
     if a.text != b.text {
-        out.push(Change::SetText {
-            path: path.clone(),
-            text: b.text.clone(),
-        });
+        diff_text_field(a.text.as_deref(), b.text.as_deref(), path, out, opts);
     }
     if a.marks != b.marks {
         out.push(Change::SetMarks {
@@ -261,7 +283,41 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>) {
         });
     }
     diff_extra(&a.extra, &b.extra, path, out);
-    diff_children(a.children(), b.children(), path, out);
+    diff_children(a.children(), b.children(), path, out, opts);
+}
+
+/// Emit the change(s) for a differing text payload, honoring the granularity.
+fn diff_text_field(
+    a: Option<&str>,
+    b: Option<&str>,
+    path: &mut [usize],
+    out: &mut Vec<Change>,
+    opts: &DiffOptions,
+) {
+    // Character-level splices only make sense when both sides are present text.
+    if let (Some(at), Some(bt)) = (a, b) {
+        match opts.text {
+            DiffGranularity::Inline => {
+                let segs = text_diff::diff_text(at, bt);
+                text_diff::splices_from_segments(path, &segs, out);
+                return;
+            }
+            DiffGranularity::Smart { replace_threshold } => {
+                let segs = text_diff::diff_text(at, bt);
+                let total = at.chars().count() + bt.chars().count();
+                let changed = text_diff::changed_scalars(&segs);
+                if total == 0 || (changed as f32 / total as f32) <= replace_threshold {
+                    text_diff::splices_from_segments(path, &segs, out);
+                    return;
+                }
+            }
+            DiffGranularity::Block => {}
+        }
+    }
+    out.push(Change::SetText {
+        path: path.to_vec(),
+        text: b.map(str::to_owned),
+    });
 }
 
 /// Whether an `Option<container>` shape difference (where the arg is
@@ -352,7 +408,13 @@ enum Role {
     Replace(usize),
 }
 
-fn diff_children(a: &[Node], b: &[Node], path: &mut Vec<usize>, out: &mut Vec<Change>) {
+fn diff_children(
+    a: &[Node],
+    b: &[Node],
+    path: &mut Vec<usize>,
+    out: &mut Vec<Change>,
+    opts: &DiffOptions,
+) {
     // Trim common prefix/suffix (cheap; shrinks the LCS DP and handles the
     // common append/prepend cases in linear time).
     let mut start = 0;
@@ -532,7 +594,7 @@ fn diff_children(a: &[Node], b: &[Node], path: &mut Vec<usize>, out: &mut Vec<Ch
         match bm_role.get(&j) {
             Some(Role::Modify(d)) => {
                 path.push(start + j);
-                diff_node(&am[*d], target_node, path, out);
+                diff_node(&am[*d], target_node, path, out, opts);
                 path.pop();
             }
             Some(Role::Replace(_)) => {
@@ -615,6 +677,40 @@ fn apply_one(root: &mut Node, change: &Change) -> std::result::Result<(), ApplyE
         }
         Change::SetText { path, text } => {
             node_at_mut(root, path)?.text = text.clone();
+        }
+        Change::SpliceText {
+            path,
+            from,
+            len_del,
+            insert,
+        } => {
+            let node = node_at_mut(root, path)?;
+            // Validate against the current text *without* mutating, so an
+            // out-of-range or overflowing splice leaves the node untouched.
+            // Scalar offsets translate to byte offsets (scalar-safe); a scalar
+            // index equal to the length maps to the byte length (end splice).
+            let (start, end) = {
+                let cur = node.text.as_deref().unwrap_or("");
+                let scalars = cur.chars().count();
+                let end_scalar = match from.checked_add(*len_del) {
+                    Some(e) if *from <= scalars && e <= scalars => e,
+                    _ => return Err(ApplyError { path: path.clone() }),
+                };
+                let start = cur.char_indices().nth(*from).map_or(cur.len(), |(b, _)| b);
+                let end = cur
+                    .char_indices()
+                    .nth(end_scalar)
+                    .map_or(cur.len(), |(b, _)| b);
+                (start, end)
+            };
+            // A pure no-op (nothing removed, nothing inserted) must not
+            // materialize a `None` text field into `Some("")` — the model
+            // preserves missing-vs-empty for faithful round-tripping.
+            if start != end || !insert.is_empty() {
+                node.text
+                    .get_or_insert_with(String::new)
+                    .replace_range(start..end, insert);
+            }
         }
         Change::SetMarks { path, marks } => {
             node_at_mut(root, path)?.marks = marks.clone();
