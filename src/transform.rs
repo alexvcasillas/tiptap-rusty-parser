@@ -37,7 +37,7 @@
 use crate::block::{BlockError, BlockRange};
 use crate::diff::{apply, ApplyError, Change};
 use crate::node::{Mark, Node};
-use crate::range::Position;
+use crate::range::{Position, Range};
 use serde_json::{Map, Value};
 
 /// A mutation transaction over a [`Node`] tree: edits apply in place and are
@@ -260,5 +260,94 @@ impl Transform<'_> {
     /// Record [`Node::lift`].
     pub fn lift(&mut self, path: Vec<usize>) -> Result<&mut Self, BlockError> {
         self.record_structural(|root| root.lift(&path))
+    }
+}
+
+/// Inline range builders: edit the inline content of the block at `block_path`
+/// (recorded, like the block builders, by running the edit and recovering the
+/// patch via [`diff`](crate::diff)). They wrap the [`range`](crate::range) API
+/// so range edits join the recorded/invertible transaction.
+impl Transform<'_> {
+    fn at_block<F>(&mut self, block_path: Vec<usize>, f: F) -> Result<&mut Self, BlockError>
+    where
+        F: FnOnce(&mut Node) -> Result<(), BlockError>,
+    {
+        self.record_structural(move |root| {
+            let block = root
+                .node_at_mut(&block_path)
+                .ok_or_else(|| BlockError::PathNotFound {
+                    path: block_path.clone(),
+                })?;
+            f(block)
+        })
+    }
+
+    /// Record [`Node::insert_text`] at `pos` in the block at `block_path`.
+    pub fn insert_text_at(
+        &mut self,
+        block_path: Vec<usize>,
+        pos: Position,
+        text: impl Into<String>,
+        marks: Option<Vec<Mark>>,
+    ) -> Result<&mut Self, BlockError> {
+        let text = text.into();
+        self.at_block(block_path, move |block| {
+            block.insert_text(pos, &text, marks.as_deref())?;
+            Ok(())
+        })
+    }
+
+    /// Record [`Node::delete_range`] over `range` in the block at `block_path`.
+    pub fn delete_range_in(
+        &mut self,
+        block_path: Vec<usize>,
+        range: Range,
+    ) -> Result<&mut Self, BlockError> {
+        self.at_block(block_path, move |block| {
+            block.delete_range(range)?;
+            Ok(())
+        })
+    }
+
+    /// Record [`Node::replace_range`] over `range` in the block at `block_path`.
+    pub fn replace_range_in(
+        &mut self,
+        block_path: Vec<usize>,
+        range: Range,
+        text: impl Into<String>,
+        marks: Option<Vec<Mark>>,
+    ) -> Result<&mut Self, BlockError> {
+        let text = text.into();
+        self.at_block(block_path, move |block| {
+            block.replace_range(range, &text, marks.as_deref())?;
+            Ok(())
+        })
+    }
+
+    /// Record [`Node::add_mark_range`] over `range` in the block at `block_path`.
+    pub fn add_mark_range_in(
+        &mut self,
+        block_path: Vec<usize>,
+        range: Range,
+        mark: Mark,
+    ) -> Result<&mut Self, BlockError> {
+        self.at_block(block_path, move |block| {
+            block.add_mark_range(range, mark)?;
+            Ok(())
+        })
+    }
+
+    /// Record [`Node::remove_mark_range`] over `range` in the block at `block_path`.
+    pub fn remove_mark_range_in(
+        &mut self,
+        block_path: Vec<usize>,
+        range: Range,
+        mark_type: impl Into<String>,
+    ) -> Result<&mut Self, BlockError> {
+        let mark_type = mark_type.into();
+        self.at_block(block_path, move |block| {
+            block.remove_mark_range(range, &mark_type)?;
+            Ok(())
+        })
     }
 }

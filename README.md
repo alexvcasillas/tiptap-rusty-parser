@@ -41,6 +41,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - [Schema validation](#schema-validation)
 - [Diffing](#diffing)
 - [Transactions](#transactions)
+- [Position-addressed editing](#position-addressed-editing)
 - [Change algebra](#change-algebra)
 - [Rendering to HTML](#rendering-to-html)
 - [Building nodes](#building-nodes)
@@ -791,6 +792,66 @@ Methods: `set_attr` / `remove_attr`, `set_text`, `set_marks`, `set_extra` /
 `Result<&mut Self, ApplyError>`; on an unresolvable path the transaction stops
 with the edits recorded so far. `changes()` peeks at the log; `finish()` returns it.
 
+Block-structural builders (`split_block`, `join_blocks`, `wrap`, `wrap_range`,
+`lift`, `set_block_type`) and inline range builders (`insert_text_at`,
+`delete_range_in`, `replace_range_in`, `add_mark_range_in`, `remove_mark_range_in`,
+addressing a block by path) are also recorded, so a whole structural/inline edit
+sequence lands in one invertible log.
+
+---
+
+## Position-addressed editing
+
+Address edits by **flat ProseMirror integer positions** (`from`/`to`) — the
+scheme Tiptap/ProseMirror and the [AI Toolkit](https://tiptap.dev/docs/content-ai/capabilities/ai-toolkit/overview)'s
+`tiptapEdit` operations array use. `apply_pos_edits` resolves each `PosEdit`,
+executes it, and returns the recovered, invertible `Change` patch:
+
+```rust
+use tiptap_rusty_parser::{Node, PosContent, PosEdit};
+
+// doc > paragraph("hello world")
+let mut doc = Node::element("doc")
+    .with_child(Node::element("paragraph").with_child(Node::text("hello world")));
+let original = doc.clone();
+
+// Replace "world" (flat [7, 12): 1 open token + scalars 6..11).
+let patch = doc.apply_pos_edits(&[PosEdit::Replace {
+    from: 7,
+    to: 12,
+    content: PosContent::Text { text: "there".into(), marks: None },
+}]).unwrap();
+assert_eq!(doc.text_content(), "hello there");
+
+// The patch inverts to an undo (reject the AI's edit).
+let undo = original.invert(&patch).unwrap();
+let mut back = doc.clone();
+back.apply(&undo).unwrap();
+assert_eq!(back, original);
+```
+
+**Edit variants** (`PosEdit`, serde-tagged with a camelCase `type`):
+
+| Variant | Meaning |
+|---------|---------|
+| `Insert { pos, content }` | insert text/nodes at a flat position |
+| `Delete { from, to }` | delete a flat range |
+| `Replace { from, to, content }` | replace a flat range with text/nodes |
+| `AddMark` / `RemoveMark { from, to, .. }` | mark/unmark text over a range |
+| `SetBlockAttrs { pos, attrs }` | replace the attr map of the block at `pos` |
+
+`content` is `PosContent::Text { text, marks }` or `PosContent::Nodes { nodes }`.
+
+**Scope (v1):** same-block edits work at any nesting depth; cross-block
+delete/replace/mark spans are supported when the endpoints are **sibling blocks
+under a common parent** (the `doc > paragraph` case) — the first block's tail,
+whole blocks between, and the last block's head are removed and the remainder
+joined (ProseMirror `deleteRange` semantics). Spans across different depths or
+parents return `PosEditError::UnsupportedSpan`. A batch must be **disjoint**;
+edits apply highest-position-first so un-rebased positions stay valid, and
+overlapping spans return `PosEditError::OverlappingEdits`. On any error the tree
+is left unchanged.
+
 ---
 
 ## Change algebra
@@ -993,6 +1054,7 @@ text spans** (~10k text nodes, ~10.5k nodes total):
 | `split_block` (split a block in a 500-block doc) | ~28 µs |
 | `content_size` (flat size of a 10k-node doc) | ~160 µs |
 | `resolve` (flat position → `ResolvedPos`, mid-doc) | ~256 µs |
+| `apply_pos_edits` (50 disjoint replaces across a 500-block doc) | ~33 ms |
 | `compact` (coalesce a 2000-op change list) | ~210 µs |
 | `map_path` (carry a path through a 500-move patch) | ~8 µs |
 

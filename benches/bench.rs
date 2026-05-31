@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tiptap_rusty_parser::{
     doc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
-    Position, Range, Schema,
+    PosContent, PosEdit, Position, Range, Schema,
 };
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
@@ -262,6 +262,29 @@ fn benches(c: &mut Criterion) {
     };
     c.bench_function("diff_inline_10k_para_small_edit", |b| {
         b.iter(|| black_box(big_para.diff_with(black_box(&big_para_edited), &inline)))
+    });
+
+    // Position-addressed batch: 50 disjoint single-scalar replaces spread across
+    // `big_doc` (resolve + range edit per op, then one recovered patch).
+    let pos_edits: Vec<PosEdit> = (0..50)
+        .map(|k| {
+            let inside = document.root().pos_before(&[k * 10]).unwrap() + 1;
+            PosEdit::Replace {
+                from: inside,
+                to: inside + 1,
+                content: PosContent::Text {
+                    text: "X".into(),
+                    marks: None,
+                },
+            }
+        })
+        .collect();
+    c.bench_function("apply_pos_edits_batch_50", |b| {
+        b.iter_batched(
+            || document.clone(),
+            |mut d| d.root_mut().apply_pos_edits(black_box(&pos_edits)).unwrap(),
+            criterion::BatchSize::SmallInput,
+        )
     });
 }
 

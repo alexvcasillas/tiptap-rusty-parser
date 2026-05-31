@@ -21,6 +21,9 @@
 //!   [`Node::split_block`], [`Node::join_blocks`], [`Node::wrap`], [`Node::lift`], [`BlockRange`].
 //! - **Diff / apply / invert** structural change lists between two trees
 //!   (undo-capable): [`Node::diff`], [`apply`], [`invert`].
+//! - **Edit by flat position**: apply a batch of [`PosEdit`]s addressed by
+//!   ProseMirror integer positions, recovering an invertible patch:
+//!   [`Node::apply_pos_edits`], [`PosContent`].
 //! - **Transact**: mutate in place while recording a replayable/invertible
 //!   change log: [`Node::transform`], [`Transform`].
 //! - **Operate on change lists**: [`compose`], [`compact`], and carry a path
@@ -64,6 +67,7 @@ mod node;
 mod normalize;
 mod path;
 mod pos;
+mod pos_edit;
 mod query;
 mod range;
 mod schema;
@@ -83,6 +87,7 @@ pub use html::{to_html, HtmlOptions, SelfClosingStyle, UnknownMarkPolicy, Unknow
 pub use node::{Mark, Node};
 pub use normalize::NormalizeOptions;
 pub use pos::{LeafPolicy, PosError, PosRange, ResolvedPos, TextPoint};
+pub use pos_edit::{PosContent, PosEdit, PosEditError};
 pub use query::Descendants;
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};

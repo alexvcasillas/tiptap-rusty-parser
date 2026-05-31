@@ -142,6 +142,38 @@ proptest! {
         prop_assert_eq!(&t, &a);
     }
 
+    /// A position-addressed `Delete` over any in-bounds flat range either errors
+    /// (unsupported span) or returns a patch that reproduces the mutation and
+    /// inverts back to the original.
+    #[test]
+    fn pos_edit_delete_invertible(
+        texts in prop::collection::vec("[a-z]{0,6}", 1..4),
+        f in 0usize..40,
+        t in 0usize..40,
+    ) {
+        use tiptap_rusty_parser::PosEdit;
+        let doc = Node::element("doc")
+            .with_children(texts.iter().map(|s| Node::element("paragraph").with_child(Node::text(s))));
+        let size = doc.content_size();
+        let from = f % (size + 1);
+        let to = t % (size + 1);
+        prop_assume!(from < to);
+
+        let mut work = doc.clone();
+        if let Ok(patch) = work.apply_pos_edits(&[PosEdit::Delete { from, to }]) {
+            let mut replay = doc.clone();
+            apply(&mut replay, &patch).unwrap();
+            prop_assert_eq!(&replay, &work);
+            let undo = doc.invert(&patch).unwrap();
+            let mut back = work.clone();
+            apply(&mut back, &undo).unwrap();
+            prop_assert_eq!(&back, &doc);
+        } else {
+            // On error the tree is left untouched.
+            prop_assert_eq!(&work, &doc);
+        }
+    }
+
     /// Inserting text into a paragraph then deleting exactly that range restores
     /// the original text content.
     #[test]

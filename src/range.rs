@@ -294,7 +294,10 @@ pub(crate) fn ensure_boundary(
 /// Resolve a range to a `[s, e)` child-index span, splitting text nodes at both
 /// boundaries. Splits the end boundary first, then the start, adjusting the end
 /// index if the start split inserted a node before it.
-fn resolve_range(children: &mut Vec<Node>, range: Range) -> Result<(usize, usize), RangeError> {
+pub(crate) fn resolve_range(
+    children: &mut Vec<Node>,
+    range: Range,
+) -> Result<(usize, usize), RangeError> {
     let (sp, ep) = (range.start, range.end);
     if (ep.child, ep.offset) < (sp.child, sp.offset) {
         return Err(RangeError::InvertedRange);

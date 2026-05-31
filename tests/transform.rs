@@ -110,6 +110,55 @@ fn remove_and_replace() {
 }
 
 #[test]
+fn inline_range_builders_record_and_invert() {
+    use tiptap_rusty_parser::{Position, Range};
+    // doc > paragraph("hello world")
+    let mut doc = Node::element("doc").with_child(p("hello world"));
+    let original = doc.clone();
+    let changes = {
+        let mut tx = doc.transform();
+        // Bold "hello", then replace "world" with "there", then append "!".
+        tx.add_mark_range_in(
+            vec![0],
+            Range::new(Position::new(0, 0), Position::new(0, 5)),
+            Mark::new("bold"),
+        )
+        .unwrap();
+        tx.replace_range_in(
+            vec![0],
+            Range::new(Position::new(1, 1), Position::new(1, 6)),
+            "there",
+            None,
+        )
+        .unwrap();
+        tx.insert_text_at(vec![0], Position::new(2, 0), "!", None)
+            .unwrap();
+        tx.finish()
+    };
+    assert_eq!(doc.child(0).unwrap().text_content(), "hello there!");
+    assert!(doc.child(0).unwrap().child(0).unwrap().has_mark("bold"));
+    assert_replayable(&original, &doc, &changes);
+}
+
+#[test]
+fn delete_range_builder_records() {
+    use tiptap_rusty_parser::{Position, Range};
+    let mut doc = Node::element("doc").with_child(p("hello world"));
+    let original = doc.clone();
+    let changes = {
+        let mut tx = doc.transform();
+        tx.delete_range_in(
+            vec![0],
+            Range::new(Position::new(0, 5), Position::new(0, 11)),
+        )
+        .unwrap();
+        tx.finish()
+    };
+    assert_eq!(doc.child(0).unwrap().text_content(), "hello");
+    assert_replayable(&original, &doc, &changes);
+}
+
+#[test]
 fn empty_transaction_is_empty_log() {
     let mut doc = p("x");
     let changes = doc.transform().finish();
