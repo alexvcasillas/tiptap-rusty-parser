@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.4.1...v0.4.2) - 2026-05-31
+
+### Added
+
+- *(pos-map)* flat-position mapping (PosMap) for carrying positions through edits ([#42](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/42))
+
 ## [0.4.1](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.4.0...v0.4.1) - 2026-05-31
 
 ### Added
