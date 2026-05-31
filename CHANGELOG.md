@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.8...v0.4.0) - 2026-05-31
+
+### Added
+
+- *(diff)* inline character-level text diff (diff_with + Change::SpliceText) ([#38](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/38))
+
 ## [0.3.8](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.3.7...v0.3.8) - 2026-05-30
 
 ### Added
