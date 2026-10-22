@@ -512,9 +512,11 @@ fn diff_children(
         removed_am.extend_from_slice(&rem_dels[pairs..]);
     }
 
-    // Target key sequence for the middle (what the live list must become), plus
-    // a key -> target-index lookup used to place relocated nodes minimally.
-    let mut target: Vec<Key> = Vec::with_capacity(bm.len());
+    // Target key sequence for the middle (what the live list must become), as
+    // dense ids: `Orig(i)` -> `i`, `New(j)` -> `am.len() + j`. Plus an
+    // id -> target-index lookup used to place relocated nodes minimally.
+    let n_orig = am.len() as u32;
+    let mut target: Vec<u32> = Vec::with_capacity(bm.len());
     for j in 0..bm.len() {
         let key = if let Some(&i) = bm_match_src.get(&j) {
             Key::Orig(i)
@@ -526,69 +528,55 @@ fn diff_children(
                 None => Key::New(j),
             }
         };
-        target.push(key);
+        target.push(match key {
+            Key::Orig(i) => i as u32,
+            Key::New(j) => n_orig + j as u32,
+        });
     }
-    let target_pos: HashMap<Key, usize> = target.iter().enumerate().map(|(i, &k)| (k, i)).collect();
-    let is_moved = |k: Key| matches!(k, Key::Orig(x) if am_moved.contains(&x));
+    let n_ids = am.len() + bm.len();
+    let mut target_pos = vec![u32::MAX; n_ids];
+    for (t, &k) in target.iter().enumerate() {
+        target_pos[k as usize] = t as u32;
+    }
+    let mut is_moved = vec![false; n_ids];
+    for &d in &am_moved {
+        is_moved[d] = true;
+    }
 
-    // Simulate the live list and emit ops whose indices are valid by
-    // construction. Absolute index = start + position in the middle.
-    let mut live: Vec<Key> = (0..am.len()).map(Key::Orig).collect();
-
-    // 1. Plain removes (indices computed against the shrinking live list).
-    for &d in &removed_am {
-        let idx = live.iter().position(|&k| k == Key::Orig(d)).unwrap();
+    // 1. Plain removes. `removed_am` is ascending (gap order, then index order
+    //    within a gap), so the live index is the original minus prior removals.
+    for (k, &d) in removed_am.iter().enumerate() {
         out.push(Change::Remove {
             path: path.clone(),
-            index: start + idx,
+            index: start + d - k,
         });
-        live.remove(idx);
     }
+    let mut is_removed = vec![false; am.len()];
+    for &d in &removed_am {
+        is_removed[d] = true;
+    }
+    let post_remove = || (0..n_orig).filter(|&i| !is_removed[i as usize]);
 
-    // 2. Settle each target position left to right, maintaining the invariant
-    //    `live[..p] == target[..p]`. New nodes are inserted; otherwise we
-    //    relocate exactly one genuinely-moved node (the displaced occupant, or
-    //    the wanted node if it's the one that moved) to its sorted destination —
-    //    one Move per moved node, never disturbing the matched skeleton.
-    let mut p = 0;
-    while p < target.len() {
-        let want = target[p];
-        if live.get(p).copied() == Some(want) {
-            p += 1;
-            continue;
-        }
-        if let Key::New(j) = want {
-            out.push(Change::Insert {
-                path: path.clone(),
-                index: start + p,
-                node: bm[j].clone(),
-            });
-            live.insert(p, want);
-            p += 1;
-            continue;
-        }
-        // `want` is an original node not yet at `p`. Move the displaced occupant
-        // if it is the relocated one, else pull `want` (itself relocated) here.
-        let cur = live[p];
-        let mover = if is_moved(cur) { cur } else { want };
-        let from = live.iter().position(|&k| k == mover).unwrap();
-        let tmover = target_pos[&mover];
-        // Destination = number of currently-present elements that precede it in
-        // the target order (excluding the mover itself).
-        let dest = live
-            .iter()
-            .filter(|&&k| k != mover && target_pos[&k] < tmover)
-            .count();
-        out.push(Change::Move {
-            path: path.clone(),
-            from: start + from,
-            to: start + dest,
-        });
-        let k = live.remove(from);
-        live.insert(dest, k);
-        // Re-check `p` (the move may or may not have settled this slot).
+    // 2. Simulate the live list and emit ops whose indices are valid by
+    //    construction. Absolute index = start + position in the middle.
+    let mark = out.len();
+    if !settle_sorted(
+        bm,
+        &target,
+        &target_pos,
+        &is_moved,
+        am_moved.len(),
+        post_remove(),
+        start,
+        path,
+        out,
+    ) {
+        // The sorted settle cascaded (re-moving nodes it already placed, which
+        // blows up on many value-equal reordered siblings): redo it with
+        // exactly one Move per relocated node.
+        out.truncate(mark);
+        settle_cursor(bm, &target, &is_moved, post_remove(), start, path, out);
     }
-    debug_assert_eq!(live, target, "diff move simulation diverged from target");
 
     // 3. Value fixes for modify/replace pairs, at their final positions (the
     //    structural layout is now settled, so index = start + bm index).
@@ -609,6 +597,245 @@ fn diff_children(
             }
             None => {}
         }
+    }
+}
+
+/// Settle each target position left to right, maintaining the invariant
+/// `live[..p] == target[..p]`. New nodes are inserted; otherwise relocate one
+/// genuinely-moved node (the displaced occupant, or the wanted node if it's the
+/// one that moved) to its sorted destination, never disturbing the matched
+/// skeleton. Usually one Move per moved node; returns `false` (output partial)
+/// once more than `budget` Moves would be needed, i.e. it started cascading.
+#[allow(clippy::too_many_arguments)]
+fn settle_sorted(
+    bm: &[Node],
+    target: &[u32],
+    target_pos: &[u32],
+    is_moved: &[bool],
+    budget: usize,
+    live0: impl Iterator<Item = u32>,
+    start: usize,
+    path: &[usize],
+    out: &mut Vec<Change>,
+) -> bool {
+    let n_orig = is_moved.len() - bm.len();
+    let mut live = LiveList::new(live0, is_moved.len());
+    // `present.prefix(t)` = live elements whose target index is < t.
+    let mut present = Fenwick::new(target.len());
+    for (t, &k) in target.iter().enumerate() {
+        if (k as usize) < n_orig {
+            present.add(t);
+        }
+    }
+    let mut moves = 0;
+    let mut p = 0;
+    while p < target.len() {
+        let want = target[p];
+        let cur = live.get(p);
+        if cur == Some(want) {
+            p += 1;
+            continue;
+        }
+        if want as usize >= n_orig {
+            out.push(Change::Insert {
+                path: path.to_vec(),
+                index: start + p,
+                node: bm[want as usize - n_orig].clone(),
+            });
+            live.insert(p, want);
+            present.add(p);
+            p += 1;
+            continue;
+        }
+        if moves == budget {
+            return false;
+        }
+        moves += 1;
+        // `want` is an original node not yet at `p`. Move the displaced occupant
+        // if it is the relocated one, else pull `want` (itself relocated) here.
+        let cur = cur.expect("original node missing from live list");
+        let mover = if is_moved[cur as usize] { cur } else { want };
+        let from = live.index_of(mover);
+        // Destination = number of currently-present elements that precede it in
+        // the target order (the mover itself is not counted).
+        let dest = present.prefix(target_pos[mover as usize] as usize);
+        out.push(Change::Move {
+            path: path.to_vec(),
+            from: start + from,
+            to: start + dest,
+        });
+        let k = live.remove(from);
+        live.insert(dest, k);
+        // Re-check `p` (the move may or may not have settled this slot).
+    }
+    true
+}
+
+/// Fallback settle with exactly one Move per relocated node. Live list =
+/// placed nodes (a prefix of `target`) interleaved with not-yet-placed
+/// originals, all placed ones before `cur`; past `cur` only unplaced originals,
+/// in original order. Non-moved originals keep their relative order in
+/// `target`, so they are reached by advancing `cur`; moved ones are pulled to it.
+fn settle_cursor(
+    bm: &[Node],
+    target: &[u32],
+    is_moved: &[bool],
+    live0: impl Iterator<Item = u32>,
+    start: usize,
+    path: &[usize],
+    out: &mut Vec<Change>,
+) {
+    let n_orig = is_moved.len() - bm.len();
+    let mut live = LiveList::new(live0, is_moved.len());
+    let mut cur = 0;
+    for &want in target {
+        if want as usize >= n_orig {
+            out.push(Change::Insert {
+                path: path.to_vec(),
+                index: start + cur,
+                node: bm[want as usize - n_orig].clone(),
+            });
+            live.insert(cur, want);
+            cur += 1;
+            continue;
+        }
+        let at = live.index_of(want);
+        if !is_moved[want as usize] {
+            debug_assert!(at >= cur, "non-moved node behind the cursor");
+            cur = at + 1;
+            continue;
+        }
+        if at == cur {
+            cur += 1;
+            continue;
+        }
+        live.remove(at);
+        if at < cur {
+            cur -= 1;
+        }
+        out.push(Change::Move {
+            path: path.to_vec(),
+            from: start + at,
+            to: start + cur,
+        });
+        live.insert(cur, want);
+        cur += 1;
+    }
+    debug_assert_eq!(
+        live.to_vec(),
+        target,
+        "diff move simulation diverged from target"
+    );
+}
+
+/// Order-statistic list of key ids for the move simulation, split into
+/// ~√n-sized blocks so `get`/`index_of`/`insert`/`remove` cost O(√n) instead
+/// of O(n).
+struct LiveList {
+    blocks: Vec<Vec<u32>>,
+    /// Key id -> index of the block holding it.
+    block_of: Vec<u32>,
+    cap: usize,
+}
+
+impl LiveList {
+    fn new(keys: impl Iterator<Item = u32>, n_ids: usize) -> Self {
+        let mut l = LiveList {
+            blocks: vec![keys.collect()],
+            block_of: vec![0; n_ids],
+            cap: 16,
+        };
+        l.rebuild();
+        l
+    }
+
+    /// Re-chunk into blocks of `cap` (≈ √len) and refresh `block_of`.
+    fn rebuild(&mut self) {
+        let all = self.to_vec();
+        self.cap = (all.len() as f64).sqrt() as usize + 16;
+        self.blocks = all.chunks(self.cap).map(<[u32]>::to_vec).collect();
+        if self.blocks.is_empty() {
+            self.blocks.push(Vec::new());
+        }
+        for (b, blk) in self.blocks.iter().enumerate() {
+            for &k in blk {
+                self.block_of[k as usize] = b as u32;
+            }
+        }
+    }
+
+    fn to_vec(&self) -> Vec<u32> {
+        self.blocks.concat()
+    }
+
+    /// Block and in-block offset of live index `idx` (`idx == len` maps to the
+    /// end of the last block).
+    fn locate(&self, mut idx: usize) -> (usize, usize) {
+        let last = self.blocks.len() - 1;
+        for (b, blk) in self.blocks.iter().enumerate() {
+            if idx < blk.len() || b == last {
+                return (b, idx);
+            }
+            idx -= blk.len();
+        }
+        unreachable!()
+    }
+
+    fn get(&self, idx: usize) -> Option<u32> {
+        let (b, o) = self.locate(idx);
+        self.blocks[b].get(o).copied()
+    }
+
+    fn index_of(&self, key: u32) -> usize {
+        let b = self.block_of[key as usize] as usize;
+        let before: usize = self.blocks[..b].iter().map(Vec::len).sum();
+        before
+            + self.blocks[b]
+                .iter()
+                .position(|&k| k == key)
+                .expect("key in its block")
+    }
+
+    fn remove(&mut self, idx: usize) -> u32 {
+        let (b, o) = self.locate(idx);
+        self.blocks[b].remove(o)
+    }
+
+    fn insert(&mut self, idx: usize, key: u32) {
+        let (b, o) = self.locate(idx);
+        self.blocks[b].insert(o, key);
+        self.block_of[key as usize] = b as u32;
+        if self.blocks[b].len() > 2 * self.cap {
+            self.rebuild();
+        }
+    }
+}
+
+/// Fenwick (binary indexed) tree of counts over target indices.
+struct Fenwick(Vec<u32>);
+
+impl Fenwick {
+    fn new(n: usize) -> Self {
+        Fenwick(vec![0; n])
+    }
+
+    /// Count one entry at index `i` (0-based tree: `self.0[k]` covers
+    /// `k & (k + 1) ..= k`).
+    fn add(&mut self, mut i: usize) {
+        while i < self.0.len() {
+            self.0[i] += 1;
+            i |= i + 1;
+        }
+    }
+
+    /// Count of entries at indices `< i`.
+    fn prefix(&self, mut i: usize) -> usize {
+        let mut s = 0;
+        while i > 0 {
+            s += self.0[i - 1] as usize;
+            i &= i - 1;
+        }
+        s
     }
 }
 
