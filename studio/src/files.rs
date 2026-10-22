@@ -429,6 +429,11 @@ impl Workspace {
         else {
             return;
         };
+        // A dropped schema file (top-level `nodes` object) loads as the schema,
+        // wherever it lands, instead of replacing A or B.
+        if self.schema().update(cx, |s, cx| s.try_load_dropped(&p, cx)) {
+            return;
+        }
         if as_b {
             let failed = self.diff.update(cx, |d, cx| {
                 d.error = None;
