@@ -709,24 +709,15 @@ impl DiffState {
         let Some(b_doc) = self.b.take() else {
             return;
         };
-        // `DocumentState` has no public constructor from a parsed document;
-        // `load(None)` (tiny bundled sample) gives a clean undo stack to fill.
-        let Ok(mut fresh) = DocumentState::load(None) else {
-            self.b = Some(b_doc);
-            return;
-        };
         let b_file = self.b_file.take();
         let a = self.a.clone();
         let (old_doc, old_file) = a.update(cx, |s, cx| {
-            fresh.doc = b_doc;
-            fresh.file = b_file;
-            fresh.expanded.clear();
-            fresh.expand_to_depth(1);
-            fresh.revision = s.revision + 1;
-            fresh.last_change = Some("Swapped A and B".into());
-            let old = std::mem::replace(s, fresh);
-            cx.notify();
-            (old.doc, old.file)
+            let old_doc = std::mem::replace(&mut s.doc, Document::new(Node::default()));
+            let old_file = s.file.take();
+            // Same path as Open: fresh undo stack, view reset, revision bump.
+            s.replace_doc(b_doc, b_file, false, cx);
+            s.last_change = Some("Swapped A and B".into());
+            (old_doc, old_file)
         });
         self.b = Some(old_doc);
         self.b_file = old_file;

@@ -26,7 +26,7 @@ panes       tree (280) · preview (fluid) · inspector (320)
 
 Diff mode
 title bar   a.json → b.json · +n −n ~n · total changes
-toolbar     … · Open B… · Swap (v1: disabled) · Apply all to A · Only changed · Sync scroll (v1: disabled)
+toolbar     … · Open B… · Swap · Apply all to A · Only changed · Sync scroll
 panes       changes (300) · tree A (fluid) · tree B (fluid) · before/after (300)
 keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) · ctrl/cmd-z undo
 ```
@@ -67,7 +67,7 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 - [x] Wrap in…, split, join
 - [x] Diff mode: second document, `Document::diff` change list, tinted rows in both trees, before/after inspector
 - [x] Diff as a merge tool: Dismiss (⌫) leaves A's side and hides the change, Apply all skips dismissed, Save / Save as… writes the merged A (`<a>-merged.json` suggested)
-- [ ] Diff: Swap A/B, sync scroll
+- [x] Diff: document-ordered change list, sync scroll, Swap A/B, take all B in a subtree
 - [x] Save (⌘S), Save as… (⇧⌘S)
 - [ ] Open dialog for A, recent files
 - [ ] Resizable panes via `DockArea`
