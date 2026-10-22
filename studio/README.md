@@ -15,6 +15,8 @@ cargo run -p tiptap-rusty-studio -- a.json b.json # A + B for Diff mode
 
 Not published. Not part of the parser's CI matrix (needs native windowing libs).
 
+Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [packaging/README.md](packaging/README.md).
+
 ## Layout
 
 ```
