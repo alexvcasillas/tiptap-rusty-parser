@@ -77,8 +77,6 @@ impl Tokens {
     }
 }
 
-/// Diff colors are unused until diff mode lands.
-#[allow(dead_code)]
 impl Tokens {
     pub fn added() -> Hsla {
         c(0x4CC38A)

@@ -45,6 +45,8 @@ pub struct DocumentState {
     pub expanded: HashSet<Vec<usize>>,
     pub dirty: bool,
     pub last_change: Option<SharedString>,
+    /// Bumped on every document mutation; observers skip selection-only notifies.
+    pub revision: u64,
     undo: Vec<Vec<Change>>,
     redo: Vec<Vec<Change>>,
 }
@@ -62,6 +64,7 @@ impl DocumentState {
             expanded: HashSet::new(),
             dirty: false,
             last_change: None,
+            revision: 0,
             undo: Vec::new(),
             redo: Vec::new(),
         };
@@ -227,6 +230,7 @@ impl DocumentState {
 
     fn after_edit(&mut self, label: SharedString, cx: &mut Context<Self>) {
         self.dirty = true;
+        self.revision += 1;
         self.last_change = Some(label);
         if let Some(p) = &self.selection {
             if self.root().node_at(p).is_none() {

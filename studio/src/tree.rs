@@ -55,10 +55,7 @@ impl TreePanel {
 
     /// Flatten visible nodes. Runs on document/selection change, never per frame.
     fn rebuild(&mut self, state: &DocumentState) {
-        let mut rows = Vec::new();
-        let mut path = Vec::new();
-        flatten(state.root(), state, &mut path, &mut rows);
-        self.rows = Rc::new(rows);
+        self.rows = Rc::new(flatten(state.root(), &|p| state.is_expanded(p)));
         // Keep the selected row in view whenever the selection moves
         // (keyboard, preview click, structural edit).
         if state.selection != self.last_selection {
@@ -74,9 +71,21 @@ impl TreePanel {
     }
 }
 
-fn flatten(
+/// Flatten the visible rows of `root`, descending only where `is_expanded`.
+/// Shared by the Inspect tree and both Diff trees.
+pub fn flatten(
+    root: &tiptap_rusty_parser::Node,
+    is_expanded: &dyn Fn(&[usize]) -> bool,
+) -> Vec<Row> {
+    let mut rows = Vec::new();
+    let mut path = Vec::new();
+    flatten_into(root, is_expanded, &mut path, &mut rows);
+    rows
+}
+
+fn flatten_into(
     node: &tiptap_rusty_parser::Node,
-    state: &DocumentState,
+    is_expanded: &dyn Fn(&[usize]) -> bool,
     path: &mut Vec<usize>,
     out: &mut Vec<Row>,
 ) {
@@ -98,7 +107,7 @@ fn flatten(
     } else {
         (ty.to_string(), String::new(), node_summary(node))
     };
-    let expanded = state.is_expanded(path);
+    let expanded = is_expanded(path);
     out.push(Row {
         path: path.clone(),
         depth: path.len(),
@@ -113,7 +122,7 @@ fn flatten(
     if expanded {
         for (i, c) in node.children().iter().enumerate() {
             path.push(i);
-            flatten(c, state, path, out);
+            flatten_into(c, is_expanded, path, out);
             path.pop();
         }
     }
@@ -145,6 +154,17 @@ impl Render for TreePanel {
         };
         let mono = cx.theme().mono_font_family.clone();
         let count = rows.len();
+        let on_select: RowFn = Rc::new({
+            let state = state.clone();
+            move |path, window, cx| {
+                window.focus(&focus, cx);
+                state.update(cx, |s, cx| s.select(Some(path.to_vec()), cx))
+            }
+        });
+        let on_toggle: RowFn = Rc::new({
+            let state = state.clone();
+            move |path, _, cx| state.update(cx, |s, cx| s.toggle_expanded(path.to_vec(), cx))
+        });
 
         crate::nav::attach(div().id("tree-pane"), &state)
             .track_focus(&self.focus)
@@ -179,7 +199,16 @@ impl Render for TreePanel {
                         .map(|i| {
                             let row = &rows[i];
                             let selected = selection.as_deref() == Some(row.path.as_slice());
-                            render_row(i, row, selected, &mono, &state, &focus)
+                            render_row(
+                                "tree-row",
+                                i,
+                                row,
+                                selected,
+                                &Deco::NONE,
+                                &mono,
+                                &on_select,
+                                &on_toggle,
+                            )
                         })
                         .collect()
                 })
@@ -201,29 +230,71 @@ impl Render for TreePanel {
     }
 }
 
-fn render_row(
+/// Row click / chevron callback: `(path, window, cx)`.
+pub type RowFn = Rc<dyn Fn(&[usize], &mut Window, &mut App)>;
+
+/// Diff decoration for a tree row: a row tint (14% fill + 6px pip) and/or a
+/// faint ancestor pip, plus struck-through (removed) or added type styling.
+#[derive(Clone, Copy, Default, PartialEq)]
+pub struct Deco {
+    pub tint: Option<Hsla>,
+    pub pip: Option<Hsla>,
+    pub strike: bool,
+    pub added: bool,
+}
+
+impl Deco {
+    pub const NONE: Deco = Deco {
+        tint: None,
+        pip: None,
+        strike: false,
+        added: false,
+    };
+
+    pub fn is_none(&self) -> bool {
+        self.tint.is_none() && self.pip.is_none()
+    }
+}
+
+/// One 26px tree row. `id_prefix` keeps element ids unique across several
+/// trees in one window; `on_select`/`on_toggle` receive the row path.
+#[allow(clippy::too_many_arguments)]
+pub fn render_row(
+    id_prefix: &'static str,
     i: usize,
     row: &Row,
     selected: bool,
+    deco: &Deco,
     mono: &SharedString,
-    state: &Entity<DocumentState>,
-    focus: &FocusHandle,
-) -> impl IntoElement {
-    let focus = focus.clone();
+    on_select: &RowFn,
+    on_toggle: &RowFn,
+) -> Stateful<Div> {
     let path = row.path.clone();
     let chevron_path = row.path.clone();
-    let select_state = state.clone();
-    let chevron_state = state.clone();
-    let type_color = if row.is_unknown {
+    let on_select = on_select.clone();
+    let on_toggle = on_toggle.clone();
+    let type_color = if deco.strike {
+        Tokens::removed()
+    } else if deco.added {
+        Tokens::added()
+    } else if row.is_unknown {
         Tokens::unknown()
     } else if row.is_text {
         Tokens::muted()
     } else {
         Tokens::foreground()
     };
+    let fill = deco.tint.map(|mut c| {
+        c.a = 0.14;
+        c
+    });
+    let pip = deco.tint.or(deco.pip.map(|mut c| {
+        c.a = 0.45;
+        c
+    }));
 
     div()
-        .id(ElementId::NamedInteger("tree-row".into(), i as u64))
+        .id(ElementId::NamedInteger(id_prefix.into(), i as u64))
         .flex()
         .items_center()
         .gap(px(6.))
@@ -236,16 +307,14 @@ fn render_row(
         .text_size(px(12.))
         .whitespace_nowrap()
         .overflow_hidden()
+        .when_some(fill, |s, c| s.bg(c))
         .hover(|s| s.bg(Tokens::raised()))
         .when(selected, |s| {
             s.bg(Tokens::accent_fill())
                 .border_1()
                 .border_color(Tokens::accent())
         })
-        .on_click(move |_, window, cx| {
-            window.focus(&focus, cx);
-            select_state.update(cx, |s, cx| s.select(Some(path.clone()), cx));
-        })
+        .on_click(move |_, window, cx| on_select(&path, window, cx))
         .child(
             div()
                 .id(ElementId::NamedInteger("tree-chevron".into(), i as u64))
@@ -265,10 +334,9 @@ fn render_row(
                             })
                             .xsmall(),
                         )
-                        .on_click(move |_, _, cx| {
+                        .on_click(move |_, window, cx| {
                             cx.stop_propagation();
-                            chevron_state
-                                .update(cx, |s, cx| s.toggle_expanded(chevron_path.clone(), cx));
+                            on_toggle(&chevron_path, window, cx);
                         })
                 }),
         )
@@ -276,6 +344,7 @@ fn render_row(
             div()
                 .flex_shrink_0()
                 .text_color(type_color)
+                .when(deco.strike, |d| d.line_through())
                 .child(row.type_name.clone()),
         )
         .when(!row.marks.is_empty(), |d| {
@@ -294,6 +363,10 @@ fn render_row(
                 .text_color(Tokens::muted())
                 .child(row.summary.clone()),
         )
+        .when_some(pip, |d, c| {
+            d.child(div().flex_1())
+                .child(div().size(px(6.)).flex_shrink_0().rounded(px(3.)).bg(c))
+        })
 }
 
 /// 34px uppercase section header shared by every pane.
