@@ -7,6 +7,7 @@ use gpui_kit::component::{ActiveTheme, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 
+use crate::find::FindState;
 use crate::state::{fmt_path, is_unknown, node_summary, node_type, DocumentState};
 use crate::theme::Tokens;
 
@@ -28,24 +29,33 @@ pub struct TreePanel {
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     last_selection: Option<Vec<usize>>,
+    find: Entity<FindState>,
     _subs: Vec<Subscription>,
 }
 
 impl TreePanel {
     pub fn new(state: Entity<DocumentState>, cx: &mut Context<Self>) -> Self {
-        let sub = cx.observe(&state, |this, state, cx| {
-            this.rebuild(state.read(cx));
+        let sub = cx.observe(&state, |this, _, cx| {
+            this.rebuild(cx);
+            cx.notify();
+        });
+        let focus = cx.focus_handle();
+        let find = crate::find::find_state(&state, cx);
+        find.update(cx, |f, _| f.return_focus = Some(focus.clone()));
+        let find_sub = cx.observe(&find, |this, _, cx| {
+            this.rebuild(cx);
             cx.notify();
         });
         let mut this = Self {
             state: state.clone(),
             rows: Rc::new(Vec::new()),
-            focus: cx.focus_handle(),
+            focus,
             scroll: UniformListScrollHandle::new(),
             last_selection: None,
-            _subs: vec![sub],
+            find,
+            _subs: vec![sub, find_sub],
         };
-        this.rebuild(state.read(cx));
+        this.rebuild(cx);
         this
     }
 
@@ -54,8 +64,18 @@ impl TreePanel {
     }
 
     /// Flatten visible nodes. Runs on document/selection change, never per frame.
-    fn rebuild(&mut self, state: &DocumentState) {
-        self.rows = Rc::new(flatten(state.root(), &|p| state.is_expanded(p)));
+    fn rebuild(&mut self, cx: &App) {
+        let state = self.state.read(cx);
+        let find = self.find.read(cx);
+        self.rows = Rc::new(if find.filtering() {
+            // "Only matches": matches plus their ancestors, ancestors expanded.
+            let (set, anc) = (&find.set, &find.ancestors);
+            let mut rows = flatten(state.root(), &|p| anc.contains(p));
+            rows.retain(|r| set.contains(&r.path) || anc.contains(&r.path));
+            rows
+        } else {
+            flatten(state.root(), &|p| state.is_expanded(p))
+        });
         // Keep the selected row in view whenever the selection moves
         // (keyboard, preview click, structural edit).
         if state.selection != self.last_selection {
@@ -154,6 +174,7 @@ impl Render for TreePanel {
         };
         let mono = cx.theme().mono_font_family.clone();
         let count = rows.len();
+        let find = self.find.clone();
         let on_select: RowFn = Rc::new({
             let state = state.clone();
             move |path, window, cx| {
@@ -194,10 +215,12 @@ impl Render for TreePanel {
                     ),
             )
             .child(
-                uniform_list("tree-rows", count, move |range, _window, _cx| {
+                uniform_list("tree-rows", count, move |range, _window, cx| {
+                    let find = find.read(cx);
                     range
                         .map(|i| {
                             let row = &rows[i];
+                            let hit = find.row_match(&row.path, row.expanded);
                             let selected = selection.as_deref() == Some(row.path.as_slice());
                             render_row(
                                 "tree-row",
@@ -209,6 +232,7 @@ impl Render for TreePanel {
                                 &on_select,
                                 &on_toggle,
                             )
+                            .map(|r| crate::find::decorate_row(r, hit, selected))
                         })
                         .collect()
                 })

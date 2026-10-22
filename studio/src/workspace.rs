@@ -418,7 +418,8 @@ impl Render for Workspace {
                             )
                             .child(div().flex_1())
                         }
-                    }),
+                    })
+                    .child(crate::find::bar(&self.state, cx)),
             )
             .children(self.banner_view(cx))
             // panes

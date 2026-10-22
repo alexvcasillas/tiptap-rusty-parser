@@ -8,6 +8,7 @@
 mod clipboard;
 mod diff;
 mod files;
+mod find;
 mod inspector;
 mod nav;
 mod preview;

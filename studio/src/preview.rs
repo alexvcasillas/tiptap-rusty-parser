@@ -11,6 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 use tiptap_rusty_parser::Node;
 
+use crate::find::FindState;
 use crate::state::{fmt_path, is_unknown, node_type, DocumentState};
 use crate::theme::Tokens;
 use crate::tree::pane_header;
@@ -24,6 +25,7 @@ pub struct PreviewPanel {
     focus: FocusHandle,
     scroll: ScrollHandle,
     last_selection: Option<Vec<usize>>,
+    find: Entity<FindState>,
     _subs: Vec<Subscription>,
 }
 
@@ -40,12 +42,15 @@ impl PreviewPanel {
             }
             cx.notify();
         });
+        let find = crate::find::find_state(&state, cx);
+        let find_sub = cx.observe(&find, |_, _, cx| cx.notify());
         Self {
             state,
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             last_selection: None,
-            _subs: vec![sub],
+            find,
+            _subs: vec![sub, find_sub],
         }
     }
 }
@@ -55,6 +60,7 @@ struct Ctx<'a> {
     root: &'a Node,
     selection: Option<&'a [usize]>,
     mono: SharedString,
+    matches: &'a std::collections::HashSet<Vec<usize>>,
 }
 
 impl Render for PreviewPanel {
@@ -64,11 +70,13 @@ impl Render for PreviewPanel {
         let focus = self.focus.clone();
         let state = self.state.clone();
         let s = self.state.read(cx);
+        let matches = self.find.read(cx).set.clone();
         let ctx = Ctx {
             state: &state,
             root: s.root(),
             selection: s.selection.as_deref(),
             mono,
+            matches: &matches,
         };
         let mut path = Vec::new();
         let blocks: Vec<AnyElement> = s
@@ -154,10 +162,10 @@ fn block(node: &Node, path: &mut Vec<usize>, ctx: &Ctx) -> AnyElement {
                 .text_size(px(size))
                 .line_height(relative(1.25))
                 .font_weight(FontWeight::SEMIBOLD)
-                .child(inline(node, ctx))
+                .child(inline(node, path, ctx))
                 .into_any_element()
         }
-        "paragraph" => div().child(inline(node, ctx)).into_any_element(),
+        "paragraph" => div().child(inline(node, path, ctx)).into_any_element(),
         t if LIST_TYPES.contains(&t) => list(node, path, ctx).into_any_element(),
         "blockquote" => div()
             .pl(px(16.))
@@ -237,6 +245,7 @@ fn block(node: &Node, path: &mut Vec<usize>, ctx: &Ctx) -> AnyElement {
 /// Click target + selection/hover overlay around a block. Adds no layout.
 fn frame(node: &Node, path: &[usize], ctx: &Ctx, body: impl IntoElement) -> AnyElement {
     let selected = ctx.selection == Some(path);
+    let matched = ctx.matches.contains(path);
     let hoverable = is_textblock(node);
     let group: SharedString = format!("blk{}", fmt_path(path)).into();
     let id_path = path.to_vec();
@@ -250,6 +259,18 @@ fn frame(node: &Node, path: &[usize], ctx: &Ctx, body: impl IntoElement) -> AnyE
         .on_click(move |_, _, cx| {
             cx.stop_propagation();
             state.update(cx, |s, cx| s.select(Some(id_path.clone()), cx));
+        })
+        .when(matched, |d| {
+            d.child(
+                div()
+                    .absolute()
+                    .top(px(-4.))
+                    .bottom(px(-4.))
+                    .left(px(-8.))
+                    .right(px(-8.))
+                    .rounded(px(6.))
+                    .bg(crate::find::match_fill()),
+            )
         })
         .child(body)
         .when(selected || hoverable, |d| {
@@ -390,10 +411,10 @@ fn children(node: &Node, path: &mut Vec<usize>, ctx: &Ctx, gap: f32) -> Div {
 
 /// Inline content: one `StyledText` per block so words flow across mark
 /// boundaries; marks become byte-range highlights.
-fn inline(node: &Node, ctx: &Ctx) -> StyledText {
+fn inline(node: &Node, path: &mut Vec<usize>, ctx: &Ctx) -> StyledText {
     let mut text = String::new();
     let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
-    for c in node.children() {
+    for (i, c) in node.children().iter().enumerate() {
         let start = text.len();
         match c.text.as_deref() {
             Some(t) => text.push_str(t),
@@ -438,10 +459,17 @@ fn inline(node: &Node, ctx: &Ctx) -> StyledText {
                 _ => style.background_color = Some(Tokens::unknown_fill()),
             }
         }
+        if !ctx.matches.is_empty() {
+            path.push(i);
+            if ctx.matches.contains(path.as_slice()) {
+                styled = true;
+                style.background_color = Some(crate::find::inline_match_fill());
+            }
+            path.pop();
+        }
         if styled {
             highlights.push((range, style));
         }
     }
-    let _ = ctx;
     StyledText::new(text).with_highlights(highlights)
 }

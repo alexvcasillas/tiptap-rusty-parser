@@ -42,6 +42,7 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 | `inspector.rs` | `InspectorPanel`: identity, attrs (value + remove), mark chips, structure actions (Insert ▾ before/after/inside with presets), JSON peek + `Edit JSON` (replace node) |
 | `clipboard.rs` | parse a paste payload: one node, an array of nodes, or a `doc` (its content) |
 | `diff.rs` | `DiffState` (doc B, `Document::diff` change list, per-path tints, recomputed on observe) and `DiffPanel` (change list, tinted trees A/B, before/after inspector). Take B = `rebase_change` + `Transform::apply_change` via `DocumentState::edit` |
+| `find.rs` | `FindState` (parser `Query`, matches recomputed per document revision) and `FindBar` (toolbar input, error popover, `n / N` counter, prev/next, Only matches). Tree rows get a 2px accent bar, preview blocks a light accent fill |
 | `workspace.rs` | title bar, Inspect/Diff `Mode`, toolbar, actions and key bindings, pane layout |
 | `theme.rs` | visual tokens from the design canvas, applied over the gpui-component dark theme |
 | `assets/sample.json` | demo document with headings, marks, link, list, quote, a custom `callout`, rule, code block |
@@ -55,6 +56,7 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 - Unknown node and mark types must render and be selectable. Never match exhaustively on type.
 - Perf: no per-frame clones once panels are stable. Known cost: `edit` clones the root once before the transaction so `invert` has a base.
 - `cargo check`, `cargo clippy -p tiptap-rusty-studio -- -D warnings` and `cargo fmt --all` before every commit.
+- Find: ⌘F/ctrl-F focuses the box, ⏎/⇧⏎ and ⌘G/⇧⌘G step matches, Esc clears and returns to the tree. Grammar: `Query` rustdoc in the parser crate.
 - Keyboard: arrows / Home / End / Esc navigate in the `Document` context (tree, preview); alt-↑/↓ move the node; Diff mode: ↑/↓ step changes, ⏎ Take B.
 - Editing keys (`Document` context): ⏎ empty paragraph after the block, ⌘D duplicate, ⌘C / ⌘X / ⌘V copy / cut / paste nodes as JSON (ctrl on Linux/Windows). `Edit JSON`: ⌘⏎ apply, Esc cancel. Inspector inputs sit outside `Document`, so none of these fire while typing.
 
