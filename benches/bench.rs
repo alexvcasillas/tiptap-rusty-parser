@@ -118,6 +118,18 @@ fn benches(c: &mut Criterion) {
         b.iter(|| black_box(document.root().diff(reordered.root()).len()))
     });
 
+    // Reorder among many value-equal siblings (7 distinct values, 8/9 of 900
+    // reversed): FIFO move pairing crosses duplicates; the settle must stay
+    // one Move per relocated node instead of cascading.
+    let dup_doc = doc((0..900).map(|i| Node::element("paragraph").with_text(format!("{}", i % 7))));
+    let mut dup_reordered = dup_doc.clone();
+    if let Some(kids) = dup_reordered.content.as_mut() {
+        kids[..800].reverse();
+    }
+    c.bench_function("diff_reordered_equal_siblings_900", |b| {
+        b.iter(|| black_box(dup_doc.diff(black_box(&dup_reordered)).len()))
+    });
+
     let reorder_changes = document.root().diff(reordered.root());
     c.bench_function("apply_reordered_children", |b| {
         b.iter_batched(

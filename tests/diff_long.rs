@@ -95,3 +95,23 @@ fn completely_different_lists_roundtrip() {
     );
     roundtrip(&a, &b);
 }
+
+#[test]
+fn reordered_equal_siblings_stay_linear() {
+    // Many value-equal siblings reversed: the move settle used to cascade,
+    // re-moving placed nodes (n=100 -> 1.3M Moves, n=200 never finished).
+    let n = 900;
+    let a = Node::element("doc").with_children(
+        (0..n).map(|i| Node::element("paragraph").with_child(Node::text(format!("{}", i % 7)))),
+    );
+    let mut b = a.clone();
+    b.content.as_mut().unwrap()[..n * 8 / 9].reverse();
+    let t = std::time::Instant::now();
+    let changes = roundtrip(&a, &b);
+    let moves = changes
+        .iter()
+        .filter(|c| matches!(c, Change::Move { .. }))
+        .count();
+    assert!(moves <= n, "{moves} moves for {n} children");
+    assert!(t.elapsed().as_secs() < 10, "took {:?}", t.elapsed());
+}
