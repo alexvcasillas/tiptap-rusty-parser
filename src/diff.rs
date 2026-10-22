@@ -918,6 +918,10 @@ fn lcs_table(a: &[u32], b: &[u32]) -> Vec<Step> {
 /// Myers' greedy shortest-edit-script (= LCS) alignment, O((m+n)·D) time and
 /// O(D²) trace space. `None` if more than `max_d` edits are needed.
 fn myers(a: &[u32], b: &[u32], max_d: usize) -> Option<Vec<Step>> {
+    // Any script needs at least |n - m| edits: bail before allocating.
+    if a.len().abs_diff(b.len()) > max_d {
+        return None;
+    }
     let (n, m) = (a.len() as isize, b.len() as isize);
     let max_d = max_d.min(a.len() + b.len()) as isize;
     let off = max_d + 1;
