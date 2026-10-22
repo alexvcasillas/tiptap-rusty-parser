@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use gpui_kit::*;
 use serde_json::Value;
-use tiptap_rusty_parser::{invert, Change, Document, Node, Transform};
+use tiptap_rusty_parser::{invert, Change, Document, Mark, Node, Transform};
 
 const SAMPLE: &str = include_str!("../assets/sample.json");
 
@@ -238,12 +238,50 @@ impl DocumentState {
 
     // ---- convenience edits used by panels ---------------------------------------
 
-    /// Used by the typed attribute editors (next phase).
-    #[allow(dead_code)]
     pub fn set_attr(&mut self, path: Vec<usize>, key: &str, value: Value, cx: &mut Context<Self>) {
         let label = format!("SetAttr {} .{key}", fmt_path(&path));
         let key = key.to_string();
         self.edit(label, |t| t.set_attr(path, key, value).map(|_| ()), cx);
+    }
+
+    pub fn set_text(&mut self, path: Vec<usize>, text: String, cx: &mut Context<Self>) {
+        let label = format!("SetText {}", fmt_path(&path));
+        self.edit(label, |t| t.set_text(path, Some(text)).map(|_| ()), cx);
+    }
+
+    /// Set one attr on the first mark of `mark_type`; rebuilds the mark list.
+    pub fn set_mark_attr(
+        &mut self,
+        path: Vec<usize>,
+        mark_type: &str,
+        key: &str,
+        value: Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(node) = self.root().node_at(&path) else {
+            return;
+        };
+        let mut marks = node.marks.clone().unwrap_or_default();
+        let Some(mark) = marks.iter_mut().find(|m| m.mark_type == mark_type) else {
+            return;
+        };
+        mark.attrs
+            .get_or_insert_with(Default::default)
+            .insert(key.to_string(), value);
+        let label = format!("SetMarkAttr {} {mark_type}.{key}", fmt_path(&path));
+        self.edit(label, |t| t.set_marks(path, Some(marks)).map(|_| ()), cx);
+    }
+
+    /// Append `mark` (replacing an existing mark of the same type).
+    pub fn add_mark(&mut self, path: Vec<usize>, mark: Mark, cx: &mut Context<Self>) {
+        let Some(node) = self.root().node_at(&path) else {
+            return;
+        };
+        let mut marks = node.marks.clone().unwrap_or_default();
+        marks.retain(|m| m.mark_type != mark.mark_type);
+        let label = format!("AddMark {} {}", fmt_path(&path), mark.mark_type);
+        marks.push(mark);
+        self.edit(label, |t| t.set_marks(path, Some(marks)).map(|_| ()), cx);
     }
 
     pub fn remove_attr(&mut self, path: Vec<usize>, key: &str, cx: &mut Context<Self>) {
@@ -261,7 +299,7 @@ impl DocumentState {
             marks.remove(i);
             format!("RemoveMark {} {mark_type}", fmt_path(&path))
         } else {
-            marks.push(tiptap_rusty_parser::Mark::new(mark_type));
+            marks.push(Mark::new(mark_type));
             format!("AddMark {} {mark_type}", fmt_path(&path))
         };
         let marks = if marks.is_empty() { None } else { Some(marks) };

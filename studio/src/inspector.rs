@@ -1,16 +1,24 @@
 //! Right pane: Figma-style inspector for the selected node.
-//! v1: identity, attrs (read-only values + remove), mark chips, structure, JSON.
+//! Identity, typed attribute editors, text editing, mark chips + mark attrs,
+//! structure, JSON peek.
+
+use std::collections::HashMap;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{
+    Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction, Textarea,
+    TextareaState,
+};
 use gpui_kit::component::popover::Popover;
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
-use tiptap_rusty_parser::Node;
+use serde_json::Value;
+use tiptap_rusty_parser::{Mark, Node};
 
-use crate::state::{fmt_path, is_unknown, node_type, short_value, DocumentState, BUILTIN_MARKS};
+use crate::state::{fmt_path, is_unknown, node_type, DocumentState, BUILTIN_MARKS};
 use crate::theme::Tokens;
 use crate::tree::icon_button;
 
@@ -22,10 +30,121 @@ const WRAP_PRESETS: &[(&str, &[&str])] = &[
     ("callout", &["callout"]),
 ];
 
+/// Value class an attribute editor is picked by.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Str,
+    Num,
+    Bool,
+    Json,
+}
+
+impl Kind {
+    fn of(v: &Value) -> Self {
+        match v {
+            Value::String(_) => Kind::Str,
+            Value::Number(_) => Kind::Num,
+            Value::Bool(_) => Kind::Bool,
+            _ => Kind::Json,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Kind::Str => "string",
+            Kind::Num => "number",
+            Kind::Bool => "bool",
+            Kind::Json => "json",
+        }
+    }
+
+    fn default_value(self) -> Value {
+        match self {
+            Kind::Str => Value::String(String::new()),
+            Kind::Num => Value::from(0),
+            Kind::Bool => Value::Bool(false),
+            Kind::Json => Value::Object(Default::default()),
+        }
+    }
+}
+
+const NEW_KINDS: [Kind; 4] = [Kind::Str, Kind::Num, Kind::Bool, Kind::Json];
+
+/// What a field writes to when it commits.
+#[derive(Clone)]
+enum Target {
+    Attr(String),
+    Text,
+    MarkAttr(String, String),
+}
+
+enum Editor {
+    Line(Entity<InputState>),
+    Number(Entity<InputState>),
+    Area(Entity<TextareaState>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EditorKind {
+    Line,
+    Number,
+    Area,
+}
+
+impl Editor {
+    fn kind(&self) -> EditorKind {
+        match self {
+            Editor::Line(_) => EditorKind::Line,
+            Editor::Number(_) => EditorKind::Number,
+            Editor::Area(_) => EditorKind::Area,
+        }
+    }
+
+    fn focused(&self, window: &Window, cx: &App) -> bool {
+        match self {
+            Editor::Line(s) | Editor::Number(s) => s.read(cx).focus_handle(cx).is_focused(window),
+            Editor::Area(s) => s.read(cx).focus_handle(cx).is_focused(window),
+        }
+    }
+
+    fn set(&self, text: String, window: &mut Window, cx: &mut App) {
+        match self {
+            Editor::Line(s) | Editor::Number(s) => {
+                s.update(cx, |s, cx| s.set_value(text, window, cx))
+            }
+            Editor::Area(s) => s.update(cx, |s, cx| s.set_value(text, window, cx)),
+        }
+    }
+}
+
+/// One cached editor state per (selected node, target).
+struct Field {
+    editor: Editor,
+    target: Target,
+    /// Document value last pushed into or committed from the editor.
+    last: Value,
+    invalid: bool,
+    _subs: Vec<Subscription>,
+}
+
+struct AddMark {
+    ty: Entity<InputState>,
+    key: Entity<InputState>,
+    val: Entity<InputState>,
+    _sub: Subscription,
+}
+
 pub struct InspectorPanel {
     state: Entity<DocumentState>,
     wrap_open: bool,
     wrap_input: Option<Entity<InputState>>,
+    fields: HashMap<String, Field>,
+    fields_path: Option<Vec<usize>>,
+    seen: Vec<String>,
+    new_attr_key: Option<Entity<InputState>>,
+    new_attr_kind: Kind,
+    add_mark: Option<AddMark>,
+    add_mark_open: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -36,6 +155,13 @@ impl InspectorPanel {
             state,
             wrap_open: false,
             wrap_input: None,
+            fields: HashMap::new(),
+            fields_path: None,
+            seen: Vec::new(),
+            new_attr_key: None,
+            new_attr_kind: Kind::Str,
+            add_mark: None,
+            add_mark_open: false,
             _subs: vec![sub],
         }
     }
@@ -140,6 +266,256 @@ impl InspectorPanel {
                 )
             })
     }
+
+    /// Ensure the editor for `id` exists and mirrors `value`, then render it.
+    fn editor(
+        &mut self,
+        id: String,
+        target: Target,
+        value: &Value,
+        path: &[usize],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let want = match (&target, Kind::of(value)) {
+            (Target::Text, _) => EditorKind::Area,
+            (_, Kind::Str) => EditorKind::Line,
+            (_, Kind::Num) => EditorKind::Number,
+            _ => EditorKind::Area,
+        };
+        let stale = self.fields.get(&id).is_none_or(|f| f.editor.kind() != want);
+        if stale {
+            let text: SharedString = text_of(value).into();
+            let editor = match want {
+                EditorKind::Line => {
+                    Editor::Line(cx.new(|cx| InputState::new(window, cx).default_value(text)))
+                }
+                EditorKind::Number => Editor::Number(cx.new(|cx| {
+                    let mut s = InputState::new(window, cx).default_value(text);
+                    // emit `Step` events instead of stepping internally
+                    s.set_step(None, window, cx);
+                    s
+                })),
+                EditorKind::Area => {
+                    Editor::Area(cx.new(|cx| TextareaState::new(window, cx).default_value(text)))
+                }
+            };
+            let subs = self.subscribe(&id, &editor, path.to_vec(), window, cx);
+            self.fields.insert(
+                id.clone(),
+                Field {
+                    editor,
+                    target,
+                    last: value.clone(),
+                    invalid: false,
+                    _subs: subs,
+                },
+            );
+        } else if let Some(f) = self.fields.get_mut(&id) {
+            if f.last != *value && !f.editor.focused(window, cx) {
+                f.editor.set(text_of(value), window, cx);
+                f.last = value.clone();
+                f.invalid = false;
+            }
+        }
+        self.seen.push(id.clone());
+        let f = &self.fields[&id];
+        let border = if f.invalid {
+            Tokens::removed()
+        } else {
+            Tokens::input_border()
+        };
+        // values and JSON in mono; free text keeps the UI font
+        let font = (!matches!(f.target, Target::Text)).then(|| cx.theme().mono_font_family.clone());
+        let el = match &f.editor {
+            Editor::Line(s) => Input::new(s).small().into_any_element(),
+            Editor::Number(s) => div()
+                .rounded(px(6.))
+                .when(f.invalid, |d| d.border_1().border_color(border))
+                .child(NumberInput::new(s).small())
+                .into_any_element(),
+            Editor::Area(s) => div()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(border)
+                .child(Textarea::new(s).small().bordered(false).h(px(64.)))
+                .into_any_element(),
+        };
+        div()
+            .when_some(font, |d, f| d.font_family(f))
+            .child(el)
+            .into_any_element()
+    }
+
+    fn subscribe(
+        &mut self,
+        id: &str,
+        editor: &Editor,
+        path: Vec<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        let mut subs = Vec::new();
+        match editor {
+            Editor::Line(s) | Editor::Number(s) => {
+                subs.push(cx.subscribe_in(s, window, {
+                    let id = id.to_string();
+                    let path = path.clone();
+                    move |this, s, ev: &InputEvent, _, cx| {
+                        if matches!(ev, InputEvent::Blur | InputEvent::PressEnter { .. }) {
+                            let text = s.read(cx).value();
+                            this.commit(&id, &path, &text, cx);
+                        }
+                    }
+                }));
+                if let Editor::Number(_) = editor {
+                    subs.push(cx.subscribe_in(s, window, {
+                        let id = id.to_string();
+                        let path = path.clone();
+                        move |this, s, ev: &NumberInputEvent, window, cx| {
+                            let NumberInputEvent::Step(action) = ev;
+                            this.step(&id, &path, *action, s, window, cx);
+                        }
+                    }));
+                }
+            }
+            Editor::Area(s) => subs.push(cx.subscribe_in(s, window, {
+                let id = id.to_string();
+                move |this, s, ev: &InputEvent, _, cx| {
+                    if matches!(ev, InputEvent::Blur) {
+                        let text = s.read(cx).value();
+                        this.commit(&id, &path, &text, cx);
+                    }
+                }
+            })),
+        }
+        subs
+    }
+
+    /// Parse the editor text by its kind and write it to the document.
+    fn commit(&mut self, id: &str, path: &[usize], text: &str, cx: &mut Context<Self>) {
+        let Some(f) = self.fields.get_mut(id) else {
+            return;
+        };
+        let parsed = match (&f.target, &f.editor) {
+            (Target::Text, _) | (_, Editor::Line(_)) => Some(Value::String(text.to_string())),
+            (_, Editor::Number(_)) => parse_number(text, &f.last),
+            (_, Editor::Area(_)) => serde_json::from_str(text).ok(),
+        };
+        let Some(value) = parsed else {
+            f.invalid = true;
+            cx.notify();
+            return;
+        };
+        if f.invalid {
+            f.invalid = false;
+            cx.notify();
+        }
+        if value == f.last {
+            return;
+        }
+        f.last = value.clone();
+        let target = f.target.clone();
+        let path = path.to_vec();
+        self.state.update(cx, |s, cx| match target {
+            Target::Attr(k) => s.set_attr(path, &k, value, cx),
+            Target::Text => s.set_text(path, text.to_string(), cx),
+            Target::MarkAttr(m, k) => s.set_mark_attr(path, &m, &k, value, cx),
+        });
+    }
+
+    /// − / + on a number field: integers stay integers, floats stay floats.
+    fn step(
+        &mut self,
+        id: &str,
+        path: &[usize],
+        action: StepAction,
+        s: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(f) = self.fields.get_mut(id) else {
+            return;
+        };
+        let base = parse_number(&s.read(cx).value(), &f.last).unwrap_or_else(|| f.last.clone());
+        let d: i64 = match action {
+            StepAction::Increment => 1,
+            StepAction::Decrement => -1,
+        };
+        let next = match base.as_i64() {
+            Some(i) => Value::from(i + d),
+            None => match base.as_f64() {
+                Some(x) => serde_json::Number::from_f64(x + d as f64)
+                    .map(Value::Number)
+                    .unwrap_or(base),
+                None => Value::from(d),
+            },
+        };
+        s.update(cx, |s, cx| s.set_value(text_of(&next), window, cx));
+        self.commit(id, path, &text_of(&next), cx);
+    }
+
+    fn add_attr(&mut self, path: Vec<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(input) = self.new_attr_key.clone() else {
+            return;
+        };
+        let key = input.read(cx).value().trim().to_string();
+        if key.is_empty() {
+            return;
+        }
+        let value = self.new_attr_kind.default_value();
+        self.state
+            .update(cx, |s, cx| s.set_attr(path, &key, value, cx));
+        input.update(cx, |s, cx| s.set_value("", window, cx));
+    }
+
+    fn add_mark(&mut self, path: Vec<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(row) = &self.add_mark else {
+            return;
+        };
+        let ty = row.ty.read(cx).value().trim().to_string();
+        if ty.is_empty() {
+            return;
+        }
+        let key = row.key.read(cx).value().trim().to_string();
+        let val = row.val.read(cx).value().to_string();
+        let mut mark = Mark::new(ty);
+        if !key.is_empty() {
+            mark = mark.attr(key, val);
+        }
+        for s in [&row.ty, &row.key, &row.val] {
+            s.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+        self.add_mark_open = false;
+        self.state.update(cx, |s, cx| s.add_mark(path, mark, cx));
+    }
+
+    fn add_mark_row(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &AddMark {
+        if self.add_mark.is_none() {
+            let ty = cx.new(|cx| InputState::new(window, cx).placeholder("type"));
+            let key = cx.new(|cx| InputState::new(window, cx).placeholder("key"));
+            let val = cx.new(|cx| InputState::new(window, cx).placeholder("value"));
+            // `link` prefills `href`
+            let sub = cx.subscribe_in(&ty, window, {
+                let key = key.clone();
+                move |_, ty, ev: &InputEvent, window, cx| {
+                    if matches!(ev, InputEvent::Change)
+                        && ty.read(cx).value().trim() == "link"
+                        && key.read(cx).value().is_empty()
+                    {
+                        key.update(cx, |s, cx| s.set_value("href", window, cx));
+                    }
+                }
+            });
+            self.add_mark = Some(AddMark {
+                ty,
+                key,
+                val,
+                _sub: sub,
+            });
+        }
+        self.add_mark.as_ref().unwrap()
+    }
 }
 
 impl Render for InspectorPanel {
@@ -161,6 +537,8 @@ impl Render for InspectorPanel {
             .border_color(Tokens::border());
 
         let Some(path) = s.selection.clone() else {
+            self.fields.clear();
+            self.fields_path = None;
             return pane.child(
                 div()
                     .flex_1()
@@ -180,6 +558,34 @@ impl Render for InspectorPanel {
         let is_text = ty == "text";
         let (undo_n, redo_n) = s.undo_depth();
         let last = s.last_change.clone().unwrap_or_else(|| "—".into());
+        // snapshot of the selected node; the editors below need `&mut self`
+        let text = node.text.clone();
+        let attrs: Vec<(String, Value)> = node
+            .attrs
+            .as_ref()
+            .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+        let marks: Vec<Mark> = node.marks.clone().unwrap_or_default();
+        let content = if is_text {
+            format!(
+                "{} graphemes",
+                node.text.as_deref().map(|t| t.chars().count()).unwrap_or(0)
+            )
+        } else {
+            let (n, t) = count(node);
+            format!(
+                "{n} child{} · {t} text node{}",
+                if n == 1 { "" } else { "ren" },
+                if t == 1 { "" } else { "s" }
+            )
+        };
+
+        if self.fields_path.as_deref() != Some(path.as_slice()) {
+            self.fields.clear();
+            self.fields_path = Some(path.clone());
+            self.add_mark_open = false;
+        }
+        self.seen.clear();
 
         // header
         pane = pane.child(
@@ -244,52 +650,23 @@ impl Render for InspectorPanel {
                     value_text(format!("doc › {}", fmt_path(&path)), &mono),
                     None,
                 ))
-                .child(field(
-                    "content",
-                    value_text(
-                        if is_text {
-                            format!(
-                                "{} graphemes",
-                                node.text.as_deref().map(|t| t.chars().count()).unwrap_or(0)
-                            )
-                        } else {
-                            let (n, t) = count(node);
-                            format!(
-                                "{n} child{} · {t} text node{}",
-                                if n == 1 { "" } else { "ren" },
-                                if t == 1 { "" } else { "s" }
-                            )
-                        },
-                        &mono,
-                    ),
-                    None,
-                )),
+                .child(field("content", value_text(content, &mono), None)),
         );
 
-        // text
-        if let Some(text) = node.text.as_deref() {
-            body = body.child(
-                section("Text", None).child(
-                    div()
-                        .px(px(8.))
-                        .py(px(6.))
-                        .rounded(px(6.))
-                        .border_1()
-                        .border_color(Tokens::input_border())
-                        .bg(Tokens::background())
-                        .text_size(px(13.))
-                        .line_height(relative(1.5))
-                        .child(text.to_string()),
-                ),
+        // text (commit on blur)
+        if let Some(text) = text {
+            let editor = self.editor(
+                "t".into(),
+                Target::Text,
+                &Value::String(text),
+                &path,
+                window,
+                cx,
             );
+            body = body.child(section("Text", None).child(editor));
         }
 
-        // attributes
-        let attrs: Vec<(String, serde_json::Value)> = node
-            .attrs
-            .as_ref()
-            .map(|a| a.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
+        // attributes: typed editors
         let mut attrs_section = section("Attributes", None);
         if attrs.is_empty() {
             attrs_section = attrs_section.child(
@@ -308,12 +685,44 @@ impl Render for InspectorPanel {
                     state.update(cx, |s, cx| s.remove_attr(path.clone(), &key, cx));
                 }
             };
-            let kind = match &v {
-                serde_json::Value::Number(_) => "number",
-                serde_json::Value::Bool(_) => "bool",
-                serde_json::Value::String(_) => "string",
-                serde_json::Value::Null => "null",
-                _ => "json",
+            let kind = Kind::of(&v);
+            let editor = match &v {
+                Value::Bool(b) => {
+                    let state = state.clone();
+                    let path = path.clone();
+                    let key = k.clone();
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .h(px(28.))
+                        .child(
+                            Switch::new(ElementId::Name(format!("sw-{k}").into()))
+                                .small()
+                                .checked(*b)
+                                .on_change(move |on: &bool, _, cx| {
+                                    state.update(cx, |s, cx| {
+                                        s.set_attr(path.clone(), &key, Value::Bool(*on), cx)
+                                    })
+                                }),
+                        )
+                        .child(
+                            div()
+                                .font_family(mono.clone())
+                                .text_size(px(12.))
+                                .text_color(Tokens::secondary())
+                                .child(if *b { "true" } else { "false" }),
+                        )
+                        .into_any_element()
+                }
+                _ => self.editor(
+                    format!("a:{k}"),
+                    Target::Attr(k.clone()),
+                    &v,
+                    &path,
+                    window,
+                    cx,
+                ),
             };
             attrs_section = attrs_section.child(field(
                 k.clone(),
@@ -321,25 +730,71 @@ impl Render for InspectorPanel {
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(value_box(short_value(&v), &mono))
+                    .child(div().flex_1().min_w_0().child(editor))
                     .child(
                         div()
+                            .flex_shrink_0()
                             .text_size(px(10.))
                             .text_color(Tokens::disabled())
-                            .child(kind),
+                            .child(kind.label()),
                     ),
                 Some(Box::new(remove)),
             ));
         }
+        // add attribute row
+        let new_key = self
+            .new_attr_key
+            .get_or_insert_with(|| cx.new(|cx| InputState::new(window, cx).placeholder("key")))
+            .clone();
+        let mut kinds = div().flex().gap(px(2.));
+        for kind in NEW_KINDS {
+            let on = kind == self.new_attr_kind;
+            kinds = kinds.child(
+                div()
+                    .id(ElementId::Name(format!("nk-{}", kind.label()).into()))
+                    .h(px(22.))
+                    .px(px(6.))
+                    .rounded(px(4.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_size(px(10.))
+                    .bg(if on {
+                        Tokens::accent_fill()
+                    } else {
+                        Tokens::button()
+                    })
+                    .text_color(if on {
+                        Tokens::foreground()
+                    } else {
+                        Tokens::muted()
+                    })
+                    .hover(|s| s.bg(Tokens::raised()))
+                    .child(kind.label())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.new_attr_kind = kind;
+                        cx.notify();
+                    })),
+            );
+        }
+        attrs_section = attrs_section.child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(6.))
+                .pt(px(4.))
+                .child(div().flex_1().min_w_0().child(Input::new(&new_key).small()))
+                .child(kinds.flex_shrink_0())
+                .child(plus_button("add-attr", {
+                    let path = path.clone();
+                    cx.listener(move |this, _, window, cx| this.add_attr(path.clone(), window, cx))
+                })),
+        );
         body = body.child(attrs_section);
 
         // marks
         if is_text {
-            let present: Vec<String> = node
-                .marks
-                .as_ref()
-                .map(|m| m.iter().map(|m| m.mark_type.clone()).collect())
-                .unwrap_or_default();
+            let present: Vec<String> = marks.iter().map(|m| m.mark_type.clone()).collect();
             let mut all: Vec<String> = BUILTIN_MARKS.iter().map(|s| s.to_string()).collect();
             for m in &present {
                 if !all.contains(m) {
@@ -387,31 +842,175 @@ impl Render for InspectorPanel {
                         }),
                 );
             }
-            body = body.child(
-                section(
-                    "Marks",
-                    Some(
-                        format!(
-                            "{} of {}",
-                            present.len(),
-                            BUILTIN_MARKS.len().max(present.len())
-                        )
-                        .into(),
-                    ),
-                )
-                .child(chips),
+            // `+ mark…` reveals the add-mark row
+            let open = self.add_mark_open;
+            chips = chips.child(
+                div()
+                    .id("add-mark-chip")
+                    .flex()
+                    .items_center()
+                    .gap(px(5.))
+                    .h(px(28.))
+                    .px(px(10.))
+                    .rounded(px(14.))
+                    .border_1()
+                    .border_dashed()
+                    .cursor_pointer()
+                    .text_size(px(12.))
+                    .border_color(if open {
+                        Tokens::accent()
+                    } else {
+                        Tokens::input_border()
+                    })
+                    .text_color(Tokens::muted())
+                    .hover(|s| s.bg(Tokens::raised()))
+                    .child(Icon::new(IconName::Plus).xsmall())
+                    .child("mark…")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.add_mark_open = !this.add_mark_open;
+                        cx.notify();
+                    })),
             );
-            // per-mark attrs
-            for m in node.marks.as_deref().unwrap_or(&[]) {
-                if let Some(attrs) = &m.attrs {
-                    let mut sec = section(format!("{} attrs", m.mark_type), None);
-                    for (k, v) in attrs {
-                        sec = sec.child(field(k.clone(), value_box(short_value(v), &mono), None));
-                    }
-                    body = body.child(sec);
+            let mut marks_section = section(
+                "Marks",
+                Some(
+                    format!(
+                        "{} of {}",
+                        present.len(),
+                        BUILTIN_MARKS.len().max(present.len())
+                    )
+                    .into(),
+                ),
+            )
+            .child(chips);
+            if open {
+                let row = self.add_mark_row(window, cx);
+                let (ty, key, val) = (row.ty.clone(), row.key.clone(), row.val.clone());
+                marks_section = marks_section.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(Input::new(&ty).small())
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(div().flex_1().min_w_0().child(Input::new(&key).small()))
+                                .child(div().flex_1().min_w_0().child(Input::new(&val).small()))
+                                .child(
+                                    Button::new("add-mark")
+                                        .outline()
+                                        .small()
+                                        .label("Add")
+                                        .on_click({
+                                            let path = path.clone();
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.add_mark(path.clone(), window, cx)
+                                            })
+                                        }),
+                                ),
+                        ),
+                );
+            }
+            body = body.child(marks_section);
+            // per-mark attrs: editable, plus `+ attr`
+            for m in &marks {
+                let mt = m.mark_type.clone();
+                let mut sec = section(format!("{mt} attrs"), None);
+                for (k, v) in m.attrs.iter().flatten() {
+                    let editor = self.editor(
+                        format!("m:{mt}:{k}"),
+                        Target::MarkAttr(mt.clone(), k.clone()),
+                        v,
+                        &path,
+                        window,
+                        cx,
+                    );
+                    sec = sec.child(field(k.clone(), editor, None));
                 }
+                let key_id = format!("m+:{mt}");
+                let key_input = match self.fields.get(&key_id) {
+                    Some(Field {
+                        editor: Editor::Line(s),
+                        ..
+                    }) => s.clone(),
+                    _ => {
+                        let s = cx.new(|cx| InputState::new(window, cx).placeholder("new key"));
+                        self.fields.insert(
+                            key_id.clone(),
+                            Field {
+                                editor: Editor::Line(s.clone()),
+                                target: Target::Attr(String::new()),
+                                last: Value::Null,
+                                invalid: false,
+                                _subs: Vec::new(),
+                            },
+                        );
+                        s
+                    }
+                };
+                self.seen.push(key_id);
+                let add = {
+                    let state = state.clone();
+                    let path = path.clone();
+                    let mt = mt.clone();
+                    let key_input = key_input.clone();
+                    move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                        let key = key_input.read(cx).value().trim().to_string();
+                        if key.is_empty() {
+                            return;
+                        }
+                        state.update(cx, |s, cx| {
+                            s.set_mark_attr(
+                                path.clone(),
+                                &mt,
+                                &key,
+                                Value::String(String::new()),
+                                cx,
+                            )
+                        });
+                        key_input.update(cx, |s, cx| s.set_value("", window, cx));
+                    }
+                };
+                sec = sec.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .pt(px(4.))
+                        .child(
+                            div()
+                                .w(px(96.))
+                                .flex_shrink_0()
+                                .text_size(px(12.))
+                                .text_color(Tokens::muted())
+                                .child("+ attr"),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .child(Input::new(&key_input).small()),
+                        )
+                        .child(plus_button(
+                            ElementId::Name(format!("add-mark-attr-{mt}").into()),
+                            add,
+                        )),
+                );
+                body = body.child(sec);
             }
         }
+        // drop editors whose field disappeared (removed attr, removed mark)
+        let seen = std::mem::take(&mut self.seen);
+        self.fields.retain(|k, _| seen.contains(k));
+        self.seen = seen;
+
+        let s = self.state.read(cx);
+        let Some(node) = s.selected() else {
+            return pane;
+        };
 
         // structure
         let can_wrap = s.can_wrap();
@@ -660,22 +1259,47 @@ fn value_text(text: impl Into<SharedString>, mono: &SharedString) -> Div {
         .child(text.into())
 }
 
-fn value_box(text: impl Into<SharedString>, mono: &SharedString) -> Div {
+/// Editor text for a document value: raw string, number literal, pretty JSON.
+fn text_of(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => b.to_string(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
+}
+
+/// Parse number text; an integer literal stays an integer unless `last` was a float.
+fn parse_number(text: &str, last: &Value) -> Option<Value> {
+    let t = text.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let was_float = matches!(last, Value::Number(n) if n.is_f64());
+    if !was_float && !t.contains(['.', 'e', 'E']) {
+        if let Ok(i) = t.parse::<i64>() {
+            return Some(Value::from(i));
+        }
+    }
+    serde_json::Number::from_f64(t.parse::<f64>().ok()?).map(Value::Number)
+}
+
+fn plus_button(
+    id: impl Into<ElementId>,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
     div()
-        .flex_1()
-        .min_w_0()
-        .h(px(28.))
-        .px(px(8.))
+        .id(id)
+        .size(px(24.))
+        .flex_shrink_0()
+        .rounded(px(4.))
         .flex()
         .items_center()
-        .rounded(px(6.))
-        .border_1()
-        .border_color(Tokens::input_border())
-        .bg(Tokens::background())
-        .font_family(mono.clone())
-        .text_size(px(12.))
-        .overflow_hidden()
-        .text_ellipsis()
-        .whitespace_nowrap()
-        .child(text.into())
+        .justify_center()
+        .cursor_pointer()
+        .bg(Tokens::button())
+        .text_color(Tokens::secondary())
+        .hover(|s| s.bg(Tokens::raised()).text_color(Tokens::foreground()))
+        .on_click(on_click)
+        .child(Icon::new(IconName::Plus).xsmall())
 }
