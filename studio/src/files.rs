@@ -498,6 +498,13 @@ impl Workspace {
     /// Every `POLL`: one `stat` of the open file. Changed and clean: reload in
     /// place. Changed and dirty: ask via the banner.
     fn poll_disk(&mut self, cx: &mut Context<Self>) {
+        // A replaced without `open_a` (Document Server, Swap, Swap's Save):
+        // watch its file now, never the old one, which would reload over it.
+        let file = self.state.read(cx).file.as_ref();
+        if self.files.watched.as_ref().map(|(p, _)| p) != file {
+            self.files.watched = file.map(|p| (p.clone(), mtime(p)));
+            return;
+        }
         let Some((path, seen)) = self.files.watched.as_mut() else {
             return;
         };
