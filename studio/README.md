@@ -19,14 +19,14 @@ Not published. Not part of the parser's CI matrix (needs native windowing libs).
 
 ```
 title bar   tiptap-studio · [Inspect | Diff] · file name · node stats
-toolbar     Open · Save · Undo · Redo · JSON · Schema
+toolbar     Open · Save · Save as… · Undo · Redo · JSON · Schema
 panes       tree (280) · preview (fluid) · inspector (320)
 
 Diff mode
 title bar   a.json → b.json · +n −n ~n · total changes
 toolbar     … · Open B… · Swap (v1: disabled) · Apply all to A · Only changed · Sync scroll (v1: disabled)
 panes       changes (300) · tree A (fluid) · tree B (fluid) · before/after (300)
-keys        ↑/↓ step changes · ⏎ Take B · ⌫ Keep A (again: unkeep) · ctrl/cmd-z undo
+keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) · ctrl/cmd-z undo
 ```
 
 ## Modules
@@ -60,9 +60,10 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Keep A (again: unkeep) · 
 - [x] Add attribute; add mark with attrs (link `href`)
 - [x] Wrap in…, split, join
 - [x] Diff mode: second document, `Document::diff` change list, tinted rows in both trees, before/after inspector
-- [x] Diff: remembered Keep A decisions (⌫), Apply all skips kept
+- [x] Diff as a merge tool: Dismiss (⌫) leaves A's side and hides the change, Apply all skips dismissed, Save / Save as… writes the merged A (`<a>-merged.json` suggested)
 - [ ] Diff: Swap A/B, sync scroll
-- [ ] Open / save dialogs, recent files
+- [x] Save (⌘S), Save as… (⇧⌘S)
+- [ ] Open dialog for A, recent files
 - [ ] Resizable panes via `DockArea`
 - [ ] Schema panel surfacing `Violation`s
 - [ ] WASM build as a web playground

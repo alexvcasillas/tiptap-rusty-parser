@@ -670,3 +670,36 @@ impl DocumentState {
         }
     }
 }
+
+// ---- saving ----------------------------------------------------------------------
+
+impl DocumentState {
+    /// Write the document (pretty JSON, key order preserved) to `path`; on
+    /// success it becomes the current file and the dirty flag clears.
+    pub fn save_to(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let result = self
+            .doc
+            .to_string_pretty()
+            .map_err(anyhow::Error::from)
+            .and_then(|mut json| {
+                json.push('\n');
+                std::fs::write(path, json).map_err(anyhow::Error::from)
+            });
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match result {
+            Ok(()) => {
+                self.file = Some(path.to_path_buf());
+                self.dirty = false;
+                self.last_change = Some(format!("Saved {name}").into());
+            }
+            Err(e) => {
+                eprintln!("tiptap-studio: save {}: {e}", path.display());
+                self.last_change = Some(format!("Save failed: {e}").into());
+            }
+        }
+        cx.notify();
+    }
+}

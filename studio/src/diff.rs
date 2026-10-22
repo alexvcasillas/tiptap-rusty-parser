@@ -24,7 +24,7 @@ use crate::state::{fmt_path, node_summary, node_type, short_value, text_preview,
 use crate::theme::Tokens;
 use crate::tree::{flatten, pane_header, render_row, Deco, Row, RowFn};
 
-gpui_kit::actions!(diff, [PrevChange, NextChange, TakeB, KeepA]);
+gpui_kit::actions!(diff, [PrevChange, NextChange, TakeB, Dismiss]);
 
 pub const CONTEXT: &str = "Diff";
 
@@ -33,7 +33,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PrevChange, Some(CONTEXT)),
         KeyBinding::new("down", NextChange, Some(CONTEXT)),
         KeyBinding::new("enter", TakeB, Some(CONTEXT)),
-        KeyBinding::new("backspace", KeepA, Some(CONTEXT)),
+        KeyBinding::new("backspace", Dismiss, Some(CONTEXT)),
     ]);
 }
 
@@ -72,7 +72,7 @@ pub struct Entry {
 }
 
 impl Entry {
-    /// Identity for a Keep A decision. Anchored on B (read-only, so its paths
+    /// Identity for a Dismiss decision. Anchored on B (read-only, so its paths
     /// never shift) plus both values: edits elsewhere in A keep the decision,
     /// while a different value on either side is a new change to review.
     fn key(&self) -> String {
@@ -189,10 +189,15 @@ pub struct DiffState {
     pub error: Option<SharedString>,
     changes: Vec<Change>,
     entries: Rc<Vec<Entry>>,
-    /// Keep A decisions, by `Entry::key`. Cleared when B changes.
+    /// Dismiss decisions ("leave A as it is"), by `Entry::key`. Cleared when
+    /// B changes.
     kept: HashSet<String>,
-    /// `kept_flags[i]`: entry `i` is resolved as Keep A.
+    /// `kept_flags[i]`: entry `i` is dismissed.
     kept_flags: Rc<Vec<bool>>,
+    /// Entry indices the change list shows, in order.
+    visible: Rc<Vec<usize>>,
+    /// Show dismissed changes in the list (to restore one).
+    pub show_dismissed: bool,
     pub selected: Option<usize>,
     json: SharedString,
     side_a: Side,
@@ -224,6 +229,8 @@ impl DiffState {
             entries: Rc::new(Vec::new()),
             kept: HashSet::new(),
             kept_flags: Rc::new(Vec::new()),
+            visible: Rc::new(Vec::new()),
+            show_dismissed: false,
             selected: None,
             json: SharedString::default(),
             side_a: Side::default(),
@@ -251,7 +258,7 @@ impl DiffState {
             .unwrap_or_else(|| "—".into())
     }
 
-    /// Changes still to resolve (kept ones excluded).
+    /// Changes still to resolve (dismissed ones excluded).
     pub fn total(&self) -> usize {
         self.changes.len() - self.kept_count()
     }
@@ -345,12 +352,33 @@ impl DiffState {
             }
         }
         self.counts = counts;
-        if self.entries.is_empty() {
-            self.selected = None;
-        } else if let Some(i) = self.selected {
-            self.selected = Some(i.min(self.entries.len() - 1));
+        let show = self.show_dismissed;
+        self.visible = Rc::new(
+            (0..entries.len())
+                .filter(|&i| show || !self.kept_flags[i])
+                .collect(),
+        );
+        // A selection that is gone or hidden moves to the next visible change.
+        if let Some(i) = self.selected {
+            let i = i.min(entries.len().saturating_sub(1));
+            self.selected = self
+                .visible
+                .iter()
+                .copied()
+                .find(|&j| j >= i)
+                .or_else(|| self.visible.last().copied());
         }
         self.sync_selection(a);
+    }
+
+    /// Position of entry `i` in the visible list.
+    pub fn visible_pos(&self, i: usize) -> Option<usize> {
+        self.visible.iter().position(|&j| j == i)
+    }
+
+    pub fn toggle_show_dismissed(&mut self, cx: &mut Context<Self>) {
+        self.show_dismissed = !self.show_dismissed;
+        self.with_a(cx, |this, a| this.retint(a, false));
     }
 
     /// Point both trees at the selected change and refresh rows + JSON.
@@ -402,15 +430,16 @@ impl DiffState {
     }
 
     pub fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let n = self.entries.len();
+        let n = self.visible.len();
         if n == 0 {
             return;
         }
-        let next = match self.selected {
-            Some(i) => (i as isize + delta).clamp(0, n as isize - 1) as usize,
+        let pos = match self.selected.and_then(|i| self.visible_pos(i)) {
+            Some(p) => (p as isize + delta).clamp(0, n as isize - 1) as usize,
             None if delta < 0 => n - 1,
             None => 0,
         };
+        let next = self.visible[pos];
         self.select_change(next, cx);
     }
 
@@ -474,9 +503,10 @@ impl DiffState {
         });
     }
 
-    /// Keep A: resolve the selected change in A's favour (or un-resolve a
-    /// kept one) and move to the next unresolved change.
-    pub fn keep_a(&mut self, cx: &mut Context<Self>) {
+    /// Dismiss: decide "leave A as it is" for the selected change (or restore
+    /// a dismissed one). Dismissed changes leave the list, the counts and
+    /// Apply all; selection moves to the next open change.
+    pub fn dismiss(&mut self, cx: &mut Context<Self>) {
         let Some(i) = self.selected else {
             return;
         };
@@ -487,8 +517,10 @@ impl DiffState {
         if now_kept {
             self.kept.insert(key);
         }
+        // Hidden mode: `retint` already moved the selection past the
+        // now-hidden change. Showing dismissed ones: step to the next open one.
         self.with_a(cx, |this, a| this.retint(a, false));
-        if now_kept {
+        if now_kept && self.show_dismissed {
             let n = self.entries.len();
             if let Some(next) = (1..n).map(|d| (i + d) % n).find(|&j| !self.is_kept(j)) {
                 self.select_change(next, cx);
@@ -770,7 +802,10 @@ impl DiffPanel {
             return;
         }
         if let Some(i) = now.0 {
-            self.scroll_list.scroll_to_item(i, ScrollStrategy::Nearest);
+            if let Some(pos) = d.visible_pos(i) {
+                self.scroll_list
+                    .scroll_to_item(pos, ScrollStrategy::Nearest);
+            }
         }
         for (sel, side, scroll) in [
             (&now.1, &d.side_a, &self.scroll_a),
@@ -828,16 +863,20 @@ impl DiffPanel {
     fn changes_pane(&self, d: &DiffState, mono: &SharedString) -> Stateful<Div> {
         let entries = d.entries.clone();
         let kept = d.kept_flags.clone();
+        let visible = d.visible.clone();
         let selected = d.selected;
-        let total = entries.len();
+        let shown = visible.len();
         let open = d.total();
         let kept_n = d.kept_count();
+        let show_dismissed = d.show_dismissed;
         let diff = self.diff.clone();
+        let toggle = self.diff.clone();
         let focus = self.focus.clone();
         let mono2 = mono.clone();
-        let list = uniform_list("diff-changes", total, move |range, _, _| {
+        let list = uniform_list("diff-changes", shown, move |range, _, _| {
             range
-                .map(|i| {
+                .map(|pos| {
+                    let i = visible[pos];
                     let diff = diff.clone();
                     let focus = focus.clone();
                     let k = kept.get(i).copied().unwrap_or(false);
@@ -853,9 +892,14 @@ impl DiffPanel {
         .track_scroll(&self.scroll_list)
         .flex_1()
         .p(px(6.));
-        let pos = match selected {
-            Some(i) => format!("{} / {total}", i + 1),
-            None => format!("– / {total}"),
+        let pos = match selected.and_then(|i| d.visible_pos(i)) {
+            Some(p) => format!("{} / {shown}", p + 1),
+            None => format!("– / {shown}"),
+        };
+        let empty_msg = if kept_n > 0 {
+            "All changes resolved"
+        } else {
+            "Documents are identical"
         };
         div()
             .id("diff-changes-pane")
@@ -867,12 +911,8 @@ impl DiffPanel {
             .bg(Tokens::panel())
             .border_r_1()
             .border_color(Tokens::border())
-            .child(pane_header("Changes").child(div().child(if kept_n > 0 {
-                format!("{open} · {kept_n} kept")
-            } else {
-                format!("{open}")
-            })))
-            .child(if total == 0 {
+            .child(pane_header("Changes").child(div().child(format!("{open}"))))
+            .child(if shown == 0 {
                 div()
                     .flex_1()
                     .flex()
@@ -880,10 +920,42 @@ impl DiffPanel {
                     .justify_center()
                     .text_size(px(12.))
                     .text_color(Tokens::disabled())
-                    .child("Documents are identical")
+                    .child(empty_msg)
                     .into_any_element()
             } else {
                 list.into_any_element()
+            })
+            .when(kept_n > 0, |d| {
+                d.child(
+                    div()
+                        .id("diff-show-dismissed")
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .px(px(12.))
+                        .py(px(8.))
+                        .border_t_1()
+                        .border_color(Tokens::border())
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(Tokens::muted())
+                        .hover(|s| s.bg(Tokens::raised()).text_color(Tokens::foreground()))
+                        .on_click(move |_, _, cx| {
+                            toggle.update(cx, |d, cx| d.toggle_show_dismissed(cx))
+                        })
+                        .child(
+                            Icon::new(if show_dismissed {
+                                IconName::ChevronDown
+                            } else {
+                                IconName::ChevronRight
+                            })
+                            .xsmall(),
+                        )
+                        .child(format!(
+                            "{kept_n} dismissed · {}",
+                            if show_dismissed { "hide" } else { "show" }
+                        )),
+                )
             })
             .child(
                 div()
@@ -900,7 +972,7 @@ impl DiffPanel {
                     .child(
                         div()
                             .text_color(Tokens::disabled())
-                            .child("↑↓ step · ⏎ take B · ⌫ keep A"),
+                            .child("↑↓ step · ⏎ take B · ⌫ dismiss"),
                     ),
             )
     }
@@ -1123,9 +1195,12 @@ impl DiffPanel {
             section(
                 "Resolve",
                 Some(if is_kept {
-                    "kept A".into()
+                    "dismissed".into()
                 } else {
-                    format!("{} / {}", i + 1, d.entries.len()).into()
+                    match d.visible_pos(i) {
+                        Some(p) => format!("{} / {}", p + 1, d.visible.len()).into(),
+                        None => SharedString::default(),
+                    }
                 }),
             )
             .child(
@@ -1136,9 +1211,9 @@ impl DiffPanel {
                         Button::new("diff-keep-a")
                             .outline()
                             .small()
-                            .label(if is_kept { "Unkeep" } else { "Keep A" })
+                            .label(if is_kept { "Restore" } else { "Dismiss" })
                             .flex_1()
-                            .on_click(move |_, _, cx| keep.update(cx, |d, cx| d.keep_a(cx))),
+                            .on_click(move |_, _, cx| keep.update(cx, |d, cx| d.dismiss(cx))),
                     )
                     .child(
                         Button::new("diff-take-b")
@@ -1229,7 +1304,7 @@ fn change_row(
                             .font_family(mono.clone())
                             .text_size(px(10.))
                             .text_color(Tokens::muted())
-                            .child("kept A"),
+                            .child("dismissed"),
                     )
                 })
                 .child(
@@ -1300,7 +1375,7 @@ impl Render for DiffPanel {
                 cx.listener(|this, _: &TakeB, _, cx| this.diff.update(cx, |d, cx| d.take_b(cx))),
             )
             .on_action(
-                cx.listener(|this, _: &KeepA, _, cx| this.diff.update(cx, |d, cx| d.keep_a(cx))),
+                cx.listener(|this, _: &Dismiss, _, cx| this.diff.update(cx, |d, cx| d.dismiss(cx))),
             )
             .flex()
             .flex_1()

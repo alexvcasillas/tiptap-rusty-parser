@@ -19,7 +19,7 @@ use crate::tree::TreePanel;
 
 gpui_kit::actions!(
     studio,
-    [Undo, Redo, DeleteNode, MoveUp, MoveDown, PrintJson]
+    [Undo, Redo, DeleteNode, MoveUp, MoveDown, PrintJson, Save, SaveAs]
 );
 
 pub fn bind_keys(cx: &mut App) {
@@ -29,6 +29,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-z", Redo, Some("Studio")),
         KeyBinding::new("ctrl-shift-z", Redo, Some("Studio")),
         KeyBinding::new("ctrl-y", Redo, Some("Studio")),
+        KeyBinding::new("cmd-s", Save, Some("Studio")),
+        KeyBinding::new("ctrl-s", Save, Some("Studio")),
+        KeyBinding::new("cmd-shift-s", SaveAs, Some("Studio")),
+        KeyBinding::new("ctrl-shift-s", SaveAs, Some("Studio")),
         KeyBinding::new("backspace", DeleteNode, Some("Studio")),
         KeyBinding::new("delete", DeleteNode, Some("Studio")),
         KeyBinding::new("alt-up", MoveUp, Some(crate::nav::CONTEXT)),
@@ -127,6 +131,48 @@ impl Workspace {
     fn print_json(&mut self, _: &PrintJson, _: &mut Window, cx: &mut Context<Self>) {
         println!("{}", self.state.read(cx).to_json_pretty());
     }
+
+    /// Save A in place; the bundled sample has no file, so it asks for one.
+    fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        match self.state.read(cx).file.clone() {
+            Some(p) => self.state.update(cx, |s, cx| s.save_to(&p, cx)),
+            None => self.save_as(&SaveAs, window, cx),
+        }
+    }
+
+    /// Save A under a new name. With a B loaded the suggestion is
+    /// `<a>-merged.json`, so the merge never overwrites the original by accident.
+    fn save_as(&mut self, _: &SaveAs, _: &mut Window, cx: &mut Context<Self>) {
+        let s = self.state.read(cx);
+        let dir = s
+            .file
+            .as_ref()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let stem = s
+            .file
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "document".into());
+        let name = if self.diff.read(cx).has_b() {
+            format!("{stem}-merged.json")
+        } else {
+            format!("{stem}.json")
+        };
+        let rx = cx.prompt_for_new_path(&dir, Some(&name));
+        let state = self.state.clone();
+        cx.spawn(async move |_, cx| match rx.await {
+            Ok(Ok(Some(path))) => {
+                state.update(cx, |s, cx| s.save_to(&path, cx));
+            }
+            Ok(Ok(None)) => {} // cancelled
+            Ok(Err(e)) => eprintln!("tiptap-studio: save prompt failed: {e}"),
+            Err(_) => {}
+        })
+        .detach();
+    }
 }
 
 impl Render for Workspace {
@@ -136,6 +182,7 @@ impl Render for Workspace {
         let (nodes, texts, unknown) = s.stats();
         let file = s.file_name();
         let dirty = s.dirty;
+        let has_file = s.file.is_some();
         let can_undo = s.can_undo();
         let can_redo = s.can_redo();
         let mode = self.mode;
@@ -157,6 +204,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::print_json))
+            .on_action(cx.listener(Self::save))
+            .on_action(cx.listener(Self::save_as))
             .flex()
             .flex_col()
             .size_full()
@@ -257,7 +306,7 @@ impl Render for Workspace {
                                 "· {total} change{}{}",
                                 if total == 1 { "" } else { "s" },
                                 if kept > 0 {
-                                    format!(" · {kept} kept")
+                                    format!(" · {kept} dismissed")
                                 } else {
                                     String::new()
                                 }
@@ -277,7 +326,17 @@ impl Render for Workspace {
                     .border_b_1()
                     .border_color(Tokens::border())
                     .child(tool("open", IconName::FolderOpen, "Open").disabled(true))
-                    .child(tool("save", IconName::Save, "Save").disabled(true))
+                    .child(
+                        tool("save", IconName::Save, "Save")
+                            .disabled(!dirty && has_file)
+                            .tooltip("Save A (⌘S)")
+                            .on_click(cx.listener(|this, _, w, cx| this.save(&Save, w, cx))),
+                    )
+                    .child(
+                        tool("save-as", IconName::FilePlus, "Save as…")
+                            .tooltip("Save A as a new file (⇧⌘S)")
+                            .on_click(cx.listener(|this, _, w, cx| this.save_as(&SaveAs, w, cx))),
+                    )
                     .child(sep())
                     .child(
                         tool("undo", IconName::Undo, "Undo")
