@@ -47,9 +47,10 @@ pub enum Mode {
 }
 
 pub struct Workspace {
-    state: Entity<DocumentState>,
-    mode: Mode,
-    diff: Entity<DiffState>,
+    pub(crate) state: Entity<DocumentState>,
+    pub(crate) mode: Mode,
+    pub(crate) diff: Entity<DiffState>,
+    pub(crate) files: crate::files::Files,
     diff_panel: Entity<DiffPanel>,
     tree: Entity<TreePanel>,
     preview: Entity<PreviewPanel>,
@@ -75,6 +76,7 @@ impl Workspace {
             state,
             mode: Mode::Inspect,
             diff,
+            files: crate::files::Files::default(),
             diff_panel,
             tree,
             preview,
@@ -135,7 +137,10 @@ impl Workspace {
     /// Save A in place; the bundled sample has no file, so it asks for one.
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
         match self.state.read(cx).file.clone() {
-            Some(p) => self.state.update(cx, |s, cx| s.save_to(&p, cx)),
+            Some(p) => {
+                self.state.update(cx, |s, cx| s.save_to(&p, cx));
+                self.after_save(cx);
+            }
             None => self.save_as(&SaveAs, window, cx),
         }
     }
@@ -163,9 +168,10 @@ impl Workspace {
         };
         let rx = cx.prompt_for_new_path(&dir, Some(&name));
         let state = self.state.clone();
-        cx.spawn(async move |_, cx| match rx.await {
+        cx.spawn(async move |this, cx| match rx.await {
             Ok(Ok(Some(path))) => {
                 state.update(cx, |s, cx| s.save_to(&path, cx));
+                this.update(cx, |ws, cx| ws.after_save(cx)).ok();
             }
             Ok(Ok(None)) => {} // cancelled
             Ok(Err(e)) => eprintln!("tiptap-studio: save prompt failed: {e}"),
@@ -176,11 +182,17 @@ impl Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_title(window, cx);
+        let files_error = self.error_view(cx);
+        let drop_overlay = self.drop_overlay(cx);
         let mono = cx.theme().mono_font_family.clone();
         let s = self.state.read(cx);
         let (nodes, texts, unknown) = s.stats();
-        let file = s.file_name();
+        let file = match &self.files.start_error {
+            Some(e) => e.name(),
+            None => s.file_name(),
+        };
         let dirty = s.dirty;
         let has_file = s.file.is_some();
         let can_undo = s.can_undo();
@@ -206,6 +218,11 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::print_json))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
+            .on_action(cx.listener(Self::open_file))
+            .on_action(cx.listener(Self::quit))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, w, cx| {
+                this.drop_paths(paths, false, w, cx)
+            }))
             .flex()
             .flex_col()
             .size_full()
@@ -325,7 +342,7 @@ impl Render for Workspace {
                     .bg(Tokens::panel())
                     .border_b_1()
                     .border_color(Tokens::border())
-                    .child(tool("open", IconName::FolderOpen, "Open").disabled(true))
+                    .child(self.open_button(cx))
                     .child(
                         tool("save", IconName::Save, "Save")
                             .disabled(!dirty && has_file)
@@ -403,15 +420,18 @@ impl Render for Workspace {
                         }
                     }),
             )
+            .children(self.banner_view(cx))
             // panes
-            .child(div().flex().flex_1().min_h_0().map(|panes| {
+            .child(div().relative().flex().flex_1().min_h_0().map(|panes| {
                 match mode {
+                    _ if files_error.is_some() => panes.children(files_error),
                     Mode::Inspect => panes
                         .child(self.tree.clone())
                         .child(self.preview.clone())
                         .child(self.inspector.clone()),
                     Mode::Diff => panes.child(self.diff_panel.clone()),
                 }
+                .children(drop_overlay)
             }))
     }
 }

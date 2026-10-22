@@ -3,6 +3,7 @@
 //! `tiptap-rusty-parser`.
 
 mod diff;
+mod files;
 mod inspector;
 mod nav;
 mod preview;
@@ -16,7 +17,6 @@ use std::path::PathBuf;
 use gpui_kit::assets::AllAssets;
 use gpui_kit::*;
 
-use crate::state::DocumentState;
 use crate::workspace::Workspace;
 
 fn main() {
@@ -31,15 +31,10 @@ fn main() {
             workspace::bind_keys(cx);
             nav::bind_keys(cx);
             diff::bind_keys(cx);
+            files::bind_keys(cx);
 
-            let state = match DocumentState::load(file.as_deref()) {
-                Ok(s) => s,
-                Err(e) => {
-                    eprintln!("tiptap-studio: {e}");
-                    cx.quit();
-                    return;
-                }
-            };
+            // A bad A never quits: the window opens in an error state instead.
+            let (state, start_error) = files::initial_state(file.as_deref());
             let state = cx.new(|_| state);
 
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
@@ -53,11 +48,18 @@ fn main() {
             };
             gpui_kit::open_window(options, cx, |window, cx| {
                 let ws = cx.new(|cx| Workspace::new(state, file_b, cx));
+                files::install(&ws, start_error, window, cx);
                 let focus = ws.read(cx).tree_focus(cx);
                 window.focus(&focus, cx);
                 ws
             })
             .expect("failed to open window");
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
             cx.activate(true);
         });
 }

@@ -703,3 +703,61 @@ impl DocumentState {
         cx.notify();
     }
 }
+
+// ---- file loading (files.rs) ------------------------------------------------------
+
+impl DocumentState {
+    /// Wrap an already parsed document; `files.rs` owns reading and error reporting.
+    pub fn from_doc(doc: Document, file: Option<PathBuf>) -> Self {
+        let mut s = Self {
+            doc,
+            file,
+            selection: None,
+            expanded: HashSet::new(),
+            dirty: false,
+            last_change: None,
+            revision: 0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        };
+        s.expand_to_depth(1);
+        s
+    }
+
+    /// Swap in a freshly loaded document and clear undo/redo. `keep_view`
+    /// (reload) keeps expansion and a selection that still resolves; otherwise
+    /// (open) both reset. The revision bump makes every observer re-derive.
+    pub fn replace_doc(
+        &mut self,
+        doc: Document,
+        file: Option<PathBuf>,
+        keep_view: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let name = file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.doc = doc;
+        self.file = file;
+        self.undo.clear();
+        self.redo.clear();
+        self.dirty = false;
+        self.revision += 1;
+        if keep_view {
+            if let Some(p) = &self.selection {
+                if self.doc.root().node_at(p).is_none() {
+                    self.selection = None;
+                }
+            }
+            self.last_change = Some(format!("Reloaded {name}").into());
+        } else {
+            self.selection = None;
+            self.expanded.clear();
+            self.expand_to_depth(1);
+            self.last_change = Some(format!("Opened {name}").into());
+        }
+        cx.notify();
+    }
+}
