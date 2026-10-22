@@ -115,3 +115,17 @@ fn reordered_equal_siblings_stay_linear() {
     assert!(moves <= n, "{moves} moves for {n} children");
     assert!(t.elapsed().as_secs() < 10, "took {:?}", t.elapsed());
 }
+
+#[test]
+fn tiny_vs_huge_list_roundtrips_fast() {
+    // Length gap > Myers' edit budget: skip the doomed search (it used to fill
+    // ~130 MB of trace before falling back).
+    let a = long_doc(10);
+    let b = Node::element("doc").with_children(
+        (0..10_000).map(|i| Node::element("paragraph").with_child(Node::text(format!("n{i}")))),
+    );
+    let t = std::time::Instant::now();
+    roundtrip(&a, &b);
+    roundtrip(&b, &a);
+    assert!(t.elapsed().as_secs() < 10, "took {:?}", t.elapsed());
+}
