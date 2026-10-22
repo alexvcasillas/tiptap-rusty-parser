@@ -357,7 +357,8 @@ pub fn toolbar_item(schema: &Entity<SchemaState>, cx: &App) -> impl IntoElement 
     let (label, icon): (SharedString, Icon) = match (s.source_name(), &s.error) {
         (Some(name), _) => (
             format!(
-                "Schema · {name} · {n} issue{}",
+                "Schema · {} · {n} issue{}",
+                short_name(&name),
                 if n == 1 { "" } else { "s" }
             )
             .into(),
@@ -377,7 +378,8 @@ pub fn toolbar_item(schema: &Entity<SchemaState>, cx: &App) -> impl IntoElement 
         .ghost()
         .small()
         .icon(icon.small())
-        .label(label);
+        .label(label)
+        .when_some(s.source_name(), |b, name| b.tooltip(name));
     let this = schema.clone();
     Popover::new("schema-menu")
         .trigger(trigger)
@@ -392,6 +394,19 @@ pub fn toolbar_item(schema: &Entity<SchemaState>, cx: &App) -> impl IntoElement 
             }
         })
         .content(move |_, _, cx| menu(&this, cx))
+}
+
+/// Toolbar-sized schema name: no `.schema.json` / `.json`, at most 20 chars.
+fn short_name(name: &str) -> String {
+    let stem = name
+        .strip_suffix(".schema.json")
+        .or_else(|| name.strip_suffix(".json"))
+        .unwrap_or(name);
+    if stem.chars().count() > 20 {
+        format!("{}…", stem.chars().take(19).collect::<String>())
+    } else {
+        stem.to_string()
+    }
 }
 
 fn menu(this: &Entity<SchemaState>, cx: &App) -> Div {

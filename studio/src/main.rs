@@ -73,6 +73,8 @@ fn main() {
                 window_bounds: Some(
                     layout::saved_window(cx).unwrap_or(WindowBounds::Windowed(bounds)),
                 ),
+                // Below this the three panes' minimum widths and the toolbar no longer fit.
+                window_min_size: Some(size(px(1280.), px(720.))),
                 titlebar: Some(TitlebarOptions {
                     title: Some("tiptap-studio".into()),
                     ..Default::default()

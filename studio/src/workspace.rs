@@ -375,6 +375,7 @@ impl Render for Workspace {
                     .h(px(40.))
                     .flex_shrink_0()
                     .px(px(10.))
+                    .overflow_hidden()
                     .bg(Tokens::panel())
                     .border_b_1()
                     .border_color(Tokens::border())

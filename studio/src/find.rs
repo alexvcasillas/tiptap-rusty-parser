@@ -15,7 +15,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Sizable};
 use gpui_kit::prelude::*;
@@ -395,10 +394,15 @@ impl Render for FindBar {
             .flex()
             .items_center()
             .gap(px(6.))
+            .min_w_0()
+            .flex_shrink(1.)
             .child(
                 div()
                     .relative()
+                    // Shrinks before anything else in a crowded toolbar.
                     .w(px(360.))
+                    .min_w(px(160.))
+                    .flex_shrink(1.)
                     .font_family(mono.clone())
                     .child(Input::new(&input).small().when(error.is_some(), |i| {
                         i.focus_bordered(false).border_color(Tokens::removed())
@@ -448,13 +452,19 @@ impl Render for FindBar {
                 move |_, _, cx| next.update(cx, |f, cx| f.step(1, cx)),
             ))
             .child(
-                Checkbox::new("only-matches")
-                    .small()
-                    .label("Only matches")
-                    .checked(only)
-                    .on_click(move |on, _, cx| {
-                        toggle.update(cx, |f, cx| f.set_only_matches(*on, cx))
-                    }),
+                // Icon toggle (not a labelled checkbox) to keep the toolbar narrow.
+                crate::tree::icon_button("only-matches", IconName::ListFilter, move |_, _, cx| {
+                    toggle.update(cx, |f, cx| f.set_only_matches(!only, cx))
+                })
+                .when(only, |d| {
+                    d.bg(Tokens::accent_fill()).text_color(Tokens::accent())
+                })
+                .tooltip(|window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(
+                        "Only matches: show matching rows and their ancestors",
+                    )
+                    .build(window, cx)
+                }),
             )
     }
 }
