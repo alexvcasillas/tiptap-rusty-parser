@@ -402,6 +402,24 @@ impl Render for Workspace {
                             .on_click(cx.listener(|this, _, w, cx| this.redo(&Redo, w, cx))),
                     )
                     .child(sep())
+                    .child(
+                        tool("server", IconName::Cloud, "Server…")
+                            .tooltip("Browse a Tiptap Document Server (read-only)")
+                            .on_click(cx.listener(|this, _, w, cx| {
+                                let ws = cx.entity().downgrade();
+                                let on_diff: crate::cloud::OnDiff =
+                                    std::rc::Rc::new(move |w, cx| {
+                                        ws.update(cx, |ws, cx| ws.set_mode(Mode::Diff, w, cx)).ok();
+                                    });
+                                crate::cloud::open(
+                                    this.state.clone(),
+                                    this.diff.clone(),
+                                    on_diff,
+                                    w,
+                                    cx,
+                                );
+                            })),
+                    )
                     .map(|bar| match mode {
                         Mode::Inspect => bar
                             .child(tool("json", IconName::Braces, "JSON").on_click(

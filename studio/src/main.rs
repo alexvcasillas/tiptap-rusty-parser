@@ -6,6 +6,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod clipboard;
+mod cloud;
 mod diff;
 mod files;
 mod find;

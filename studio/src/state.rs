@@ -41,6 +41,9 @@ pub const BUILTIN_MARKS: &[&str] = &["bold", "italic", "underline", "strike", "c
 pub struct DocumentState {
     pub doc: Document,
     pub file: Option<PathBuf>,
+    /// Display name for a document that has no local file (e.g. opened from a
+    /// Document Server: `☁ app / doc @ v3`). Shown instead of the file name.
+    pub origin: Option<SharedString>,
     pub selection: Option<Vec<usize>>,
     pub expanded: HashSet<Vec<usize>>,
     pub dirty: bool,
@@ -60,6 +63,7 @@ impl DocumentState {
         let mut s = Self {
             doc,
             file: path.map(Path::to_path_buf),
+            origin: None,
             selection: None,
             expanded: HashSet::new(),
             dirty: false,
@@ -72,11 +76,31 @@ impl DocumentState {
         Ok(s)
     }
 
+    /// Replace A with an in-memory document (no local file, so Save acts as
+    /// Save as). Clears selection and undo history; observers see a new revision.
+    pub fn load_document(&mut self, doc: Document, origin: SharedString, cx: &mut Context<Self>) {
+        self.doc = doc;
+        self.file = None;
+        self.origin = Some(origin);
+        self.selection = None;
+        self.expanded.clear();
+        self.expand_to_depth(1);
+        self.dirty = false;
+        self.last_change = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.revision += 1;
+        cx.notify();
+    }
+
     pub fn root(&self) -> &Node {
         self.doc.root()
     }
 
     pub fn file_name(&self) -> SharedString {
+        if let (None, Some(o)) = (&self.file, &self.origin) {
+            return o.clone();
+        }
         self.file
             .as_ref()
             .and_then(|p| p.file_name())

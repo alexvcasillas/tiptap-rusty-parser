@@ -208,6 +208,8 @@ pub struct DiffState {
     a: Entity<DocumentState>,
     b: Option<Document>,
     b_file: Option<PathBuf>,
+    /// Display name of a B that has no file (opened from a Document Server).
+    b_origin: Option<SharedString>,
     /// Path given on the command line; fallback when the file prompt fails.
     pub cli_b: Option<PathBuf>,
     pub error: Option<SharedString>,
@@ -254,6 +256,7 @@ impl DiffState {
             a: a.clone(),
             b: None,
             b_file: None,
+            b_origin: None,
             cli_b: b.clone(),
             error: None,
             changes: Vec::new(),
@@ -290,6 +293,9 @@ impl DiffState {
     }
 
     pub fn b_name(&self) -> SharedString {
+        if let (None, Some(o)) = (&self.b_file, &self.b_origin) {
+            return o.clone();
+        }
         self.b_file
             .as_ref()
             .and_then(|p| p.file_name())
@@ -316,6 +322,23 @@ impl DiffState {
         cx.notify();
     }
 
+    /// Load B from an in-memory document (no file), e.g. a server version.
+    pub fn load_b_document(&mut self, doc: Document, origin: SharedString, cx: &mut Context<Self>) {
+        let a = self.a.clone();
+        self.b = Some(doc);
+        self.b_file = None;
+        self.b_origin = Some(origin);
+        self.error = None;
+        self.selected = None;
+        self.kept.clear();
+        self.side_a = Side::default();
+        self.side_b = Side::default();
+        self.side_a.expanded.insert(Vec::new());
+        self.side_b.expanded.insert(Vec::new());
+        self.recompute(a.read(cx), true);
+        cx.notify();
+    }
+
     fn load_b_inner(&mut self, path: &Path, a: &DocumentState) {
         let parsed = std::fs::read_to_string(path)
             .map_err(anyhow::Error::from)
@@ -324,6 +347,7 @@ impl DiffState {
             Ok(doc) => {
                 self.b = Some(doc);
                 self.b_file = Some(path.to_path_buf());
+                self.b_origin = None;
                 self.error = None;
                 self.reset_view();
                 self.recompute(a, true);
