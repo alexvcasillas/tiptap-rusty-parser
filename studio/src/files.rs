@@ -5,6 +5,7 @@
 //! UI only: parsing is `Document::from_json_str`; this module only reads
 //! files, words errors and decides when a document may be replaced.
 
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -897,4 +898,232 @@ fn simulate_drops(spec: String, window: &mut Window, cx: &mut Context<Workspace>
             wait(3).await;
         }
     })
+}
+
+// ---- files from the OS -------------------------------------------------------------
+
+/// Files the OS asks us to open: macOS Finder "Open With", double-click with
+/// Tiptap Studio as the `.json` handler, `open -a "Tiptap Studio" doc.json`, a
+/// drop on the Dock icon. They arrive through gpui's `on_open_urls`, which has
+/// no `cx`, so this hub holds them until the window exists (launch: they
+/// replace the sample) and afterwards routes them through the unsaved guard.
+///
+/// Only macOS calls the hook; Linux and Windows register it but never invoke
+/// it (no single-instance forwarding), so there a second launch is a second
+/// app and only the CLI arguments apply.
+#[derive(Clone, Default)]
+pub struct OsOpen(Rc<RefCell<OsOpenInner>>);
+
+#[derive(Default)]
+struct OsOpenInner {
+    /// Arrived before the window: the latest wins at launch.
+    launch: Option<PathBuf>,
+    target: Option<(AsyncApp, AnyWindowHandle, WeakEntity<Workspace>)>,
+}
+
+impl OsOpen {
+    /// Register on gpui's `on_open_urls` (before `run`).
+    pub fn hook(&self, app: Application) -> Application {
+        let this = self.clone();
+        app.on_open_urls(move |urls| this.receive(urls));
+        app
+    }
+
+    /// The `on_open_urls` callback body. Called from the platform run loop,
+    /// never inside an app update (same contract as gpui's `on_reopen`).
+    pub fn receive(&self, urls: Vec<String>) {
+        let Some(path) = pick_os_path(&urls) else {
+            eprintln!("tiptap-studio: nothing to open in {urls:?}");
+            return;
+        };
+        let target = self.0.borrow().target.clone();
+        let Some((cx, window, ws)) = target else {
+            self.0.borrow_mut().launch = Some(path);
+            return;
+        };
+        cx.update(|cx| {
+            window
+                .update(cx, |_, window, cx| {
+                    window.activate_window();
+                    ws.update(cx, |ws, cx| ws.open_from_os(path, window, cx))
+                })
+                .ok();
+        });
+    }
+
+    /// A file the OS handed us before the window existed, if any.
+    pub fn take_launch(&self) -> Option<PathBuf> {
+        self.0.borrow_mut().launch.take()
+    }
+
+    /// From now on files open in `window`'s workspace.
+    pub fn attach(&self, window: AnyWindowHandle, ws: &Entity<Workspace>, cx: &App) {
+        self.0.borrow_mut().target = Some((cx.to_async(), window, ws.downgrade()));
+    }
+
+    /// Debug-only stand-in for AppKit's `application:openURLs:` (Linux never
+    /// sends it): `TIPTAP_STUDIO_SIM_OPEN_URLS="0|file:///a.json;6|/b.json"`
+    /// delivers each entry after that many seconds; `0` arrives before the
+    /// window, i.e. as a launch file. Call before `take_launch`.
+    #[cfg(debug_assertions)]
+    pub fn simulate(&self, cx: &mut App) {
+        let Ok(spec) = std::env::var("TIPTAP_STUDIO_SIM_OPEN_URLS") else {
+            return;
+        };
+        for entry in spec.split(';') {
+            let Some((secs, url)) = entry.split_once('|') else {
+                continue;
+            };
+            let secs: u64 = secs.trim().parse().unwrap_or(0);
+            let urls = vec![url.trim().to_string()];
+            if secs == 0 {
+                self.receive(urls);
+                continue;
+            }
+            let this = self.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_secs(secs))
+                    .await;
+                this.receive(urls);
+            })
+            .detach();
+        }
+    }
+}
+
+impl Workspace {
+    /// An OS open request while running: same as dropping the file as A.
+    fn open_from_os(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.guard(window, cx, Box::new(move |ws, _, cx| ws.open_a(&path, cx)));
+    }
+}
+
+/// The first `.json` among `urls`, else the first that converts to a path.
+fn pick_os_path(urls: &[String]) -> Option<PathBuf> {
+    let mut first = None;
+    for p in urls.iter().filter_map(|u| url_to_path(u)) {
+        if p.extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("json"))
+        {
+            return Some(p);
+        }
+        first.get_or_insert(p);
+    }
+    first
+}
+
+/// `file://` URL (as `NSURL.absoluteString` gives it) or absolute path to a
+/// local path. Percent-escapes are decoded; `?query`/`#fragment` dropped;
+/// the host must be empty or `localhost`. Other schemes give `None`.
+pub fn url_to_path(url: &str) -> Option<PathBuf> {
+    let Some(rest) = url
+        .get(..7)
+        .filter(|s| s.eq_ignore_ascii_case("file://"))
+        .map(|_| &url[7..])
+    else {
+        let p = Path::new(url);
+        return p.is_absolute().then(|| p.to_path_buf());
+    };
+    let (host, path) = rest.split_at(rest.find('/')?);
+    if !(host.is_empty() || host.eq_ignore_ascii_case("localhost")) {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let bytes = percent_decode(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt;
+        Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+    }
+    #[cfg(not(unix))]
+    {
+        // `/C:/dir/doc.json` -> `C:/dir/doc.json`.
+        let s = String::from_utf8(bytes).ok()?;
+        let b = s.as_bytes();
+        let drive = b.len() >= 3 && b[0] == b'/' && b[1].is_ascii_alphabetic() && b[2] == b':';
+        Some(PathBuf::from(if drive { &s[1..] } else { &s[..] }))
+    }
+}
+
+/// `%XX` escapes to bytes; a malformed escape gives `None`.
+fn percent_decode(s: &str) -> Option<Vec<u8>> {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = s.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui's glob re-exports its own `test` macro.
+    use super::{pick_os_path, url_to_path, OsOpen};
+    use std::path::PathBuf;
+
+    #[test]
+    fn file_urls_to_paths() {
+        let p = |u: &str| url_to_path(u).map(|p| p.to_string_lossy().into_owned());
+        assert_eq!(
+            p("file:///Users/a/doc.json").as_deref(),
+            Some("/Users/a/doc.json")
+        );
+        assert_eq!(
+            p("file:///Users/a/My%20Docs/caf%C3%A9.json").as_deref(),
+            Some("/Users/a/My Docs/café.json")
+        );
+        assert_eq!(
+            p("FILE://localhost/tmp/x.json").as_deref(),
+            Some("/tmp/x.json")
+        );
+        assert_eq!(
+            p("file:///tmp/a%23b.json").as_deref(),
+            Some("/tmp/a#b.json")
+        );
+        assert_eq!(p("file:///tmp/x.json?y#z").as_deref(), Some("/tmp/x.json"));
+        assert_eq!(p("/tmp/plain.json").as_deref(), Some("/tmp/plain.json"));
+        assert_eq!(p("file://server/share/x.json"), None);
+        assert_eq!(p("file:///tmp/bad%zz.json"), None);
+        assert_eq!(p("file:///tmp/cut%2"), None);
+        assert_eq!(p("https://tiptap.dev/doc.json"), None);
+        assert_eq!(p("tiptap-studio://open"), None);
+        assert_eq!(p("relative.json"), None);
+        assert_eq!(p("file://"), None);
+    }
+
+    #[test]
+    fn picks_first_json() {
+        let urls = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            pick_os_path(&urls(&[
+                "file:///a.txt",
+                "file:///b.json",
+                "file:///c.json"
+            ])),
+            Some(PathBuf::from("/b.json"))
+        );
+        assert_eq!(
+            pick_os_path(&urls(&["https://x", "file:///a.txt"])),
+            Some(PathBuf::from("/a.txt"))
+        );
+        assert_eq!(pick_os_path(&urls(&["https://x"])), None);
+    }
+
+    #[test]
+    fn launch_queue_keeps_latest() {
+        let os = OsOpen::default();
+        os.receive(vec!["file:///a.json".into()]);
+        os.receive(vec!["file:///b.json".into()]);
+        assert_eq!(os.take_launch(), Some(PathBuf::from("/b.json")));
+        assert_eq!(os.take_launch(), None);
+    }
 }

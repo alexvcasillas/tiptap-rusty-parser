@@ -29,7 +29,10 @@ fn main() {
     let mut args = std::env::args().skip(1).map(PathBuf::from);
     let file = args.next();
     let file_b = args.next();
-    gpui_kit::application()
+    // Finder / `open -a` / Dock drops (macOS only; see `files::OsOpen`).
+    let os_open = files::OsOpen::default();
+    os_open
+        .hook(gpui_kit::application())
         .with_assets(AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
@@ -41,6 +44,10 @@ fn main() {
             layout::bind_keys(cx);
             layout::init(cx);
 
+            #[cfg(debug_assertions)]
+            os_open.simulate(cx);
+            // A CLI arg wins; else a file the OS sent at launch replaces the sample.
+            let file = file.or_else(|| os_open.take_launch());
             // A bad A never quits: the window opens in an error state instead.
             let (state, start_error) = files::initial_state(file.as_deref());
             let state = cx.new(|_| state);
@@ -56,7 +63,7 @@ fn main() {
                 }),
                 ..Default::default()
             };
-            gpui_kit::open_window(options, cx, |window, cx| {
+            let (window, ws) = gpui_kit::open_window(options, cx, |window, cx| {
                 let ws = cx.new(|cx| Workspace::new(state, file_b, cx));
                 files::install(&ws, start_error, window, cx);
                 layout::track_window(window, cx);
@@ -65,6 +72,7 @@ fn main() {
                 ws
             })
             .expect("failed to open window");
+            os_open.attach(window, &ws, cx);
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
