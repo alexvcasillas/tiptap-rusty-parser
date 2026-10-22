@@ -198,6 +198,7 @@ impl DocumentState {
             }
             Err(e) => eprintln!("invert failed, undo unavailable for this edit: {e}"),
         }
+        self.remap_expanded(&changes);
         self.after_edit(label.into(), cx);
         true
     }
@@ -212,6 +213,7 @@ impl DocumentState {
         if let Err(e) = self.doc.apply(&inverse) {
             eprintln!("undo failed: {e}");
         }
+        self.remap_expanded(&inverse);
         self.after_edit("undo".into(), cx);
     }
 
@@ -225,6 +227,7 @@ impl DocumentState {
         if let Err(e) = self.doc.apply(&changes) {
             eprintln!("redo failed: {e}");
         }
+        self.remap_expanded(&changes);
         self.after_edit("redo".into(), cx);
     }
 
@@ -760,4 +763,263 @@ impl DocumentState {
         }
         cx.notify();
     }
+}
+
+// ---- node creation, clipboard, raw JSON (see clipboard.rs, inspector Insert ▾) ---
+
+/// Where `Insert ▾` puts a new node relative to the selection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InsertWhere {
+    Before,
+    After,
+    Inside,
+}
+
+impl InsertWhere {
+    pub const ALL: [InsertWhere; 3] =
+        [InsertWhere::Before, InsertWhere::After, InsertWhere::Inside];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InsertWhere::Before => "before",
+            InsertWhere::After => "after",
+            InsertWhere::Inside => "inside",
+        }
+    }
+}
+
+/// Types that hold inline content even when empty. UI heuristic, not a schema.
+const TEXTBLOCKS: &[&str] = &["paragraph", "heading", "codeBlock"];
+
+/// Holds inline content: a known textblock type, or any node with a text child.
+pub fn is_textblock(node: &Node) -> bool {
+    TEXTBLOCKS.contains(&node_type(node))
+        || node
+            .children()
+            .iter()
+            .any(|c| c.node_type.as_deref() == Some("text"))
+}
+
+impl DocumentState {
+    /// `(parent, index)` an insert `at` the selection lands on. Root has no
+    /// siblings; a text node has no children.
+    pub fn insert_target(&self, at: InsertWhere) -> Option<(Vec<usize>, usize)> {
+        let path = self.selection.as_deref()?;
+        let node = self.root().node_at(path)?;
+        match at {
+            InsertWhere::Inside => {
+                (node_type(node) != "text").then(|| (path.to_vec(), node.child_count()))
+            }
+            InsertWhere::Before | InsertWhere::After => {
+                let (&i, parent) = path.split_last()?;
+                Some((parent.to_vec(), i + usize::from(at == InsertWhere::After)))
+            }
+        }
+    }
+
+    /// Whether the parent an insert `at` lands in takes inline content.
+    pub fn insert_in_textblock(&self, at: InsertWhere) -> bool {
+        self.insert_target(at)
+            .and_then(|(p, _)| self.root().node_at(&p))
+            .is_some_and(is_textblock)
+    }
+
+    /// Insert `nodes` under `parent` from `index` on, as one undo step; the
+    /// first new node is selected and revealed.
+    pub fn insert_nodes(
+        &mut self,
+        parent: Vec<usize>,
+        index: usize,
+        nodes: Vec<Node>,
+        label: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if nodes.is_empty() {
+            return false;
+        }
+        let at = parent.clone();
+        let ok = self.edit(
+            label,
+            move |t| {
+                for (k, node) in nodes.into_iter().enumerate() {
+                    t.insert(at.clone(), index + k, node)?;
+                }
+                Ok::<(), tiptap_rusty_parser::ApplyError>(())
+            },
+            cx,
+        );
+        if ok {
+            let mut p = parent;
+            p.push(index);
+            self.reveal(p);
+        }
+        ok
+    }
+
+    /// Insert one node `at` the selection. Label: `Insert [2] paragraph`.
+    pub fn insert_at(&mut self, at: InsertWhere, node: Node, cx: &mut Context<Self>) {
+        let Some((parent, index)) = self.insert_target(at) else {
+            return;
+        };
+        let label = format!("Insert {} {}", child_path(&parent, index), node_type(&node));
+        self.insert_nodes(parent, index, vec![node], label, cx);
+    }
+
+    /// The selection, or its nearest ancestor that is not inside a textblock
+    /// (text, hardBreak → their paragraph).
+    pub fn block_anchor(&self) -> Option<Vec<usize>> {
+        let mut path = self.selection.clone()?;
+        while let Some((_, parent)) = path.split_last() {
+            if !self.root().node_at(parent).is_some_and(is_textblock) {
+                break;
+            }
+            path.pop();
+        }
+        Some(path)
+    }
+
+    /// ⏎: empty paragraph after the selected block (end of the doc for the
+    /// root or no selection). ProseMirror forbids empty text, so no content.
+    pub fn insert_paragraph_after(&mut self, cx: &mut Context<Self>) {
+        let anchor = self.block_anchor().unwrap_or_default();
+        let (parent, index) = match anchor.split_last() {
+            Some((&i, parent)) => (parent.to_vec(), i + 1),
+            None => (Vec::new(), self.root().child_count()),
+        };
+        let label = format!("Insert {} paragraph", child_path(&parent, index));
+        let node = Node::element("paragraph");
+        self.insert_nodes(parent, index, vec![node], label, cx);
+    }
+
+    /// ⌘D: deep clone inserted after the selection, then selected.
+    pub fn duplicate_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return;
+        };
+        let Some((&i, parent)) = path.split_last() else {
+            return;
+        };
+        let Some(node) = self.root().node_at(&path).cloned() else {
+            return;
+        };
+        let label = format!("Duplicate {}", fmt_path(&path));
+        self.insert_nodes(parent.to_vec(), i + 1, vec![node], label, cx);
+    }
+
+    /// ⌘C payload: the selected node as pretty JSON.
+    pub fn copy_selected(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let path = self.selection.clone()?;
+        let node = self.root().node_at(&path)?;
+        let json = serde_json::to_string_pretty(node).ok()?;
+        let msg = format!("Copied {} {}", fmt_path(&path), node_type(node));
+        self.note(msg, cx);
+        Some(json)
+    }
+
+    /// ⌘X: copy, then remove as one undo step. The selection moves to the
+    /// node that took its place, else the previous sibling, else the parent.
+    pub fn cut_selected(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let path = self.selection.clone()?;
+        let (&i, parent) = path.split_last()?;
+        let json = serde_json::to_string_pretty(self.root().node_at(&path)?).ok()?;
+        let parent = parent.to_vec();
+        let label = format!("Cut {}", fmt_path(&path));
+        if !self.edit(label, |t| t.remove(parent.clone(), i).map(|_| ()), cx) {
+            return None;
+        }
+        let left = self.root().node_at(&parent).map_or(0, Node::child_count);
+        let mut p = parent;
+        if left > 0 {
+            p.push(i.min(left - 1));
+        }
+        self.selection = Some(p);
+        Some(json)
+    }
+
+    /// ⌘V: insert the clipboard nodes after the selection (inside, at the end,
+    /// for the root or no selection). Invalid payloads only set `last_change`.
+    pub fn paste(&mut self, text: Option<&str>, cx: &mut Context<Self>) {
+        let nodes = match text.map(crate::clipboard::parse_fragment) {
+            Some(Ok(nodes)) => nodes,
+            Some(Err(e)) => return self.note(format!("Paste: {e}"), cx),
+            None => return self.note("Paste: clipboard empty".into(), cx),
+        };
+        let path = self.selection.clone().unwrap_or_default();
+        let (parent, index, place) = match path.split_last() {
+            Some((&i, parent)) => (parent.to_vec(), i + 1, format!("after {}", fmt_path(&path))),
+            None => (Vec::new(), self.root().child_count(), "into doc".into()),
+        };
+        let what = match nodes.as_slice() {
+            [one] => node_type(one).to_string(),
+            many => format!("{} nodes", many.len()),
+        };
+        let label = format!("Paste {what} {place}");
+        self.insert_nodes(parent, index, nodes, label, cx);
+    }
+
+    /// Replace the node at `path` with `json` as one undo step. `Err` carries
+    /// the serde message for the editor.
+    pub fn replace_from_json(
+        &mut self,
+        path: Vec<usize>,
+        json: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let node: Node = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let Some(current) = self.root().node_at(&path) else {
+            return Err("the node no longer exists".into());
+        };
+        if *current == node {
+            return Ok(());
+        }
+        let label = format!("Replace {} from JSON", fmt_path(&path));
+        if self.edit(label, |t| t.replace(path.clone(), node).map(|_| ()), cx) {
+            self.selection = Some(path);
+            Ok(())
+        } else {
+            Err("replace failed".into())
+        }
+    }
+
+    /// Footer message without a document change.
+    fn note(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.last_change = Some(msg.into());
+        cx.notify();
+    }
+
+    /// Select `path` and expand all its ancestors.
+    fn reveal(&mut self, path: Vec<usize>) {
+        for d in 0..path.len() {
+            self.expanded.insert(path[..d].to_vec());
+        }
+        self.selection = Some(path);
+    }
+
+    /// Keep expansion on the same nodes across structural changes. Replaced
+    /// subtrees keep their paths (a JSON edit should not collapse the node).
+    fn remap_expanded(&mut self, changes: &[Change]) {
+        let structural = |c: &&Change| {
+            matches!(
+                c,
+                Change::Insert { .. } | Change::Remove { .. } | Change::Move { .. }
+            )
+        };
+        if !changes.iter().any(|c| structural(&c)) {
+            return;
+        }
+        self.expanded = std::mem::take(&mut self.expanded)
+            .into_iter()
+            .filter_map(|p| {
+                changes.iter().filter(structural).try_fold(p, |p, c| {
+                    tiptap_rusty_parser::map_path(&p, std::slice::from_ref(c))
+                })
+            })
+            .collect();
+    }
+}
+
+fn child_path(parent: &[usize], index: usize) -> String {
+    let mut p = parent.to_vec();
+    p.push(index);
+    fmt_path(&p)
 }

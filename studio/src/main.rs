@@ -2,6 +2,7 @@
 //! Tiptap/ProseMirror JSON. UI only; every document operation is delegated to
 //! `tiptap-rusty-parser`.
 
+mod clipboard;
 mod diff;
 mod files;
 mod inspector;

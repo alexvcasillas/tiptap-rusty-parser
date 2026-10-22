@@ -1,24 +1,25 @@
 //! Right pane: Figma-style inspector for the selected node.
 //! Identity, typed attribute editors, text editing, mark chips + mark attrs,
-//! structure, JSON peek.
+//! structure (insert, wrap, …), JSON peek and raw JSON editing.
 
 use std::collections::HashMap;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::input::{
-    Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction, Textarea,
+    Enter, Input, InputEvent, InputState, NumberInput, NumberInputEvent, StepAction, Textarea,
     TextareaState,
 };
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::switch::Switch;
-use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Selectable, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
 use tiptap_rusty_parser::{Mark, Node};
 
-use crate::state::{fmt_path, is_unknown, node_type, DocumentState, BUILTIN_MARKS};
+use crate::nav::{CancelJsonEdit, JSON_EDIT};
+use crate::state::{fmt_path, is_unknown, node_type, DocumentState, InsertWhere, BUILTIN_MARKS};
 use crate::theme::Tokens;
 use crate::tree::icon_button;
 
@@ -29,6 +30,58 @@ const WRAP_PRESETS: &[(&str, &[&str])] = &[
     ("orderedList › listItem", &["listItem", "orderedList"]),
     ("callout", &["callout"]),
 ];
+
+/// Insert presets: `(label, inline)`. Inline ones only go into a textblock,
+/// block ones only outside one. Built by [`preset_node`].
+const INSERT_PRESETS: &[(&str, bool)] = &[
+    ("paragraph", false),
+    ("heading 1", false),
+    ("heading 2", false),
+    ("heading 3", false),
+    ("bulletList › listItem › paragraph", false),
+    ("orderedList › listItem › paragraph", false),
+    ("taskList › taskItem › paragraph", false),
+    ("blockquote › paragraph", false),
+    ("codeBlock", false),
+    ("horizontalRule", false),
+    ("hardBreak", true),
+];
+
+/// Minimal valid subtree for a preset. Empty textblocks have no content:
+/// ProseMirror forbids empty text nodes.
+fn preset_node(label: &str) -> Node {
+    let p = || Node::element("paragraph");
+    match label {
+        "heading 1" => Node::element("heading").with_attr("level", 1),
+        "heading 2" => Node::element("heading").with_attr("level", 2),
+        "heading 3" => Node::element("heading").with_attr("level", 3),
+        "bulletList › listItem › paragraph" => {
+            Node::element("bulletList").with_child(Node::element("listItem").with_child(p()))
+        }
+        "orderedList › listItem › paragraph" => Node::element("orderedList")
+            .with_attr("start", 1)
+            .with_child(Node::element("listItem").with_child(p())),
+        "taskList › taskItem › paragraph" => Node::element("taskList").with_child(
+            Node::element("taskItem")
+                .with_attr("checked", false)
+                .with_child(p()),
+        ),
+        "blockquote › paragraph" => Node::element("blockquote").with_child(p()),
+        // single-type presets: the label is the type
+        other => Node::element(other),
+    }
+}
+
+/// Raw JSON editor for the selected node (`Edit JSON`).
+struct JsonEdit {
+    path: Vec<usize>,
+    /// Document revision `base` was generated at.
+    rev: u64,
+    base: String,
+    area: Entity<TextareaState>,
+    error: Option<SharedString>,
+    _sub: Subscription,
+}
 
 /// Value class an attribute editor is picked by.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -145,6 +198,13 @@ pub struct InspectorPanel {
     new_attr_kind: Kind,
     add_mark: Option<AddMark>,
     add_mark_open: bool,
+    insert_open: bool,
+    insert_where: InsertWhere,
+    insert_type: Option<Entity<InputState>>,
+    insert_text: Option<Entity<InputState>>,
+    /// Shallow JSON peek, cached per (selection, revision).
+    json_peek: Option<(Vec<usize>, u64, SharedString)>,
+    json_edit: Option<JsonEdit>,
     _subs: Vec<Subscription>,
 }
 
@@ -162,6 +222,12 @@ impl InspectorPanel {
             new_attr_kind: Kind::Str,
             add_mark: None,
             add_mark_open: false,
+            insert_open: false,
+            insert_where: InsertWhere::After,
+            insert_type: None,
+            insert_text: None,
+            json_peek: None,
+            json_edit: None,
             _subs: vec![sub],
         }
     }
@@ -265,6 +331,311 @@ impl InspectorPanel {
                         ),
                 )
             })
+    }
+
+    /// Free-text inputs of the `Insert ▾` chooser (type, text), created once.
+    fn insert_inputs(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (Entity<InputState>, Entity<InputState>) {
+        if let (Some(ty), Some(text)) = (&self.insert_type, &self.insert_text) {
+            return (ty.clone(), text.clone());
+        }
+        let ty = cx.new(|cx| InputState::new(window, cx).placeholder("custom type…"));
+        let text = cx.new(|cx| InputState::new(window, cx).placeholder("text…"));
+        self._subs
+            .push(cx.subscribe(&ty, |this, input, ev: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    let ty = input.read(cx).value().trim().to_string();
+                    this.insert_custom(ty, cx);
+                }
+            }));
+        self._subs
+            .push(cx.subscribe(&text, |this, input, ev: &InputEvent, cx| {
+                if let InputEvent::PressEnter { .. } = ev {
+                    let text = input.read(cx).value().to_string();
+                    this.insert_text(text, cx);
+                }
+            }));
+        self.insert_type = Some(ty.clone());
+        self.insert_text = Some(text.clone());
+        (ty, text)
+    }
+
+    /// The chosen target, or the first one the selection allows.
+    fn effective_where(&self, s: &DocumentState) -> Option<InsertWhere> {
+        [
+            self.insert_where,
+            InsertWhere::After,
+            InsertWhere::Inside,
+            InsertWhere::Before,
+        ]
+        .into_iter()
+        .find(|&w| s.insert_target(w).is_some())
+    }
+
+    fn insert_node(&mut self, node: Node, cx: &mut Context<Self>) {
+        let Some(at) = self.effective_where(self.state.read(cx)) else {
+            return;
+        };
+        self.state.update(cx, |s, cx| s.insert_at(at, node, cx));
+        self.insert_open = false;
+        cx.notify();
+    }
+
+    fn insert_custom(&mut self, ty: String, cx: &mut Context<Self>) {
+        if !ty.is_empty() {
+            self.insert_node(Node::element(ty), cx);
+        }
+    }
+
+    /// Text nodes need a non-empty string and a textblock parent.
+    fn insert_text(&mut self, text: String, cx: &mut Context<Self>) {
+        let s = self.state.read(cx);
+        let ok = self
+            .effective_where(s)
+            .is_some_and(|w| s.insert_in_textblock(w));
+        if ok && !text.is_empty() {
+            self.insert_node(Node::text(text), cx);
+        }
+    }
+
+    /// `Insert ▾` chooser: target segments, presets, text, free-text type.
+    fn insert_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let (ty_input, text_input) = self.insert_inputs(window, cx);
+        let s = self.state.read(cx);
+        let Some(at) = self.effective_where(s) else {
+            return Button::new("insert")
+                .outline()
+                .small()
+                .label("Insert")
+                .icon(Icon::new(IconName::ChevronDown).xsmall())
+                .disabled(true)
+                .into_any_element();
+        };
+        let allowed = InsertWhere::ALL.map(|w| s.insert_target(w).is_some());
+        let inline = s.insert_in_textblock(at);
+        let this = cx.entity();
+        let trigger = Button::new("insert")
+            .outline()
+            .small()
+            .label("Insert")
+            .icon(Icon::new(IconName::ChevronDown).xsmall());
+        Popover::new("insert-popover")
+            .trigger(trigger)
+            .open(self.insert_open)
+            .on_open_change({
+                let this = this.clone();
+                move |open, _, cx| {
+                    this.update(cx, |p, cx| {
+                        p.insert_open = *open;
+                        cx.notify();
+                    })
+                }
+            })
+            .content(move |_, _, cx| {
+                let mono = cx.theme().mono_font_family.clone();
+                // before | after | inside
+                let mut seg = div()
+                    .flex()
+                    .gap(px(2.))
+                    .p(px(2.))
+                    .mb(px(4.))
+                    .rounded(px(6.))
+                    .bg(Tokens::background());
+                for (i, w) in InsertWhere::ALL.into_iter().enumerate() {
+                    let on = w == at;
+                    let this = this.clone();
+                    seg = seg.child(
+                        div()
+                            .id(ElementId::NamedInteger("insert-where".into(), i as u64))
+                            .flex_1()
+                            .h(px(24.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(4.))
+                            .text_size(px(11.))
+                            .when(on, |d| {
+                                d.bg(Tokens::accent_fill()).text_color(Tokens::foreground())
+                            })
+                            .when(!on && allowed[i], |d| {
+                                d.text_color(Tokens::muted())
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(Tokens::raised()))
+                                    .on_click(move |_, _, cx| {
+                                        this.update(cx, |p, cx| {
+                                            p.insert_where = w;
+                                            cx.notify();
+                                        })
+                                    })
+                            })
+                            .when(!allowed[i], |d| d.text_color(Tokens::disabled()))
+                            .child(w.label()),
+                    );
+                }
+                let mut list = div().flex().flex_col().gap(px(2.)).w(px(250.)).child(seg);
+                for (i, &(label, is_inline)) in INSERT_PRESETS.iter().enumerate() {
+                    let enabled = is_inline == inline;
+                    let this = this.clone();
+                    list = list.child(
+                        div()
+                            .id(ElementId::NamedInteger("insert-preset".into(), i as u64))
+                            .h(px(26.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(5.))
+                            .font_family(mono.clone())
+                            .text_size(px(12.))
+                            .when(enabled, |d| {
+                                d.cursor_pointer()
+                                    .text_color(Tokens::foreground())
+                                    .hover(|s| s.bg(Tokens::raised()))
+                                    .on_click(move |_, _, cx| {
+                                        this.update(cx, |p, cx| {
+                                            p.insert_node(preset_node(label), cx)
+                                        })
+                                    })
+                            })
+                            .when(!enabled, |d| d.text_color(Tokens::disabled()))
+                            .child(label),
+                    );
+                }
+                let row = |input: &Entity<InputState>, button: Button| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(div().flex_1().min_w_0().child(Input::new(input).small()))
+                        .child(button)
+                };
+                let text_btn = {
+                    let this = this.clone();
+                    let input = text_input.clone();
+                    Button::new("insert-text")
+                        .outline()
+                        .small()
+                        .label("Text")
+                        .disabled(!inline)
+                        .on_click(move |_, _, cx| {
+                            let text = input.read(cx).value().to_string();
+                            this.update(cx, |p, cx| p.insert_text(text, cx))
+                        })
+                };
+                let type_btn = {
+                    let this = this.clone();
+                    let input = ty_input.clone();
+                    Button::new("insert-custom")
+                        .primary()
+                        .small()
+                        .label("Insert")
+                        .on_click(move |_, _, cx| {
+                            let ty = input.read(cx).value().trim().to_string();
+                            this.update(cx, |p, cx| p.insert_custom(ty, cx))
+                        })
+                };
+                list.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .mt(px(6.))
+                        .pt(px(8.))
+                        .border_t_1()
+                        .border_color(Tokens::rule())
+                        .child(row(&text_input, text_btn))
+                        .child(row(&ty_input, type_btn)),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// `Edit JSON`: textarea with the node's full pretty JSON.
+    fn open_json_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let s = self.state.read(cx);
+        let (Some(path), Some(node)) = (s.selection.clone(), s.selected()) else {
+            return;
+        };
+        let base = serde_json::to_string_pretty(node).unwrap_or_default();
+        let rev = s.revision;
+        self.insert_open = false;
+        let area = cx.new(|cx| TextareaState::new(window, cx).default_value(base.clone()));
+        let sub = cx.subscribe(&area, |this, _, ev: &InputEvent, cx| {
+            if let (InputEvent::Change, Some(e)) = (ev, &mut this.json_edit) {
+                if e.error.take().is_some() {
+                    cx.notify();
+                }
+            }
+        });
+        let focus = area.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        self.json_edit = Some(JsonEdit {
+            path,
+            rev,
+            base,
+            area,
+            error: None,
+            _sub: sub,
+        });
+        cx.notify();
+    }
+
+    /// Apply / ⌘⏎: parse and replace the node; on error keep the text.
+    fn apply_json(&mut self, cx: &mut Context<Self>) {
+        let Some(e) = &self.json_edit else {
+            return;
+        };
+        let text = e.area.read(cx).value().to_string();
+        let path = e.path.clone();
+        match self
+            .state
+            .update(cx, |s, cx| s.replace_from_json(path, &text, cx))
+        {
+            Ok(()) => self.json_edit = None,
+            Err(err) => {
+                if let Some(e) = &mut self.json_edit {
+                    e.error = Some(err.into());
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn cancel_json(&mut self, cx: &mut Context<Self>) {
+        if self.json_edit.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// After an edit elsewhere (undo, attr editor), an untouched editor
+    /// follows the document; a touched one keeps the user's text.
+    fn sync_json_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rev = self.state.read(cx).revision;
+        let Some(e) = &mut self.json_edit else {
+            return;
+        };
+        if e.rev == rev {
+            return;
+        }
+        e.rev = rev;
+        if e.area.read(cx).value().as_ref() != e.base {
+            return;
+        }
+        let fresh = self
+            .state
+            .read(cx)
+            .root()
+            .node_at(&e.path)
+            .map(|n| serde_json::to_string_pretty(n).unwrap_or_default());
+        match fresh {
+            Some(text) => {
+                e.base = text.clone();
+                e.area.update(cx, |a, cx| a.set_value(text, window, cx));
+            }
+            None => self.json_edit = None,
+        }
     }
 
     /// Ensure the editor for `id` exists and mirrors `value`, then render it.
@@ -523,6 +894,8 @@ impl Render for InspectorPanel {
         let mono = cx.theme().mono_font_family.clone();
         // Built before borrowing the state: it needs `&mut self` for the input entity.
         let wrap_chooser = self.wrap_chooser(window, cx).into_any_element();
+        let insert_chooser = self.insert_chooser(window, cx);
+        self.sync_json_edit(window, cx);
         let state = self.state.clone();
         let s = self.state.read(cx);
 
@@ -584,6 +957,7 @@ impl Render for InspectorPanel {
             self.fields.clear();
             self.fields_path = Some(path.clone());
             self.add_mark_open = false;
+            self.json_edit = None;
         }
         self.seen.clear();
 
@@ -1047,6 +1421,7 @@ impl Render for InspectorPanel {
                         .grid()
                         .grid_cols(2)
                         .gap(px(6.))
+                        .child(insert_chooser)
                         .child(wrap)
                         .child(act(
                             "Lift",
@@ -1092,23 +1467,115 @@ impl Render for InspectorPanel {
                 }),
         );
 
-        // json
-        let json = serde_json::to_string_pretty(&shallow(node)).unwrap_or_default();
+        // json: cached shallow peek, or the raw editor
+        let rev = s.revision;
+        let peek = match &self.json_peek {
+            Some((p, r, json)) if *p == path && *r == rev => json.clone(),
+            _ => {
+                let json: SharedString = serde_json::to_string_pretty(&shallow(node))
+                    .unwrap_or_default()
+                    .into();
+                self.json_peek = Some((path.clone(), rev, json.clone()));
+                json
+            }
+        };
+        let editing = self
+            .json_edit
+            .as_ref()
+            .map(|e| (e.area.clone(), e.error.clone()));
+        let actions = div()
+            .flex()
+            .gap(px(6.))
+            .child(
+                Button::new("json-edit")
+                    .outline()
+                    .small()
+                    .icon(Icon::new(IconName::Pencil).xsmall())
+                    .label("Edit JSON")
+                    .selected(editing.is_some())
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        if this.json_edit.is_some() {
+                            this.cancel_json(cx);
+                        } else {
+                            this.open_json_edit(window, cx);
+                        }
+                    })),
+            )
+            .when(editing.is_some(), |d| {
+                d.child(div().flex_1())
+                    .child(
+                        Button::new("json-cancel")
+                            .ghost()
+                            .small()
+                            .label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| this.cancel_json(cx))),
+                    )
+                    .child(
+                        Button::new("json-apply")
+                            .primary()
+                            .small()
+                            .label("Apply")
+                            .on_click(cx.listener(|this, _, _, cx| this.apply_json(cx))),
+                    )
+            });
+        let json_body = match editing {
+            Some((area, error)) => div()
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .child(div().font_family(mono.clone()).text_size(px(11.)).map(|d| {
+                    match error.clone() {
+                        Some(err) => d.text_color(Tokens::removed()).child(err),
+                        None => {
+                            d.text_color(Tokens::disabled())
+                                .child(if cfg!(target_os = "macos") {
+                                    "⌘⏎ apply · esc cancel"
+                                } else {
+                                    "ctrl-⏎ apply · esc cancel"
+                                })
+                        }
+                    }
+                }))
+                .child(
+                    div()
+                        .key_context(JSON_EDIT)
+                        .on_action(
+                            cx.listener(|this, _: &CancelJsonEdit, _, cx| this.cancel_json(cx)),
+                        )
+                        // ⌘⏎ applies before the textarea inserts a newline
+                        .capture_action(cx.listener(|this, a: &Enter, _, cx| {
+                            if a.secondary {
+                                cx.stop_propagation();
+                                this.apply_json(cx);
+                            }
+                        }))
+                        .rounded(px(6.))
+                        .border_1()
+                        .border_color(if error.is_some() {
+                            Tokens::removed()
+                        } else {
+                            Tokens::input_border()
+                        })
+                        .font_family(mono.clone())
+                        .child(Textarea::new(&area).small().bordered(false).h(px(320.))),
+                ),
+            None => div()
+                .px(px(12.))
+                .py(px(10.))
+                .rounded(px(6.))
+                .bg(Tokens::code_bg())
+                .border_1()
+                .border_color(Tokens::border())
+                .font_family(mono.clone())
+                .text_size(px(11.))
+                .line_height(relative(1.5))
+                .text_color(Tokens::secondary())
+                .child(peek),
+        };
         body = body.child(
-            section("JSON", Some("preserve_order".into())).child(
-                div()
-                    .px(px(12.))
-                    .py(px(10.))
-                    .rounded(px(6.))
-                    .bg(Tokens::code_bg())
-                    .border_1()
-                    .border_color(Tokens::border())
-                    .font_family(mono.clone())
-                    .text_size(px(11.))
-                    .line_height(relative(1.5))
-                    .text_color(Tokens::secondary())
-                    .child(json),
-            ),
+            section("JSON", Some("preserve_order".into()))
+                .child(actions)
+                .child(json_body),
         );
 
         pane.child(body).child(
@@ -1126,11 +1593,14 @@ impl Render for InspectorPanel {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .overflow_hidden()
-                        .text_ellipsis()
+                        // wraps: paste errors and labels must stay readable
                         .child(format!("last: {last}")),
                 )
-                .child(format!("undo {undo_n} · redo {redo_n}")),
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .child(format!("undo {undo_n} · redo {redo_n}")),
+                ),
         )
     }
 }
