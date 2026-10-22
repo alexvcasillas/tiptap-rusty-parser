@@ -347,5 +347,84 @@ fn benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(g, benches);
+/// Studio-sized document: `n` top-level blocks (headings, paragraphs with marks,
+/// nested lists), ~10 nodes per block.
+fn studio_doc(n: usize) -> Node {
+    doc((0..n).map(|i| match i % 5 {
+        0 => Node::element("heading")
+            .with_attr("level", (i % 3 + 1) as u64)
+            .with_child(Node::text(format!("Heading {i}"))),
+        1 | 2 => Node::element("paragraph").with_children([
+            Node::text(format!("para {i} ")),
+            Node::text_with_marks("bold ", [Mark::new("bold")]),
+            Node::text_with_marks("link", [Mark::new("link").attr("href", "https://x.y")]),
+        ]),
+        _ => Node::element("bulletList").with_children((0..2).map(|j| {
+            Node::element("listItem").with_children([
+                Node::element("paragraph").with_child(Node::text(format!("item {i}.{j}"))),
+                Node::element("bulletList").with_child(
+                    Node::element("listItem")
+                        .with_child(Node::element("paragraph").with_child(Node::text("nested"))),
+                ),
+            ])
+        })),
+    }))
+}
+
+/// Large-document paths the studio hits on every edit / Diff recompute.
+fn large(c: &mut Criterion) {
+    let base = studio_doc(10_000);
+
+    // Old studio edit path: clone the root, run the txn, re-diff for the undo.
+    c.bench_function("edit_attr_10k_clone_invert", |b| {
+        let mut d = base.clone();
+        let mut level = 1u64;
+        b.iter(|| {
+            level = level % 3 + 1;
+            let before = d.clone();
+            let changes = {
+                let mut t = d.transform();
+                t.set_attr(vec![5000], "level", level).unwrap();
+                t.finish()
+            };
+            black_box(before.invert(&changes).unwrap());
+        })
+    });
+    // New: inverse recorded while applying.
+    c.bench_function("edit_attr_10k_incremental_inverse", |b| {
+        let mut d = base.clone();
+        let mut level = 1u64;
+        b.iter(|| {
+            level = level % 3 + 1;
+            let mut t = d.transform();
+            t.set_attr(vec![5000], "level", level).unwrap();
+            black_box(t.finish_with_inverse());
+        })
+    });
+    c.bench_function("undo_redo_10k_apply_inverting", |b| {
+        let mut d = base.clone();
+        let (_, mut undo) = {
+            let mut t = d.transform();
+            t.remove(vec![], 5000).unwrap();
+            t.finish_with_inverse()
+        };
+        b.iter(|| {
+            let redo = d.apply_inverting(std::mem::take(&mut undo)).unwrap();
+            undo = d.apply_inverting(redo).unwrap();
+        })
+    });
+    c.bench_function("wrap_10k_scoped_txn", |b| {
+        b.iter_batched(
+            || base.clone(),
+            |mut d| {
+                let mut t = d.transform();
+                t.wrap(vec![5001], "blockquote", None).unwrap();
+                black_box(t.finish_with_inverse())
+            },
+            criterion::BatchSize::LargeInput,
+        )
+    });
+}
+
+criterion_group!(g, benches, large);
 criterion_main!(g);

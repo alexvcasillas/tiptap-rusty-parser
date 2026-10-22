@@ -104,6 +104,50 @@ proptest! {
         }
     }
 
+    /// Incremental inverses: a transaction replaying `diff(a, b)` (block and
+    /// inline granularity: moves, splices, replaces) records an undo that
+    /// restores `a`; `apply_inverting` round-trips both ways.
+    #[test]
+    fn incremental_inverse_restores(a in arb_tree(), b in arb_tree()) {
+        for text in [DiffGranularity::Block, DiffGranularity::Inline] {
+            let changes = a.diff_with(&b, &DiffOptions { text });
+            let mut t = a.clone();
+            let (_, undo) = {
+                let mut tx = t.transform();
+                for c in changes.clone() {
+                    tx.apply_change(c).unwrap();
+                }
+                tx.finish_with_inverse()
+            };
+            prop_assert_eq!(&t, &b);
+            let redo = t.apply_inverting(undo).unwrap();
+            prop_assert_eq!(&t, &a);
+            t.apply_inverting(redo).unwrap();
+            prop_assert_eq!(&t, &b);
+        }
+    }
+
+    /// Structural builders record a scoped patch + inverse that replay/undo
+    /// exactly (wrap then lift the first child, in one transaction).
+    #[test]
+    fn structural_transform_inverse(a in arb_tree()) {
+        prop_assume!(a.child_count() > 0);
+        let mut t = a.clone();
+        let (fwd, undo) = {
+            let mut tx = t.transform();
+            tx.wrap(vec![0], "wrapper", None).unwrap();
+            if a.child(0).is_some_and(|c| c.child_count() > 0) {
+                tx.lift(vec![0, 0, 0]).unwrap();
+            }
+            tx.finish_with_inverse()
+        };
+        let mut replay = a.clone();
+        apply(&mut replay, &fwd).unwrap();
+        prop_assert_eq!(&replay, &t);
+        apply(&mut t, &undo).unwrap();
+        prop_assert_eq!(&t, &a);
+    }
+
     /// `compose`/`compact` are apply-equivalent to sequential application, and
     /// every `map_path` Some result resolves in the applied tree.
     #[test]
