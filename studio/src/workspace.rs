@@ -9,6 +9,7 @@ use gpui_kit::*;
 use std::path::PathBuf;
 
 use gpui_kit::component::checkbox::Checkbox;
+use gpui_kit::component::Selectable;
 
 use crate::diff::{DiffPanel, DiffState};
 use crate::inspector::InspectorPanel;
@@ -58,6 +59,7 @@ pub struct Workspace {
     inspector: Entity<InspectorPanel>,
     schema: Entity<SchemaState>,
     problems: Entity<ProblemsPanel>,
+    source: Entity<crate::source::SourcePanel>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -84,6 +86,7 @@ impl Workspace {
         tree.update(cx, |t, cx| t.set_schema(schema.clone(), cx));
         inspector.update(cx, |i, cx| i.set_schema(schema.clone(), cx));
         let schema_sub = cx.observe(&schema, |_, _, cx| cx.notify());
+        let source = cx.new(|cx| crate::source::SourcePanel::new(state.clone(), cx));
         Self {
             state,
             mode: Mode::Inspect,
@@ -95,6 +98,7 @@ impl Workspace {
             inspector,
             schema,
             problems,
+            source,
             focus: cx.focus_handle(),
             _subs: vec![sub, diff_sub, schema_sub],
         }
@@ -116,6 +120,12 @@ impl Workspace {
         };
         window.focus(&focus, cx);
         cx.notify();
+    }
+
+    /// Preview ↔ Source (⌘3). The hidden pane may hold focus: hand it to the tree.
+    fn toggle_source(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        crate::layout::toggle_source(cx);
+        window.focus(&self.tree.read(cx).focus_handle(), cx);
     }
 
     /// Focus target on launch, so arrow keys navigate immediately.
@@ -250,6 +260,11 @@ impl Render for Workspace {
             .on_action(move |_: &crate::layout::ToggleRightPane, _, cx| {
                 crate::layout::toggle(mode, true, cx)
             })
+            .on_action(
+                cx.listener(|this, _: &crate::layout::ToggleSource, w, cx| {
+                    this.toggle_source(w, cx)
+                }),
+            )
             .on_drop(cx.listener(|this, paths: &ExternalPaths, w, cx| {
                 this.drop_paths(paths, false, w, cx)
             }))
@@ -427,6 +442,24 @@ impl Render for Workspace {
                             .child(tool("json", IconName::Braces, "JSON").on_click(
                                 cx.listener(|this, _, w, cx| this.print_json(&PrintJson, w, cx)),
                             ))
+                            .child({
+                                let on = crate::layout::show_source(cx);
+                                let icon = Icon::new(IconName::FileCode).small();
+                                Button::new("source")
+                                    .ghost()
+                                    .small()
+                                    .selected(on)
+                                    .icon(if on {
+                                        icon.text_color(Tokens::accent())
+                                    } else {
+                                        icon
+                                    })
+                                    .label("Source")
+                                    .tooltip("Show the JSON source instead of the preview (⌘3)")
+                                    .on_click(
+                                        cx.listener(|this, _, w, cx| this.toggle_source(w, cx)),
+                                    )
+                            })
                             .child(crate::schema_panel::toolbar_item(&self.schema, cx))
                             .child(div().flex_1()),
                         Mode::Diff => {
@@ -487,7 +520,10 @@ impl Render for Workspace {
                             .size_full()
                             .min_w_0()
                             .min_h_0()
-                            .child(self.preview.clone())
+                            .map(|d| match crate::layout::show_source(cx) {
+                                true => d.child(self.source.clone()),
+                                false => d.child(self.preview.clone()),
+                            })
                             .child(self.problems.clone()),
                         self.inspector.clone(),
                         cx,

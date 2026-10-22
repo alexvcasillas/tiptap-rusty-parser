@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 
 use crate::workspace::Mode;
 
-gpui_kit::actions!(studio, [ToggleLeftPane, ToggleRightPane]);
+gpui_kit::actions!(studio, [ToggleLeftPane, ToggleRightPane, ToggleSource]);
 
 const SAVE_DELAY: Duration = Duration::from_millis(500);
 
@@ -32,6 +32,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-1", ToggleLeftPane, Some("Studio")),
         KeyBinding::new("cmd-2", ToggleRightPane, Some("Studio")),
         KeyBinding::new("ctrl-2", ToggleRightPane, Some("Studio")),
+        KeyBinding::new("cmd-3", ToggleSource, Some("Studio")),
+        KeyBinding::new("ctrl-3", ToggleSource, Some("Studio")),
     ]);
 }
 
@@ -132,6 +134,8 @@ impl Render for Ghost {
 pub struct Layout {
     pub inspect: Panes,
     pub diff: Panes,
+    /// Inspect mode shows the JSON source pane instead of the preview.
+    pub source: bool,
     window: Option<WindowBounds>,
     changed_at: Instant,
     pending: bool,
@@ -163,6 +167,7 @@ pub fn init(cx: &mut App) {
     let layout = Layout {
         inspect: Panes::from_json(get("inspect"), Panes::INSPECT),
         diff: Panes::from_json(get("diff"), Panes::DIFF),
+        source: get("source").as_bool().unwrap_or(false),
         window: window_from_json(get("window")),
         changed_at: Instant::now(),
         pending: false,
@@ -271,6 +276,7 @@ impl Layout {
             "version": 1,
             "inspect": self.inspect.to_json(),
             "diff": self.diff.to_json(),
+            "source": self.source,
         });
         if let Some(w) = self.window {
             v["window"] = window_to_json(w);
@@ -389,6 +395,19 @@ impl Layout {
 
 fn entity(cx: &App) -> Entity<Layout> {
     cx.global::<LayoutGlobal>().0.clone()
+}
+
+/// Whether Inspect mode shows Source instead of Preview.
+pub fn show_source(cx: &App) -> bool {
+    entity(cx).read(cx).source
+}
+
+/// Swap Preview ↔ Source in Inspect mode (⌘3); persisted.
+pub fn toggle_source(cx: &mut App) {
+    entity(cx).update(cx, |l, cx| {
+        l.source = !l.source;
+        l.touch(cx);
+    });
 }
 
 /// Toggle the left / right pane of `mode` (⌘1 / ⌘2).

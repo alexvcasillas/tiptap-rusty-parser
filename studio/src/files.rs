@@ -45,6 +45,8 @@ pub struct LoadError {
     pub message: SharedString,
     /// 1-based (line, column) when serde reports one.
     pub location: Option<(usize, usize)>,
+    /// Numbered raw lines around `location` (see `source::error_excerpt`).
+    pub excerpt: Vec<(usize, SharedString)>,
 }
 
 impl LoadError {
@@ -76,6 +78,7 @@ pub fn read_doc(path: &Path) -> Result<Document, LoadError> {
         path: path.to_path_buf(),
         message: message.into(),
         location,
+        excerpt: Vec::new(),
     };
     let text = std::fs::read_to_string(path).map_err(|e| err(e.to_string(), None))?;
     let body = text.trim_start_matches('\u{feff}');
@@ -106,7 +109,11 @@ pub fn read_doc(path: &Path) -> Result<Document, LoadError> {
                 .map_or(full.as_str(), |i| &full[..i])
                 .to_string();
             let loc = (j.line() > 0).then(|| (j.line(), j.column()));
-            err(msg, loc)
+            let mut e = err(msg, loc);
+            if let Some((line, _)) = loc {
+                e.excerpt = crate::source::excerpt(body, line, 4);
+            }
+            e
         }
         other => err(other.to_string(), None),
     })
@@ -124,6 +131,7 @@ pub fn initial_state(path: Option<&Path>) -> (DocumentState, Option<LoadError>) 
                     path: "assets/sample.json".into(),
                     message: e.to_string().into(),
                     location: None,
+                    excerpt: Vec::new(),
                 };
                 return (empty_state(), Some(err));
             }
@@ -697,6 +705,7 @@ impl Workspace {
                                 .child(e.path.display().to_string()),
                         ),
                 )
+                .children(crate::source::error_excerpt(e, cx))
                 .child(
                     Button::new("error-open")
                         .outline()
