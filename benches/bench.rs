@@ -413,16 +413,15 @@ fn large(c: &mut Criterion) {
             undo = d.apply_inverting(redo).unwrap();
         })
     });
-    c.bench_function("wrap_10k_scoped_txn", |b| {
-        b.iter_batched(
-            || base.clone(),
-            |mut d| {
-                let mut t = d.transform();
-                t.wrap(vec![5001], "blockquote", None).unwrap();
-                black_box(t.finish_with_inverse())
-            },
-            criterion::BatchSize::LargeInput,
-        )
+    // Wrap + undo on the same tree (no per-iteration clone/drop of the doc).
+    c.bench_function("wrap_10k_scoped_txn_and_undo", |b| {
+        let mut d = base.clone();
+        b.iter(|| {
+            let mut t = d.transform();
+            t.wrap(vec![5001], "blockquote", None).unwrap();
+            let (_, undo) = t.finish_with_inverse();
+            d.apply_inverting(undo).unwrap();
+        })
     });
 
     // Diff of the 10k doc vs a copy with 50 scattered edits.
