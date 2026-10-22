@@ -5,7 +5,8 @@
 //! - [`compact`] coalesces redundant node-local ops (safely — structural ops act
 //!   as barriers, since [`apply`] interprets child indices against the live tree).
 //! - [`map_path`] carries an index-path through a change list (the basis for
-//!   mapping a selection or decoration across an edit).
+//!   mapping a selection or decoration across an edit); [`unmap_path`] and
+//!   [`rebase_change`] go the other way.
 //!
 //! Operational-transform style *rebasing* of concurrent edits is intentionally
 //! out of scope: it needs a bidirectional position map with insertion tie-breaks
@@ -218,12 +219,21 @@ pub fn map_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
 /// assert_eq!(unmap_path(&[1], &removed), Some(vec![2]));
 /// ```
 pub fn unmap_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
+    unmap(path, changes, false)
+}
+
+/// Reverse walk shared by [`unmap_path`] and [`rebase_change`]. With `slot`,
+/// the last component of `path` is an insertion slot (`0..=len`) rather than a
+/// node: an earlier insert at the same slot leaves it in place instead of
+/// dropping it.
+fn unmap(path: &[usize], changes: &[Change], slot: bool) -> Option<Vec<usize>> {
     let mut q = path.to_vec();
+    let last = q.len().wrapping_sub(1);
     for change in changes.iter().rev() {
         match change {
             Change::Insert { path: p, index, .. } => {
                 if let Some(d) = affected_level(&q, p) {
-                    if *index == q[d] {
+                    if *index == q[d] && !(slot && d == last) {
                         return None; // the node on the path was inserted
                     } else if *index < q[d] {
                         q[d] -= 1;
@@ -240,7 +250,7 @@ pub fn unmap_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
             Change::Move { path: p, from, to } => {
                 if let Some(d) = affected_level(&q, p) {
                     let k = q[d];
-                    if *to == k {
+                    if *to == k && !(slot && d == last) {
                         q[d] = *from;
                     } else {
                         // undo insert(to), then undo remove(from)
@@ -261,4 +271,64 @@ pub fn unmap_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
         }
     }
     Some(q)
+}
+
+/// Re-express `change`, taken from the middle of a change list right after
+/// `prior`, against the tree *before* `prior` ran, so it can be applied on its
+/// own (cherry-picked) to that base. Returns `None` when its target did not
+/// exist in the base (it lives inside a node that `prior` inserted or replaced).
+///
+/// Node addresses go through [`unmap_path`]; insertion slots (`Insert::index`,
+/// `Move::to`) are carried as slots, so a sibling inserted earlier at the same
+/// position does not drop them.
+///
+/// ```
+/// use tiptap_rusty_parser::{rebase_change, Change};
+/// let prior = vec![Change::Remove { path: vec![], index: 0 }];
+/// let later = Change::SetText { path: vec![1, 0], text: Some("x".into()) };
+/// assert_eq!(
+///     rebase_change(&later, &prior),
+///     Some(Change::SetText { path: vec![2, 0], text: Some("x".into()) })
+/// );
+/// ```
+pub fn rebase_change(change: &Change, prior: &[Change]) -> Option<Change> {
+    fn child(parent: &[usize], i: usize) -> Vec<usize> {
+        let mut p = parent.to_vec();
+        p.push(i);
+        p
+    }
+    fn split(mut p: Vec<usize>) -> (Vec<usize>, usize) {
+        let i = p.pop().unwrap_or(0);
+        (p, i)
+    }
+    let mut out = change.clone();
+    match &mut out {
+        Change::Insert { path, index, .. } => {
+            (*path, *index) = split(unmap(&child(path, *index), prior, true)?);
+        }
+        Change::Remove { path, index } => {
+            (*path, *index) = split(unmap(&child(path, *index), prior, false)?);
+        }
+        Change::Move { path, from, to } => {
+            // `to` is a slot in the post-removal list; lift it into the
+            // pre-removal list, rebase, then drop the removed child again.
+            let slot = if *to >= *from { *to + 1 } else { *to };
+            let (p, f) = split(unmap(&child(path, *from), prior, false)?);
+            let (_, s) = split(unmap(&child(path, slot), prior, true)?);
+            *to = if s > f { s - 1 } else { s };
+            *path = p;
+            *from = f;
+        }
+        Change::SetAttr { path, .. }
+        | Change::RemoveAttr { path, .. }
+        | Change::SetText { path, .. }
+        | Change::SetMarks { path, .. }
+        | Change::SetExtra { path, .. }
+        | Change::RemoveExtra { path, .. }
+        | Change::Replace { path, .. }
+        | Change::SpliceText { path, .. } => {
+            *path = unmap(path, prior, false)?;
+        }
+    }
+    Some(out)
 }

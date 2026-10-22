@@ -1,6 +1,8 @@
 //! Change-list algebra: compose / compact / map_path.
 
-use tiptap_rusty_parser::{apply, compact, compose, map_path, unmap_path, Change, Node};
+use tiptap_rusty_parser::{
+    apply, compact, compose, map_path, rebase_change, unmap_path, Change, Node,
+};
 
 fn p(text: &str) -> Node {
     Node::element("paragraph").with_child(Node::text(text))
@@ -428,4 +430,77 @@ fn unmap_path_drops_inserted_and_replaced_nodes() {
     assert_eq!(unmap_path(&[2], &mv), Some(vec![0]));
     assert_eq!(unmap_path(&[0], &mv), Some(vec![1]));
     assert_eq!(unmap_path(&[1], &mv), Some(vec![2]));
+}
+
+// ---- rebase_change --------------------------------------------------------
+
+#[test]
+fn rebase_change_cherry_picks_each_diff_change_onto_the_base() {
+    let a = doc([p("a"), p("b"), p("c"), p("d"), p("e")]);
+    let b = doc([p("x"), p("b"), p("e"), p("c2"), p("c"), p("new")]);
+    let changes = a.diff(&b);
+    assert!(changes.len() > 2);
+    for i in 0..changes.len() {
+        let picked = rebase_change(&changes[i], &changes[..i]).expect("target exists in a");
+        let mut t = a.clone();
+        apply(&mut t, &[picked]).unwrap_or_else(|e| panic!("change {i}: {e}"));
+    }
+    // Picking them one at a time (re-diffing in between) converges on `b`.
+    let mut t = a.clone();
+    for _ in 0..32 {
+        let rest = t.diff(&b);
+        let Some(last) = rest.len().checked_sub(1) else {
+            break;
+        };
+        let picked = rebase_change(&rest[last], &rest[..last]).unwrap();
+        apply(&mut t, &[picked]).unwrap();
+    }
+    assert_eq!(t, b);
+}
+
+#[test]
+fn rebase_change_shifts_paths_and_slots() {
+    let prior = vec![
+        Change::Insert {
+            path: vec![],
+            index: 0,
+            node: p("n"),
+        },
+        Change::Remove {
+            path: vec![],
+            index: 3,
+        },
+    ];
+    // Node-local: live [2,0] was base [1,0].
+    let set = Change::SetText {
+        path: vec![2, 0],
+        text: Some("y".into()),
+    };
+    assert_eq!(
+        rebase_change(&set, &prior),
+        Some(Change::SetText {
+            path: vec![1, 0],
+            text: Some("y".into()),
+        })
+    );
+    // A slot right after an inserted sibling is kept, not dropped.
+    let ins = Change::Insert {
+        path: vec![],
+        index: 1,
+        node: p("m"),
+    };
+    assert_eq!(
+        rebase_change(&ins, &prior),
+        Some(Change::Insert {
+            path: vec![],
+            index: 0,
+            node: p("m"),
+        })
+    );
+    // Inside a node `prior` inserted: no base target.
+    let inside = Change::SetText {
+        path: vec![0, 0],
+        text: None,
+    };
+    assert_eq!(rebase_change(&inside, &prior), None);
 }
