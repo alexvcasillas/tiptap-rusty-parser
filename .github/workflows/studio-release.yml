@@ -1,0 +1,284 @@
+# Tiptap Studio release builds: macOS universal (.dmg, signed + notarized when the
+# Apple secrets exist), Windows x86_64 (.zip), Linux x86_64 (.tar.gz).
+# Tag `studio-vX.Y.Z` (must match studio/Cargo.toml) → draft GitHub Release with all three.
+# Manual runs (workflow_dispatch) build and upload artifacts only.
+# Docs: studio/packaging/README.md.
+name: studio release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["studio-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  version:
+    name: version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        name: Read version, check tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          v="$(studio/packaging/macos/bundle.sh version)"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "studio-v$v" ]; then
+            echo "::error::tag $REF_NAME does not match studio/Cargo.toml version $v (expected studio-v$v)"
+            exit 1
+          fi
+          echo "Tiptap Studio $v" >> "$GITHUB_STEP_SUMMARY"
+
+  macos:
+    name: macOS universal
+    needs: version
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      MACOSX_DEPLOYMENT_TARGET: "10.15.7"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: studio-macos-universal
+      - name: Build (aarch64 + x86_64)
+        run: cargo build --release -p tiptap-rusty-studio --target aarch64-apple-darwin --target x86_64-apple-darwin
+      - name: Bundle .app (lipo)
+        run: |
+          studio/packaging/macos/bundle.sh app dist \
+            target/aarch64-apple-darwin/release/tiptap-studio \
+            target/x86_64-apple-darwin/release/tiptap-studio
+
+      # Secrets are not readable in `if:`; expose only whether each set is complete.
+      - id: secrets
+        name: Detect signing secrets
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          sign=false; notary=none
+          if [ -n "$APPLE_CERTIFICATE" ] && [ -n "$APPLE_CERTIFICATE_PASSWORD" ]; then sign=true; fi
+          if [ -n "$APPLE_API_KEY_ID" ] && [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_KEY_P8" ]; then notary=api-key
+          elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_TEAM_ID" ] && [ -n "$APPLE_APP_PASSWORD" ]; then notary=apple-id; fi
+          if [ "$sign" = false ]; then notary=none; fi
+          echo "sign=$sign" >> "$GITHUB_OUTPUT"
+          echo "notary=$notary" >> "$GITHUB_OUTPUT"
+          if [ "$sign" = true ] && [ "$notary" != none ]; then suffix=""; elif [ "$sign" = true ]; then suffix="-signed-not-notarized"; else suffix="-unsigned"; fi
+          echo "dmg=dist/TiptapStudio-$VERSION-macos-universal$suffix.dmg" >> "$GITHUB_OUTPUT"
+          echo "sign=$sign notary=$notary"
+
+      - name: Import signing certificate
+        if: steps.secrets.outputs.sign == 'true'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: studio/packaging/macos/bundle.sh import-cert
+      - name: Codesign .app (hardened runtime)
+        if: steps.secrets.outputs.sign == 'true'
+        run: studio/packaging/macos/bundle.sh sign "dist/Tiptap Studio.app"
+      - name: Notarize + staple .app
+        if: steps.secrets.outputs.notary != 'none'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: studio/packaging/macos/bundle.sh notarize "dist/Tiptap Studio.app"
+      - name: Build .dmg
+        env:
+          DMG: ${{ steps.secrets.outputs.dmg }}
+        run: studio/packaging/macos/bundle.sh dmg "dist/Tiptap Studio.app" "$DMG"
+      - name: Notarize + staple .dmg
+        if: steps.secrets.outputs.notary != 'none'
+        env:
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          DMG: ${{ steps.secrets.outputs.dmg }}
+        run: studio/packaging/macos/bundle.sh notarize "$DMG"
+      - name: Verify (codesign, spctl, stapler)
+        if: steps.secrets.outputs.notary != 'none'
+        env:
+          DMG: ${{ steps.secrets.outputs.dmg }}
+        run: studio/packaging/macos/bundle.sh verify "dist/Tiptap Studio.app" "$DMG"
+      - name: Verify signature only (not notarized)
+        if: steps.secrets.outputs.sign == 'true' && steps.secrets.outputs.notary == 'none'
+        run: codesign --verify --deep --strict --verbose=2 "dist/Tiptap Studio.app"
+      - name: Smoke check binary
+        run: |
+          lipo -info "dist/Tiptap Studio.app/Contents/MacOS/tiptap-studio"
+          plutil -lint "dist/Tiptap Studio.app/Contents/Info.plist"
+          test -f "dist/Tiptap Studio.app/Contents/Resources/AppIcon.icns"
+      - name: Job summary
+        if: always()
+        env:
+          SIGN: ${{ steps.secrets.outputs.sign }}
+          NOTARY: ${{ steps.secrets.outputs.notary }}
+          DMG: ${{ steps.secrets.outputs.dmg }}
+        run: |
+          {
+            echo "### macOS universal"
+            echo "- dmg: \`$(basename "$DMG")\`"
+            if [ "$SIGN" != true ]; then
+              echo "- :warning: **unsigned**: APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD secrets not set. Users must run \`xattr -dr com.apple.quarantine \"/Applications/Tiptap Studio.app\"\`."
+            elif [ "$NOTARY" = none ]; then
+              echo "- :warning: signed but **not notarized**: no App Store Connect API key or Apple ID secrets. Gatekeeper will still block it."
+            else
+              echo "- signed (Developer ID, hardened runtime) and notarized via $NOTARY, ticket stapled to .app and .dmg"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove keychain and API key
+        if: always()
+        run: studio/packaging/macos/bundle.sh cleanup
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tiptap-studio-macos-universal
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  windows:
+    name: Windows x86_64
+    needs: version
+    runs-on: windows-2022 # MSVC + Windows SDK (gpui needs fxc.exe for HLSL shaders)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      # GUI subsystem: no console window. Target-scoped so build scripts are unaffected.
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C link-arg=/SUBSYSTEM:WINDOWS -C link-arg=/ENTRY:mainCRTStartup"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: studio-windows-x86_64
+      - name: Build
+        run: cargo build --release -p tiptap-rusty-studio --target x86_64-pc-windows-msvc
+      - name: Package .zip
+        shell: pwsh
+        run: |
+          $name = "TiptapStudio-$env:VERSION-windows-x86_64"
+          $dir = "dist/$name"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/x86_64-pc-windows-msvc/release/tiptap-studio.exe $dir
+          Copy-Item studio/packaging/README.dist.txt "$dir/README.txt"
+          Compress-Archive -Path $dir -DestinationPath "dist/$name.zip" -Force
+          "### Windows x86_64`n- zip: ``$name.zip`` (unsigned exe)" | Out-File -Append -Encoding utf8 $env:GITHUB_STEP_SUMMARY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tiptap-studio-windows-x86_64
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    name: Linux x86_64
+    needs: version
+    runs-on: ubuntu-22.04 # older glibc → runs on more distros
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev \
+            libwayland-dev libvulkan-dev libfontconfig-dev libfreetype-dev \
+            xvfb mesa-vulkan-drivers
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: studio-linux-x86_64
+      - name: Build
+        run: cargo build --release -p tiptap-rusty-studio
+      - name: Headless smoke run (10 s, no panic)
+        run: |
+          set +e
+          xvfb-run -a timeout 10 target/release/tiptap-studio > smoke.log 2>&1
+          rc=$?
+          set -e
+          cat smoke.log
+          if grep -q panicked smoke.log; then echo "::error::tiptap-studio panicked"; exit 1; fi
+          if [ "$rc" -ne 124 ]; then echo "::error::tiptap-studio exited early (rc=$rc)"; exit 1; fi
+      - name: Package .tar.gz
+        run: |
+          out="$(studio/packaging/linux/package.sh target/release/tiptap-studio dist "$VERSION")"
+          printf '### Linux x86_64\n- tar.gz: \x60%s\x60\n' "$(basename "$out")" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tiptap-studio-linux-x86_64
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: draft GitHub Release
+    if: github.ref_type == 'tag'
+    needs: [version, macos, windows, linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: tiptap-studio-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          draft: true
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
+          name: Tiptap Studio ${{ needs.version.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          body: |
+            Tiptap Studio ${{ needs.version.outputs.version }}: desktop inspector, structural editor and differ for Tiptap/ProseMirror JSON.
+
+            - macOS (universal, 10.15.7+): `.dmg`. A file named `-unsigned` is not notarized: `xattr -dr com.apple.quarantine "/Applications/Tiptap Studio.app"`.
+            - Windows x86_64: `.zip`, unsigned exe.
+            - Linux x86_64: `.tar.gz` (needs Vulkan, libxkbcommon, fontconfig).
+
+            Verify: `shasum -a 256 -c SHA256SUMS.txt`; on macOS `spctl -a -vv "/Applications/Tiptap Studio.app"`.
+          files: dist/*
+          fail_on_unmatched_files: true
