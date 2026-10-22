@@ -226,6 +226,29 @@ pub struct Violation {
     pub path: Vec<usize>,
     /// What's wrong.
     pub kind: ViolationKind,
+    /// Index (in the node's `content`) of the offending child: the disallowed
+    /// child for [`ViolationKind::DisallowedChild`], or the first child that
+    /// cannot be matched for [`ViolationKind::InvalidContent`]. `None` for
+    /// other kinds, and for `InvalidContent` when every child matched but the
+    /// expression needs more (e.g. `block+` with no children).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<usize>,
+    /// Index (in the node's `marks`) of the mark the violation is about, for
+    /// [`ViolationKind::UnknownMark`], [`ViolationKind::DisallowedMark`] and
+    /// attribute violations raised on a mark. `None` when it is about the node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<usize>,
+}
+
+impl Violation {
+    fn at(path: &[usize], kind: ViolationKind) -> Self {
+        Self {
+            path: path.to_vec(),
+            kind,
+            child: None,
+            mark: None,
+        }
+    }
 }
 
 /// The kinds of schema violation.
@@ -317,10 +340,7 @@ impl Node {
 
 fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut Vec<Violation>) {
     let push = |out: &mut Vec<Violation>, path: &[usize], kind: ViolationKind| {
-        out.push(Violation {
-            path: path.to_vec(),
-            kind,
-        });
+        out.push(Violation::at(path, kind));
     };
 
     let spec = match &node.node_type {
@@ -344,30 +364,32 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
             spec.attrs.as_ref(),
             &spec.required_attrs,
             path,
+            None,
             out,
         );
 
         // marks
         if let Some(marks) = &node.marks {
             let node_type = node.node_type.as_deref().unwrap_or_default();
-            for mark in marks {
+            for (mi, mark) in marks.iter().enumerate() {
                 match schema.marks.get(&mark.mark_type) {
-                    None => push(
-                        out,
-                        path,
-                        ViolationKind::UnknownMark(mark.mark_type.clone()),
-                    ),
+                    None => out.push(Violation {
+                        mark: Some(mi),
+                        ..Violation::at(path, ViolationKind::UnknownMark(mark.mark_type.clone()))
+                    }),
                     Some(mark_spec) => {
                         if let Some(allowed) = &spec.marks {
                             if !allowed.contains(&mark.mark_type) {
-                                push(
-                                    out,
-                                    path,
-                                    ViolationKind::DisallowedMark {
-                                        node: node_type.to_string(),
-                                        mark: mark.mark_type.clone(),
-                                    },
-                                );
+                                out.push(Violation {
+                                    mark: Some(mi),
+                                    ..Violation::at(
+                                        path,
+                                        ViolationKind::DisallowedMark {
+                                            node: node_type.to_string(),
+                                            mark: mark.mark_type.clone(),
+                                        },
+                                    )
+                                });
                             }
                         }
                         check_attrs(
@@ -375,6 +397,7 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
                             mark_spec.attrs.as_ref(),
                             &mark_spec.required_attrs,
                             path,
+                            Some(mi),
                             out,
                         );
                     }
@@ -386,20 +409,23 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
         if let Some(rule) = &spec.content {
             let parent = node.node_type.as_deref().unwrap_or_default();
             match rule {
-                // array form: per-child type membership (unchanged behavior)
+                // array form: per-child type membership. A child of an
+                // unknown type is reported once, as `UnknownNodeType`.
                 ContentRule::Types(allowed) => {
                     if let Some(children) = &node.content {
-                        for child in children {
+                        for (ci, child) in children.iter().enumerate() {
                             if let Some(ct) = &child.node_type {
-                                if !allowed.contains(ct) {
-                                    push(
-                                        out,
-                                        path,
-                                        ViolationKind::DisallowedChild {
-                                            parent: parent.to_string(),
-                                            child: ct.clone(),
-                                        },
-                                    );
+                                if !allowed.contains(ct) && schema.nodes.contains_key(ct) {
+                                    out.push(Violation {
+                                        child: Some(ci),
+                                        ..Violation::at(
+                                            path,
+                                            ViolationKind::DisallowedChild {
+                                                parent: parent.to_string(),
+                                                child: ct.clone(),
+                                            },
+                                        )
+                                    });
                                 }
                             }
                         }
@@ -408,15 +434,17 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
                 // expression form: cardinality + ordering over the child sequence
                 ContentRule::Expr(expr) => {
                     let children = node.content.as_deref().unwrap_or(&[]);
-                    if !expr.matches(children, schema) {
-                        push(
-                            out,
-                            path,
-                            ViolationKind::InvalidContent {
-                                parent: parent.to_string(),
-                                expr: expr.as_str().to_string(),
-                            },
-                        );
+                    if let Err(child) = expr.check(children, schema) {
+                        out.push(Violation {
+                            child,
+                            ..Violation::at(
+                                path,
+                                ViolationKind::InvalidContent {
+                                    parent: parent.to_string(),
+                                    expr: expr.as_str().to_string(),
+                                },
+                            )
+                        });
                     }
                 }
             }
@@ -438,14 +466,15 @@ fn check_attrs(
     allowed: Option<&HashSet<String>>,
     required: &HashSet<String>,
     path: &[usize],
+    mark: Option<usize>,
     out: &mut Vec<Violation>,
 ) {
     for key in required {
         let present = attrs.is_some_and(|m| m.contains_key(key));
         if !present {
             out.push(Violation {
-                path: path.to_vec(),
-                kind: ViolationKind::MissingAttr { key: key.clone() },
+                mark,
+                ..Violation::at(path, ViolationKind::MissingAttr { key: key.clone() })
             });
         }
     }
@@ -453,8 +482,8 @@ fn check_attrs(
         for key in attrs.keys() {
             if !allowed.contains(key) {
                 out.push(Violation {
-                    path: path.to_vec(),
-                    kind: ViolationKind::UnknownAttr { key: key.clone() },
+                    mark,
+                    ..Violation::at(path, ViolationKind::UnknownAttr { key: key.clone() })
                 });
             }
         }
