@@ -3,7 +3,9 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use tiptap_rusty_parser::Node;
@@ -12,8 +14,18 @@ use crate::state::{fmt_path, is_unknown, node_type, short_value, DocumentState, 
 use crate::theme::Tokens;
 use crate::tree::icon_button;
 
+/// Wrap presets: `(label, wrappers innermost-first)`.
+const WRAP_PRESETS: &[(&str, &[&str])] = &[
+    ("blockquote", &["blockquote"]),
+    ("bulletList › listItem", &["listItem", "bulletList"]),
+    ("orderedList › listItem", &["listItem", "orderedList"]),
+    ("callout", &["callout"]),
+];
+
 pub struct InspectorPanel {
     state: Entity<DocumentState>,
+    wrap_open: bool,
+    wrap_input: Option<Entity<InputState>>,
     _subs: Vec<Subscription>,
 }
 
@@ -22,14 +34,119 @@ impl InspectorPanel {
         let sub = cx.observe(&state, |_, _, cx| cx.notify());
         Self {
             state,
+            wrap_open: false,
+            wrap_input: None,
             _subs: vec![sub],
         }
+    }
+
+    /// Free-text wrapper type input for the "Wrap in…" chooser, created once.
+    fn wrap_input(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        if let Some(input) = &self.wrap_input {
+            return input.clone();
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("custom type…"));
+        let sub = cx.subscribe(&input, |this, input, ev: &InputEvent, cx| {
+            if let InputEvent::PressEnter { .. } = ev {
+                let ty = input.read(cx).value().trim().to_string();
+                this.wrap_custom(ty, cx);
+            }
+        });
+        self._subs.push(sub);
+        self.wrap_input = Some(input.clone());
+        input
+    }
+
+    fn wrap_in(&mut self, wrappers: &[&str], cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| s.wrap_selected(wrappers, cx));
+        self.wrap_open = false;
+        cx.notify();
+    }
+
+    fn wrap_custom(&mut self, ty: String, cx: &mut Context<Self>) {
+        if ty.is_empty() {
+            return;
+        }
+        self.wrap_in(&[&ty], cx);
+    }
+
+    /// `Wrap in…` chooser: preset rows + free-text type.
+    fn wrap_chooser(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let this = cx.entity();
+        let input = self.wrap_input(window, cx);
+        let trigger = Button::new("wrap")
+            .outline()
+            .small()
+            .label("Wrap in…")
+            .icon(Icon::new(IconName::ChevronDown).xsmall());
+        Popover::new("wrap-popover")
+            .trigger(trigger)
+            .open(self.wrap_open)
+            .on_open_change({
+                let this = this.clone();
+                move |open, _, cx| {
+                    this.update(cx, |p, cx| {
+                        p.wrap_open = *open;
+                        cx.notify();
+                    })
+                }
+            })
+            .content(move |_, _, cx| {
+                let mono = cx.theme().mono_font_family.clone();
+                let mut list = div().flex().flex_col().gap(px(2.)).w(px(210.));
+                for (i, (label, wrappers)) in WRAP_PRESETS.iter().enumerate() {
+                    let this = this.clone();
+                    list = list.child(
+                        div()
+                            .id(ElementId::NamedInteger("wrap-preset".into(), i as u64))
+                            .h(px(28.))
+                            .px(px(8.))
+                            .flex()
+                            .items_center()
+                            .rounded(px(5.))
+                            .cursor_pointer()
+                            .font_family(mono.clone())
+                            .text_size(px(12.))
+                            .text_color(Tokens::foreground())
+                            .hover(|s| s.bg(Tokens::raised()))
+                            .child(*label)
+                            .on_click(move |_, _, cx| {
+                                this.update(cx, |p, cx| p.wrap_in(wrappers, cx))
+                            }),
+                    );
+                }
+                let this = this.clone();
+                let value_input = input.clone();
+                list.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .mt(px(6.))
+                        .pt(px(8.))
+                        .border_t_1()
+                        .border_color(Tokens::rule())
+                        .child(div().flex_1().min_w_0().child(Input::new(&input).small()))
+                        .child(
+                            Button::new("wrap-custom")
+                                .primary()
+                                .small()
+                                .label("Wrap")
+                                .on_click(move |_, _, cx| {
+                                    let ty = value_input.read(cx).value().trim().to_string();
+                                    this.update(cx, |p, cx| p.wrap_custom(ty, cx))
+                                }),
+                        ),
+                )
+            })
     }
 }
 
 impl Render for InspectorPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mono = cx.theme().mono_font_family.clone();
+        // Built before borrowing the state: it needs `&mut self` for the input entity.
+        let wrap_chooser = self.wrap_chooser(window, cx).into_any_element();
         let state = self.state.clone();
         let s = self.state.read(cx);
 
@@ -297,14 +414,32 @@ impl Render for InspectorPanel {
         }
 
         // structure
-        let can_move = !path.is_empty();
-        let act = |label: &'static str, id: &'static str, f: StateFn| {
+        let can_wrap = s.can_wrap();
+        let can_lift = s.can_lift();
+        let can_split = s.split_target().is_some();
+        let can_join = s.join_target().is_some();
+        let can_up = s.can_move(-1);
+        let can_down = s.can_move(1);
+        let can_delete = !path.is_empty();
+        let act = |label: &'static str, id: &'static str, enabled: bool, f: StateFn| {
             let state = state.clone();
             Button::new(id)
                 .outline()
                 .small()
                 .label(label)
+                .disabled(!enabled)
                 .on_click(move |_, _, cx| state.update(cx, |s, cx| f(s, cx)))
+        };
+        let wrap: AnyElement = if can_wrap {
+            wrap_chooser
+        } else {
+            Button::new("wrap")
+                .outline()
+                .small()
+                .label("Wrap in…")
+                .icon(Icon::new(IconName::ChevronDown).xsmall())
+                .disabled(true)
+                .into_any_element()
         };
         body = body.child(
             section("Structure", None)
@@ -313,36 +448,48 @@ impl Render for InspectorPanel {
                         .grid()
                         .grid_cols(2)
                         .gap(px(6.))
+                        .child(wrap)
                         .child(act(
-                            "Wrap in blockquote",
-                            "wrap",
-                            Box::new(|s, cx| s.wrap_selected("blockquote", cx)),
+                            "Lift",
+                            "lift",
+                            can_lift,
+                            Box::new(|s, cx| s.lift_selected(cx)),
                         ))
-                        .child(act("Lift", "lift", Box::new(|s, cx| s.lift_selected(cx))))
+                        .child(act(
+                            "Split",
+                            "split",
+                            can_split,
+                            Box::new(|s, cx| s.split_selected(cx)),
+                        ))
+                        .child(act(
+                            "Join next",
+                            "join-next",
+                            can_join,
+                            Box::new(|s, cx| s.join_selected(cx)),
+                        ))
                         .child(act(
                             "Move up",
                             "move-up",
+                            can_up,
                             Box::new(|s, cx| s.move_selected(-1, cx)),
                         ))
                         .child(act(
                             "Move down",
                             "move-down",
+                            can_down,
                             Box::new(|s, cx| s.move_selected(1, cx)),
                         )),
                 )
-                .when(can_move, |d| {
+                .child({
                     let state = state.clone();
-                    d.child(
-                        Button::new("delete-node")
-                            .danger()
-                            .outline()
-                            .small()
-                            .icon(Icon::new(IconName::Trash).xsmall())
-                            .label("Delete node")
-                            .on_click(move |_, _, cx| {
-                                state.update(cx, |s, cx| s.delete_selected(cx))
-                            }),
-                    )
+                    Button::new("delete-node")
+                        .danger()
+                        .outline()
+                        .small()
+                        .icon(Icon::new(IconName::Trash).xsmall())
+                        .label("Delete node")
+                        .disabled(!can_delete)
+                        .on_click(move |_, _, cx| state.update(cx, |s, cx| s.delete_selected(cx)))
                 }),
         );
 

@@ -282,7 +282,27 @@ impl DocumentState {
         }
     }
 
+    /// Whether `move_selected(delta)` would land inside the parent.
+    pub fn can_move(&self, delta: isize) -> bool {
+        let Some(path) = self.selection.as_deref() else {
+            return false;
+        };
+        let Some((&from, parent)) = path.split_last() else {
+            return false;
+        };
+        let count = self
+            .root()
+            .node_at(parent)
+            .map(Node::child_count)
+            .unwrap_or(0);
+        let to = from as isize + delta;
+        to >= 0 && (to as usize) < count
+    }
+
     pub fn move_selected(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.can_move(delta) {
+            return;
+        }
         let Some(path) = self.selection.clone() else {
             return;
         };
@@ -290,16 +310,7 @@ impl DocumentState {
             return;
         };
         let parent = parent.to_vec();
-        let count = self
-            .root()
-            .node_at(&parent)
-            .map(Node::child_count)
-            .unwrap_or(0);
-        let to = from as isize + delta;
-        if to < 0 || to as usize >= count {
-            return;
-        }
-        let to = to as usize;
+        let to = (from as isize + delta) as usize;
         let label = format!("Move {} → {to}", fmt_path(&path));
         if self.edit(
             label,
@@ -312,21 +323,124 @@ impl DocumentState {
         }
     }
 
+    /// `Node::lift` needs a grandparent.
+    pub fn can_lift(&self) -> bool {
+        self.selection.as_ref().is_some_and(|p| p.len() >= 2)
+    }
+
     pub fn lift_selected(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.selection.clone() else {
             return;
         };
+        let n = path.len();
+        if n < 2 {
+            return;
+        }
         let label = format!("Lift {}", fmt_path(&path));
-        self.edit(label, |t| t.lift(path).map(|_| ()), cx);
+        if self.edit(label, |t| t.lift(path.clone()).map(|_| ()), cx) {
+            // Lands in the grandparent after the parent's left remainder, if any.
+            let mut p = path[..n - 2].to_vec();
+            p.push(path[n - 2] + usize::from(path[n - 1] > 0));
+            self.selection = Some(p);
+        }
     }
 
-    pub fn wrap_selected(&mut self, wrapper: &str, cx: &mut Context<Self>) {
+    /// Wrapping the root would insert an empty wrapper; refuse it.
+    pub fn can_wrap(&self) -> bool {
+        self.selection.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    /// Wrap the selection in `wrappers`, innermost first (`["listItem", "bulletList"]`),
+    /// as one undo step. Selection moves to the outermost wrapper.
+    pub fn wrap_selected(&mut self, wrappers: &[&str], cx: &mut Context<Self>) {
         let Some(path) = self.selection.clone() else {
             return;
         };
-        let label = format!("Wrap {} in {wrapper}", fmt_path(&path));
-        let wrapper = wrapper.to_string();
-        self.edit(label, |t| t.wrap(path, wrapper, None).map(|_| ()), cx);
+        if path.is_empty() || wrappers.is_empty() {
+            return;
+        }
+        let shown: Vec<&str> = wrappers.iter().rev().copied().collect();
+        let label = format!("Wrap {} in {}", fmt_path(&path), shown.join(" › "));
+        let types: Vec<String> = wrappers.iter().map(|w| w.to_string()).collect();
+        let ok = self.edit(
+            label,
+            |t| {
+                for ty in types {
+                    t.wrap(path.clone(), ty, None)?;
+                }
+                Ok::<(), tiptap_rusty_parser::BlockError>(())
+            },
+            cx,
+        );
+        if ok {
+            // Reveal the wrapped node through every new level.
+            let mut p = path.clone();
+            for _ in 0..wrappers.len() {
+                self.expanded.insert(p.clone());
+                p.push(0);
+            }
+            self.selection = Some(path);
+        }
+    }
+
+    /// `(block, at)` for `Transform::split_block`: a block with ≥2 children splits
+    /// at its midpoint; a leaf splits its parent before itself. `None` when the
+    /// split would only produce an empty block (root, single child, first leaf).
+    pub fn split_target(&self) -> Option<(Vec<usize>, usize)> {
+        let path = self.selection.as_deref()?;
+        let node = self.root().node_at(path)?;
+        match node.content.as_deref() {
+            Some(c) if c.len() >= 2 && !path.is_empty() => Some((path.to_vec(), c.len() / 2)),
+            Some(_) => None,
+            None => match path.split_last() {
+                Some((&i, parent)) if i > 0 && !parent.is_empty() => Some((parent.to_vec(), i)),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn split_selected(&mut self, cx: &mut Context<Self>) {
+        let Some((block, at)) = self.split_target() else {
+            return;
+        };
+        let label = format!("Split {} at {at}", fmt_path(&block));
+        if self.edit(
+            label,
+            |t| t.split_block(block.clone(), at, 0).map(|_| ()),
+            cx,
+        ) {
+            self.selection = Some(block);
+        }
+    }
+
+    /// `(parent, index)` for `Transform::join_blocks` merging the next sibling into
+    /// the selection. `None` without a next sibling, or when either side is a leaf
+    /// (the crate would silently drop the leaf's payload).
+    pub fn join_target(&self) -> Option<(Vec<usize>, usize)> {
+        let path = self.selection.as_deref()?;
+        let (&i, parent) = path.split_last()?;
+        let parent_node = self.root().node_at(parent)?;
+        let kids = parent_node.children();
+        let (left, right) = (kids.get(i)?, kids.get(i + 1)?);
+        (left.content.is_some() && right.content.is_some()).then(|| (parent.to_vec(), i + 1))
+    }
+
+    pub fn join_selected(&mut self, cx: &mut Context<Self>) {
+        let Some((parent, index)) = self.join_target() else {
+            return;
+        };
+        let mut left = parent.clone();
+        left.push(index - 1);
+        let mut right = parent.clone();
+        right.push(index);
+        let label = format!("Join {}+{}", fmt_path(&left), fmt_path(&right));
+        if self.edit(
+            label,
+            |t| t.join_blocks(parent.clone(), index).map(|_| ()),
+            cx,
+        ) {
+            self.selection = Some(left);
+        }
     }
 
     pub fn to_json_pretty(&self) -> String {

@@ -12,7 +12,10 @@ use crate::state::DocumentState;
 use crate::theme::Tokens;
 use crate::tree::TreePanel;
 
-gpui_kit::actions!(studio, [Undo, Redo, DeleteNode, PrintJson]);
+gpui_kit::actions!(
+    studio,
+    [Undo, Redo, DeleteNode, MoveUp, MoveDown, PrintJson]
+);
 
 pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
@@ -23,6 +26,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-y", Redo, Some("Studio")),
         KeyBinding::new("backspace", DeleteNode, Some("Studio")),
         KeyBinding::new("delete", DeleteNode, Some("Studio")),
+        KeyBinding::new("alt-up", MoveUp, Some("Studio")),
+        KeyBinding::new("alt-down", MoveDown, Some("Studio")),
     ]);
 }
 
@@ -63,6 +68,14 @@ impl Workspace {
         self.state.update(cx, |s, cx| s.delete_selected(cx));
     }
 
+    fn move_up(&mut self, _: &MoveUp, _: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| s.move_selected(-1, cx));
+    }
+
+    fn move_down(&mut self, _: &MoveDown, _: &mut Window, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, cx| s.move_selected(1, cx));
+    }
+
     fn print_json(&mut self, _: &PrintJson, _: &mut Window, cx: &mut Context<Self>) {
         println!("{}", self.state.read(cx).to_json_pretty());
     }
@@ -85,6 +98,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
             .on_action(cx.listener(Self::delete_node))
+            .on_action(cx.listener(Self::move_up))
+            .on_action(cx.listener(Self::move_down))
             .on_action(cx.listener(Self::print_json))
             .flex()
             .flex_col()
