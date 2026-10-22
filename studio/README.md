@@ -26,7 +26,7 @@ Diff mode
 title bar   a.json → b.json · +n −n ~n · total changes
 toolbar     … · Open B… · Swap (v1: disabled) · Apply all to A · Only changed · Sync scroll (v1: disabled)
 panes       changes (300) · tree A (fluid) · tree B (fluid) · before/after (300)
-keys        ↑/↓ step changes · ⏎ Take B · ctrl/cmd-z undo
+keys        ↑/↓ step changes · ⏎ Take B · ⌫ Keep A (again: unkeep) · ctrl/cmd-z undo
 ```
 
 ## Modules
@@ -60,7 +60,8 @@ keys        ↑/↓ step changes · ⏎ Take B · ctrl/cmd-z undo
 - [x] Add attribute; add mark with attrs (link `href`)
 - [x] Wrap in…, split, join
 - [x] Diff mode: second document, `Document::diff` change list, tinted rows in both trees, before/after inspector
-- [ ] Diff: Swap A/B, sync scroll, remembered Keep A decisions
+- [x] Diff: remembered Keep A decisions (⌫), Apply all skips kept
+- [ ] Diff: Swap A/B, sync scroll
 - [ ] Open / save dialogs, recent files
 - [ ] Resizable panes via `DockArea`
 - [ ] Schema panel surfacing `Violation`s

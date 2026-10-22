@@ -24,7 +24,7 @@ use crate::state::{fmt_path, node_summary, node_type, short_value, text_preview,
 use crate::theme::Tokens;
 use crate::tree::{flatten, pane_header, render_row, Deco, Row, RowFn};
 
-gpui_kit::actions!(diff, [PrevChange, NextChange, TakeB]);
+gpui_kit::actions!(diff, [PrevChange, NextChange, TakeB, KeepA]);
 
 pub const CONTEXT: &str = "Diff";
 
@@ -33,6 +33,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("up", PrevChange, Some(CONTEXT)),
         KeyBinding::new("down", NextChange, Some(CONTEXT)),
         KeyBinding::new("enter", TakeB, Some(CONTEXT)),
+        KeyBinding::new("backspace", KeepA, Some(CONTEXT)),
     ]);
 }
 
@@ -71,6 +72,19 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Identity for a Keep A decision. Anchored on B (read-only, so its paths
+    /// never shift) plus both values: edits elsewhere in A keep the decision,
+    /// while a different value on either side is a new change to review.
+    fn key(&self) -> String {
+        format!(
+            "{}|{:?}|{:?}|{:?}",
+            self.tag,
+            self.b_target(),
+            self.from,
+            self.to
+        )
+    }
+
     fn a_target(&self) -> Option<&Vec<usize>> {
         self.a_path.as_ref().or(self.a_focus.as_ref())
     }
@@ -175,6 +189,10 @@ pub struct DiffState {
     pub error: Option<SharedString>,
     changes: Vec<Change>,
     entries: Rc<Vec<Entry>>,
+    /// Keep A decisions, by `Entry::key`. Cleared when B changes.
+    kept: HashSet<String>,
+    /// `kept_flags[i]`: entry `i` is resolved as Keep A.
+    kept_flags: Rc<Vec<bool>>,
     pub selected: Option<usize>,
     json: SharedString,
     side_a: Side,
@@ -204,6 +222,8 @@ impl DiffState {
             error: None,
             changes: Vec::new(),
             entries: Rc::new(Vec::new()),
+            kept: HashSet::new(),
+            kept_flags: Rc::new(Vec::new()),
             selected: None,
             json: SharedString::default(),
             side_a: Side::default(),
@@ -231,8 +251,17 @@ impl DiffState {
             .unwrap_or_else(|| "—".into())
     }
 
+    /// Changes still to resolve (kept ones excluded).
     pub fn total(&self) -> usize {
-        self.changes.len()
+        self.changes.len() - self.kept_count()
+    }
+
+    pub fn kept_count(&self) -> usize {
+        self.kept_flags.iter().filter(|k| **k).count()
+    }
+
+    fn is_kept(&self, i: usize) -> bool {
+        self.kept_flags.get(i).copied().unwrap_or(false)
     }
 
     pub fn load_b(&mut self, path: &Path, cx: &mut Context<Self>) {
@@ -251,6 +280,7 @@ impl DiffState {
                 self.b_file = Some(path.to_path_buf());
                 self.error = None;
                 self.selected = None;
+                self.kept.clear();
                 self.side_a = Side::default();
                 self.side_b = Side::default();
                 self.side_a.expanded.insert(Vec::new());
@@ -276,10 +306,26 @@ impl DiffState {
         let entries: Vec<Entry> = (0..self.changes.len())
             .map(|i| describe(i, &self.changes, ra, rb))
             .collect();
+        self.entries = Rc::new(entries);
+        self.retint(a, expand);
+    }
+
+    /// Kept flags, tints and counts from the current entries; no re-diff.
+    fn retint(&mut self, a: &DocumentState, expand: bool) {
+        let entries = self.entries.clone();
+        self.kept_flags = Rc::new(
+            entries
+                .iter()
+                .map(|e| self.kept.contains(&e.key()))
+                .collect(),
+        );
         self.side_a.reset_tints();
         self.side_b.reset_tints();
         let mut counts = (0, 0, 0);
-        for e in &entries {
+        for (e, &kept) in entries.iter().zip(self.kept_flags.iter()) {
+            if kept {
+                continue;
+            }
             match e.tint {
                 Tint::Added => counts.0 += 1,
                 Tint::Removed => counts.1 += 1,
@@ -299,7 +345,6 @@ impl DiffState {
             }
         }
         self.counts = counts;
-        self.entries = Rc::new(entries);
         if self.entries.is_empty() {
             self.selected = None;
         } else if let Some(i) = self.selected {
@@ -429,16 +474,40 @@ impl DiffState {
         });
     }
 
-    /// Keep A: leave this change alone and move on.
+    /// Keep A: resolve the selected change in A's favour (or un-resolve a
+    /// kept one) and move to the next unresolved change.
     pub fn keep_a(&mut self, cx: &mut Context<Self>) {
-        self.step(1, cx);
+        let Some(i) = self.selected else {
+            return;
+        };
+        let Some(key) = self.entries.get(i).map(Entry::key) else {
+            return;
+        };
+        let now_kept = !self.kept.remove(&key);
+        if now_kept {
+            self.kept.insert(key);
+        }
+        self.with_a(cx, |this, a| this.retint(a, false));
+        if now_kept {
+            let n = self.entries.len();
+            if let Some(next) = (1..n).map(|d| (i + d) % n).find(|&j| !self.is_kept(j)) {
+                self.select_change(next, cx);
+            }
+        }
     }
 
     pub fn apply_all(&mut self, cx: &mut Context<Self>) {
-        if self.changes.is_empty() {
+        if self.total() == 0 {
             return;
         }
-        let changes = self.changes.clone();
+        let changes = if self.kept_count() == 0 {
+            self.changes.clone()
+        } else {
+            let Some(c) = self.unkept_changes(cx) else {
+                return;
+            };
+            c
+        };
         let label = format!("Apply all from {}", self.b_name());
         self.a.update(cx, |s, cx| {
             s.edit(
@@ -452,6 +521,29 @@ impl DiffState {
                 cx,
             );
         });
+    }
+}
+
+impl DiffState {
+    /// Every unresolved change as one live sequence, skipping kept ones.
+    /// Picks the first unkept change, applies it to a scratch copy of A,
+    /// re-diffs, repeats: each pick is rebased against the changes before it
+    /// in its own diff, so the result replays exactly onto A. Costs one diff
+    /// per applied change; only used when something is kept.
+    fn unkept_changes(&self, cx: &App) -> Option<Vec<Change>> {
+        let b = self.b.as_ref()?.root();
+        let mut work = self.a.read(cx).root().clone();
+        let mut out = Vec::new();
+        for _ in 0..10_000 {
+            let changes = work.diff(b);
+            let pick = (0..changes.len())
+                .find(|&i| !self.kept.contains(&describe(i, &changes, &work, b).key()));
+            let Some(i) = pick else { break };
+            let c = rebase_change(&changes[i], &changes[..i])?;
+            work.apply(std::slice::from_ref(&c)).ok()?;
+            out.push(c);
+        }
+        Some(out)
     }
 }
 
@@ -735,8 +827,11 @@ impl DiffPanel {
 
     fn changes_pane(&self, d: &DiffState, mono: &SharedString) -> Stateful<Div> {
         let entries = d.entries.clone();
+        let kept = d.kept_flags.clone();
         let selected = d.selected;
         let total = entries.len();
+        let open = d.total();
+        let kept_n = d.kept_count();
         let diff = self.diff.clone();
         let focus = self.focus.clone();
         let mono2 = mono.clone();
@@ -745,7 +840,8 @@ impl DiffPanel {
                 .map(|i| {
                     let diff = diff.clone();
                     let focus = focus.clone();
-                    change_row(i, &entries[i], selected == Some(i), &mono2).on_click(
+                    let k = kept.get(i).copied().unwrap_or(false);
+                    change_row(i, &entries[i], selected == Some(i), k, &mono2).on_click(
                         move |_, window, cx| {
                             window.focus(&focus, cx);
                             diff.update(cx, |d, cx| d.select_change(i, cx));
@@ -771,7 +867,11 @@ impl DiffPanel {
             .bg(Tokens::panel())
             .border_r_1()
             .border_color(Tokens::border())
-            .child(pane_header("Changes").child(div().child(format!("{total}"))))
+            .child(pane_header("Changes").child(div().child(if kept_n > 0 {
+                format!("{open} · {kept_n} kept")
+            } else {
+                format!("{open}")
+            })))
             .child(if total == 0 {
                 div()
                     .flex_1()
@@ -800,7 +900,7 @@ impl DiffPanel {
                     .child(
                         div()
                             .text_color(Tokens::disabled())
-                            .child("↑ ↓ step · ⏎ apply"),
+                            .child("↑↓ step · ⏎ take B · ⌫ keep A"),
                     ),
             )
     }
@@ -1018,10 +1118,15 @@ impl DiffPanel {
 
         // RESOLVE
         let (keep, take) = (self.diff.clone(), self.diff.clone());
+        let is_kept = d.is_kept(i);
         pane = pane.child(
             section(
                 "Resolve",
-                Some(format!("{} / {}", i + 1, d.entries.len()).into()),
+                Some(if is_kept {
+                    "kept A".into()
+                } else {
+                    format!("{} / {}", i + 1, d.entries.len()).into()
+                }),
             )
             .child(
                 div()
@@ -1031,7 +1136,7 @@ impl DiffPanel {
                         Button::new("diff-keep-a")
                             .outline()
                             .small()
-                            .label("Keep A")
+                            .label(if is_kept { "Unkeep" } else { "Keep A" })
                             .flex_1()
                             .on_click(move |_, _, cx| keep.update(cx, |d, cx| d.keep_a(cx))),
                     )
@@ -1080,7 +1185,13 @@ fn tag_chip(tag: &'static str, tint: Tint, mono: &SharedString) -> Div {
         .child(tag)
 }
 
-fn change_row(i: usize, e: &Entry, selected: bool, mono: &SharedString) -> Stateful<Div> {
+fn change_row(
+    i: usize,
+    e: &Entry,
+    selected: bool,
+    kept: bool,
+    mono: &SharedString,
+) -> Stateful<Div> {
     div()
         .id(ElementId::NamedInteger("diff-change".into(), i as u64))
         .w_full()
@@ -1095,6 +1206,7 @@ fn change_row(i: usize, e: &Entry, selected: bool, mono: &SharedString) -> State
         .overflow_hidden()
         .whitespace_nowrap()
         .hover(|s| s.bg(Tokens::raised()))
+        .when(kept, |s| s.opacity(0.45))
         .when(selected, |s| {
             s.bg(Tokens::accent_fill())
                 .border_1()
@@ -1106,6 +1218,20 @@ fn change_row(i: usize, e: &Entry, selected: bool, mono: &SharedString) -> State
                 .items_center()
                 .gap(px(8.))
                 .child(tag_chip(e.tag, e.tint, mono))
+                .when(kept, |d| {
+                    d.child(
+                        div()
+                            .flex_shrink_0()
+                            .px(px(5.))
+                            .rounded(px(4.))
+                            .border_1()
+                            .border_color(Tokens::input_border())
+                            .font_family(mono.clone())
+                            .text_size(px(10.))
+                            .text_color(Tokens::muted())
+                            .child("kept A"),
+                    )
+                })
                 .child(
                     div()
                         .min_w_0()
@@ -1172,6 +1298,9 @@ impl Render for DiffPanel {
             }))
             .on_action(
                 cx.listener(|this, _: &TakeB, _, cx| this.diff.update(cx, |d, cx| d.take_b(cx))),
+            )
+            .on_action(
+                cx.listener(|this, _: &KeepA, _, cx| this.diff.update(cx, |d, cx| d.keep_a(cx))),
             )
             .flex()
             .flex_1()

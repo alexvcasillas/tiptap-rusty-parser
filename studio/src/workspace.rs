@@ -142,6 +142,7 @@ impl Render for Workspace {
         let d = self.diff.read(cx);
         let (added, removed, changed) = d.counts;
         let total = d.total();
+        let kept = d.kept_count();
         let has_b = d.has_b();
         let b_file = d.b_name();
         let only_changed = d.only_changed;
@@ -253,8 +254,13 @@ impl Render for Workspace {
                                     .child(format!("~{changed}")),
                             )
                             .child(format!(
-                                "· {total} change{}",
-                                if total == 1 { "" } else { "s" }
+                                "· {total} change{}{}",
+                                if total == 1 { "" } else { "s" },
+                                if kept > 0 {
+                                    format!(" · {kept} kept")
+                                } else {
+                                    String::new()
+                                }
                             )),
                     }),
             )
