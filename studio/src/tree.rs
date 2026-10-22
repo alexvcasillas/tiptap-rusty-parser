@@ -1,5 +1,6 @@
 //! Left pane: virtualized node tree with chevrons, summaries and selection.
 
+use std::collections::HashSet;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
@@ -8,6 +9,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::*;
 
 use crate::find::FindState;
+use crate::schema_panel::SchemaState;
 use crate::state::{fmt_path, is_unknown, node_summary, node_type, DocumentState};
 use crate::theme::Tokens;
 
@@ -21,6 +23,8 @@ pub struct Row {
     pub type_name: SharedString,
     pub marks: SharedString,
     pub summary: SharedString,
+    /// Has a schema violation (set by `TreePanel` from `SchemaState`).
+    pub problem: bool,
 }
 
 pub struct TreePanel {
@@ -30,10 +34,22 @@ pub struct TreePanel {
     scroll: UniformListScrollHandle,
     last_selection: Option<Vec<usize>>,
     find: Entity<FindState>,
+    /// Paths with a schema violation (see `schema_panel.rs`).
+    problems: Rc<HashSet<Vec<usize>>>,
     _subs: Vec<Subscription>,
 }
 
 impl TreePanel {
+    /// Decorate rows that have schema violations; re-flags on schema change.
+    pub fn set_schema(&mut self, schema: Entity<SchemaState>, cx: &mut Context<Self>) {
+        let sub = cx.observe(&schema, |this, schema, cx| {
+            this.problems = schema.read(cx).paths();
+            this.rebuild(cx);
+            cx.notify();
+        });
+        self._subs.push(sub);
+    }
+
     pub fn new(state: Entity<DocumentState>, cx: &mut Context<Self>) -> Self {
         let sub = cx.observe(&state, |this, _, cx| {
             this.rebuild(cx);
@@ -53,6 +69,7 @@ impl TreePanel {
             scroll: UniformListScrollHandle::new(),
             last_selection: None,
             find,
+            problems: Rc::default(),
             _subs: vec![sub, find_sub],
         };
         this.rebuild(cx);
@@ -67,7 +84,7 @@ impl TreePanel {
     fn rebuild(&mut self, cx: &App) {
         let state = self.state.read(cx);
         let find = self.find.read(cx);
-        self.rows = Rc::new(if find.filtering() {
+        let mut rows = if find.filtering() {
             // "Only matches": matches plus their ancestors, ancestors expanded.
             let (set, anc) = (&find.set, &find.ancestors);
             let mut rows = flatten(state.root(), &|p| anc.contains(p));
@@ -75,7 +92,14 @@ impl TreePanel {
             rows
         } else {
             flatten(state.root(), &|p| state.is_expanded(p))
-        });
+        };
+        // Schema violations (schema_panel.rs) flag their rows.
+        if !self.problems.is_empty() {
+            for r in rows.iter_mut() {
+                r.problem = self.problems.contains(&r.path);
+            }
+        }
+        self.rows = Rc::new(rows);
         // Keep the selected row in view whenever the selection moves
         // (keyboard, preview click, structural edit).
         if state.selection != self.last_selection {
@@ -138,6 +162,7 @@ fn flatten_into(
         type_name: type_name.into(),
         marks: marks.into(),
         summary: summary.into(),
+        problem: false,
     });
     if expanded {
         for (i, c) in node.children().iter().enumerate() {
@@ -369,8 +394,24 @@ pub fn render_row(
                 .flex_shrink_0()
                 .text_color(type_color)
                 .when(deco.strike, |d| d.line_through())
+                .when(row.problem, |d| {
+                    d.underline()
+                        .text_decoration_color(Tokens::removed())
+                        .text_decoration_wavy()
+                })
                 .child(row.type_name.clone()),
         )
+        // schema violation marker, right after the type: rows are wider than
+        // the pane, so a row-end marker would be clipped. Separate from diff
+        // pips and find matches.
+        .when(row.problem, |d| {
+            d.child(
+                div()
+                    .flex_shrink_0()
+                    .text_color(Tokens::removed())
+                    .child(Icon::new(IconName::TriangleAlert).xsmall()),
+            )
+        })
         .when(!row.marks.is_empty(), |d| {
             d.child(
                 div()

@@ -13,6 +13,7 @@ mod inspector;
 mod layout;
 mod nav;
 mod preview;
+mod schema_panel;
 mod state;
 mod theme;
 mod tree;
@@ -26,7 +27,20 @@ use gpui_kit::*;
 use crate::workspace::Workspace;
 
 fn main() {
-    let mut args = std::env::args().skip(1).map(PathBuf::from);
+    // `--schema path.json` (or `--schema=path.json`) anywhere; positional A, B.
+    let mut schema_file: Option<PathBuf> = None;
+    let mut positional = Vec::new();
+    let mut raw = std::env::args().skip(1);
+    while let Some(a) = raw.next() {
+        if a == "--schema" {
+            schema_file = raw.next().map(PathBuf::from);
+        } else if let Some(p) = a.strip_prefix("--schema=") {
+            schema_file = Some(PathBuf::from(p));
+        } else {
+            positional.push(a);
+        }
+    }
+    let mut args = positional.into_iter().map(PathBuf::from);
     let file = args.next();
     let file_b = args.next();
     // Finder / `open -a` / Dock drops (macOS only; see `files::OsOpen`).
@@ -43,6 +57,7 @@ fn main() {
             files::bind_keys(cx);
             layout::bind_keys(cx);
             layout::init(cx);
+            schema_panel::bind_keys(cx);
 
             #[cfg(debug_assertions)]
             os_open.simulate(cx);
@@ -67,6 +82,16 @@ fn main() {
                 let ws = cx.new(|cx| Workspace::new(state, file_b, cx));
                 files::install(&ws, start_error, window, cx);
                 layout::track_window(window, cx);
+                if let Some(p) = schema_file.as_deref() {
+                    let schema = ws.read(cx).schema();
+                    schema.update(cx, |s, cx| {
+                        if p.as_os_str() == "starter-kit" {
+                            s.use_starter_kit(cx) // bundled StarterKit schema
+                        } else {
+                            s.load_file(p, cx)
+                        }
+                    });
+                }
                 let focus = ws.read(cx).tree_focus(cx);
                 window.focus(&focus, cx);
                 ws

@@ -205,7 +205,20 @@ pub struct InspectorPanel {
     /// Shallow JSON peek, cached per (selection, revision).
     json_peek: Option<(Vec<usize>, u64, SharedString)>,
     json_edit: Option<JsonEdit>,
+    schema: Option<Entity<crate::schema_panel::SchemaState>>,
     _subs: Vec<Subscription>,
+}
+
+impl InspectorPanel {
+    /// Show the selected node's schema violations (SCHEMA section).
+    pub fn set_schema(
+        &mut self,
+        schema: Entity<crate::schema_panel::SchemaState>,
+        cx: &mut Context<Self>,
+    ) {
+        self._subs.push(cx.observe(&schema, |_, _, cx| cx.notify()));
+        self.schema = Some(schema);
+    }
 }
 
 impl InspectorPanel {
@@ -228,6 +241,7 @@ impl InspectorPanel {
             insert_text: None,
             json_peek: None,
             json_edit: None,
+            schema: None,
             _subs: vec![sub],
         }
     }
@@ -1014,6 +1028,15 @@ impl Render for InspectorPanel {
             .overflow_y_scroll()
             .flex()
             .flex_col();
+
+        // schema violations of this node (schema_panel.rs)
+        if let Some(sec) = self
+            .schema
+            .as_ref()
+            .and_then(|e| crate::schema_panel::inspector_section(e.read(cx), &path))
+        {
+            body = body.child(sec);
+        }
 
         // identity
         body = body.child(

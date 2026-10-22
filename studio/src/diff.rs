@@ -284,6 +284,11 @@ impl DiffState {
         self.b.is_some()
     }
 
+    /// Root of document B, when loaded (schema panel validates it).
+    pub fn b_root(&self) -> Option<&Node> {
+        self.b.as_ref().map(Document::root)
+    }
+
     pub fn b_name(&self) -> SharedString {
         self.b_file
             .as_ref()

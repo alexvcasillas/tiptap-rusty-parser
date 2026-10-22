@@ -13,6 +13,7 @@ use gpui_kit::component::checkbox::Checkbox;
 use crate::diff::{DiffPanel, DiffState};
 use crate::inspector::InspectorPanel;
 use crate::preview::PreviewPanel;
+use crate::schema_panel::{NextProblem, PrevProblem, ProblemsPanel, SchemaState};
 use crate::state::DocumentState;
 use crate::theme::Tokens;
 use crate::tree::TreePanel;
@@ -55,6 +56,8 @@ pub struct Workspace {
     tree: Entity<TreePanel>,
     preview: Entity<PreviewPanel>,
     inspector: Entity<InspectorPanel>,
+    schema: Entity<SchemaState>,
+    problems: Entity<ProblemsPanel>,
     focus: FocusHandle,
     _subs: Vec<Subscription>,
 }
@@ -72,6 +75,15 @@ impl Workspace {
         let diff_panel = cx.new(|cx| DiffPanel::new(diff.clone(), cx));
         let sub = cx.observe(&state, |_, _, cx| cx.notify());
         let diff_sub = cx.observe(&diff, |_, _, cx| cx.notify());
+        let schema = cx.new(|cx| {
+            let mut s = SchemaState::new(state.clone(), cx);
+            s.watch_diff(diff.clone(), cx);
+            s
+        });
+        let problems = cx.new(|cx| ProblemsPanel::new(schema.clone(), state.clone(), cx));
+        tree.update(cx, |t, cx| t.set_schema(schema.clone(), cx));
+        inspector.update(cx, |i, cx| i.set_schema(schema.clone(), cx));
+        let schema_sub = cx.observe(&schema, |_, _, cx| cx.notify());
         Self {
             state,
             mode: Mode::Inspect,
@@ -81,9 +93,16 @@ impl Workspace {
             tree,
             preview,
             inspector,
+            schema,
+            problems,
             focus: cx.focus_handle(),
-            _subs: vec![sub, diff_sub],
+            _subs: vec![sub, diff_sub, schema_sub],
         }
+    }
+
+    /// Schema validation state (`--schema` in `main.rs`).
+    pub fn schema(&self) -> Entity<SchemaState> {
+        self.schema.clone()
     }
 
     fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
@@ -205,6 +224,10 @@ impl Render for Workspace {
         let has_b = d.has_b();
         let b_file = d.b_name();
         let only_changed = d.only_changed;
+        let sch = self.schema.read(cx);
+        let schema_issues = sch
+            .b_issues
+            .map(|b| format!("· schema A {} · B {b}", sch.issue_count()));
 
         div()
             .id("studio-root")
@@ -228,6 +251,12 @@ impl Render for Workspace {
             })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, w, cx| {
                 this.drop_paths(paths, false, w, cx)
+            }))
+            .on_action(cx.listener(|this, _: &NextProblem, _, cx| {
+                this.schema.update(cx, |s, cx| s.step(1, cx))
+            }))
+            .on_action(cx.listener(|this, _: &PrevProblem, _, cx| {
+                this.schema.update(cx, |s, cx| s.step(-1, cx))
             }))
             .flex()
             .flex_col()
@@ -333,7 +362,8 @@ impl Render for Workspace {
                                 } else {
                                     String::new()
                                 }
-                            )),
+                            ))
+                            .when_some(schema_issues, |d, s| d.child(s)),
                     }),
             )
             // toolbar
@@ -377,10 +407,7 @@ impl Render for Workspace {
                             .child(tool("json", IconName::Braces, "JSON").on_click(
                                 cx.listener(|this, _, w, cx| this.print_json(&PrintJson, w, cx)),
                             ))
-                            .child(
-                                tool("schema", IconName::ShieldCheck, "Schema · none")
-                                    .disabled(true),
-                            )
+                            .child(crate::schema_panel::toolbar_item(&self.schema, cx))
                             .child(div().flex_1()),
                         Mode::Diff => {
                             let (open, apply, only) =
@@ -433,7 +460,15 @@ impl Render for Workspace {
                     _ if files_error.is_some() => panes.children(files_error),
                     Mode::Inspect => panes.child(crate::layout::inspect_row(
                         self.tree.clone(),
-                        self.preview.clone(),
+                        // preview + Problems drawer (schema_panel.rs)
+                        div()
+                            .flex()
+                            .flex_col()
+                            .size_full()
+                            .min_w_0()
+                            .min_h_0()
+                            .child(self.preview.clone())
+                            .child(self.problems.clone()),
                         self.inspector.clone(),
                         cx,
                     )),

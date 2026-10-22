@@ -11,6 +11,7 @@ feature, not an app workaround.
 cargo run -p tiptap-rusty-studio                 # bundled sample document
 cargo run -p tiptap-rusty-studio -- path/to.json # open a file
 cargo run -p tiptap-rusty-studio -- a.json b.json # A + B for Diff mode
+cargo run -p tiptap-rusty-studio -- a.json --schema s.json # validate against a schema (--schema starter-kit = bundled)
 ```
 
 Not published. Not part of the parser's CI matrix (needs native windowing libs).
@@ -45,9 +46,11 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 | `diff.rs` | `DiffState` (doc B, `Document::diff` change list, per-path tints, recomputed on observe) and `DiffPanel` (change list, tinted trees A/B, before/after inspector). Take B = `rebase_change` + `Transform::apply_change` via `DocumentState::edit` |
 | `find.rs` | `FindState` (parser `Query`, matches recomputed per document revision) and `FindBar` (toolbar input, error popover, `n / N` counter, prev/next, Only matches). Tree rows get a 2px accent bar, preview blocks a light accent fill |
 | `layout.rs` | `Layout` entity (global): per-mode side widths, A/B split, collapsed flags, window bounds; `inspect_row` / `diff_row` lay out panes with `resize_handle` dividers; `layout.json` saved 500 ms after the last change and on quit |
+| `schema_panel.rs` | `SchemaState` (loaded `Schema`, violations by path, re-validated on revision/schema change), toolbar Schema menu (Open… / StarterKit / Reload / Unload), inspector SCHEMA section, Problems drawer under the preview, F8 / ⇧F8 |
 | `workspace.rs` | title bar, Inspect/Diff `Mode`, toolbar, actions and key bindings, pane layout |
 | `theme.rs` | visual tokens from the design canvas, applied over the gpui-component dark theme |
 | `assets/sample.json` | demo document with headings, marks, link, list, quote, a custom `callout`, rule, code block |
+| `assets/tiptap-starter-kit.schema.json` | Tiptap StarterKit v3 as a schema (content expressions, allowed attrs) |
 | `assets/sample-v2.json` | edited copy of the sample, for Diff mode |
 
 ## Rules
@@ -71,7 +74,7 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 - [x] Diff as a merge tool: Dismiss (⌫) leaves A's side and hides the change, Apply all skips dismissed, Save / Save as… writes the merged A (`<a>-merged.json` suggested)
 - [x] Diff: document-ordered change list, sync scroll, Swap A/B, take all B in a subtree
 - [x] Save (⌘S), Save as… (⇧⌘S)
-- [ ] Open dialog for A, recent files
+- [x] Open dialog for A, recent files, drag and drop, reload on change, open from Finder
 - [x] Resizable, collapsible panes with persisted layout (`layout.rs`)
-- [ ] Schema panel surfacing `Violation`s
+- [x] Schema validation: load JSON schema or bundled StarterKit, violations in tree / inspector / Problems drawer, F8 stepping
 - [ ] WASM build as a web playground
