@@ -170,6 +170,13 @@ impl<'a> Transform<'a> {
         self.push(Change::Move { path, from, to })
     }
 
+    /// Apply an already-built [`Change`] (e.g. one picked from a
+    /// [`diff`](crate::diff) list) in place and record it. Lets callers
+    /// cherry-pick changes from a diff into an invertible transaction.
+    pub fn apply_change(&mut self, change: Change) -> Result<&mut Self, ApplyError> {
+        self.push(change)
+    }
+
     /// The changes recorded so far, without consuming the transaction.
     pub fn changes(&self) -> &[Change] {
         &self.changes
