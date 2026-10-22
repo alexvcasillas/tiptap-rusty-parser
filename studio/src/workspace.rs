@@ -386,10 +386,9 @@ impl Render for Workspace {
                             )
                             .child(
                                 tool("swap", IconName::ArrowLeftRight, "Swap")
-                                    .disabled(true)
-                                    .tooltip(
-                                        "Swap A and B: not in v1 (A is the editable document)",
-                                    ),
+                                    .disabled(!has_b)
+                                    .tooltip(crate::diff::SWAP_TOOLTIP)
+                                    .on_click(crate::diff::swap_handler(&self.diff)),
                             )
                             .child(
                                 tool("apply-all", IconName::CheckCheck, "Apply all to A")
@@ -413,8 +412,8 @@ impl Render for Workspace {
                                 Checkbox::new("sync-scroll")
                                     .small()
                                     .label("Sync scroll")
-                                    .disabled(true)
-                                    .tooltip("Not in v1: selection already scrolls both trees"),
+                                    .checked(self.diff.read(cx).sync_scroll)
+                                    .on_click(crate::diff::sync_scroll_handler(&self.diff)),
                             )
                             .child(div().flex_1())
                         }

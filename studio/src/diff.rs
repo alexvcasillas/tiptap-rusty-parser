@@ -13,7 +13,7 @@ use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants};
-use gpui_kit::component::{ActiveTheme, Icon, Sizable};
+use gpui_kit::component::{ActiveTheme, Disableable, Icon, Sizable};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use serde_json::Value;
@@ -69,6 +69,10 @@ pub struct Entry {
     /// Fallback selection when the node exists only on the other side (its parent).
     pub a_focus: Option<Vec<usize>>,
     pub b_focus: Option<Vec<usize>>,
+    /// Document-order sort key in A coordinates: (A path or insertion slot,
+    /// rank: remove 0 < insert 1 < other 2). `None` when the change has no A
+    /// anchor; it then sorts right after its raw predecessor.
+    order_key: Option<(Vec<usize>, u8)>,
 }
 
 impl Entry {
@@ -100,6 +104,26 @@ pub enum Pane {
 }
 
 pub type DecoRow = (Row, Deco);
+
+/// A node picked in tree A or B (not a change row): the target of
+/// "Take all B changes in this subtree". Anchored on B when the node exists
+/// there (B never changes, so the anchor survives edits to A).
+pub struct Pick {
+    pub a: Option<Vec<usize>>,
+    pub b: Option<Vec<usize>>,
+    /// Open (non-dismissed) changes inside the subtree.
+    pub count: usize,
+}
+
+impl Pick {
+    fn contains(&self, e: &Entry) -> bool {
+        match (&self.b, &self.a) {
+            (Some(pb), _) => e.b_target().is_some_and(|t| t.starts_with(pb)),
+            (None, Some(pa)) => e.a_target().is_some_and(|t| t.starts_with(pa)),
+            (None, None) => false,
+        }
+    }
+}
 
 #[derive(Default)]
 struct Side {
@@ -194,11 +218,18 @@ pub struct DiffState {
     kept: HashSet<String>,
     /// `kept_flags[i]`: entry `i` is dismissed.
     kept_flags: Rc<Vec<bool>>,
-    /// Entry indices the change list shows, in order.
+    /// Every entry index in document order (see `Entry::order_key`). The
+    /// raw `changes` order is kept: `rebase_change` depends on it.
+    order: Vec<usize>,
+    /// Entry indices the change list shows, in document order.
     visible: Rc<Vec<usize>>,
     /// Show dismissed changes in the list (to restore one).
     pub show_dismissed: bool,
     pub selected: Option<usize>,
+    /// Node picked in a tree, for the subtree take.
+    pub pick: Option<Pick>,
+    /// Scrolling one tree scrolls the other to the corresponding row.
+    pub sync_scroll: bool,
     json: SharedString,
     side_a: Side,
     side_b: Side,
@@ -229,9 +260,12 @@ impl DiffState {
             entries: Rc::new(Vec::new()),
             kept: HashSet::new(),
             kept_flags: Rc::new(Vec::new()),
+            order: Vec::new(),
             visible: Rc::new(Vec::new()),
             show_dismissed: false,
             selected: None,
+            pick: None,
+            sync_scroll: true,
             json: SharedString::default(),
             side_a: Side::default(),
             side_b: Side::default(),
@@ -286,12 +320,7 @@ impl DiffState {
                 self.b = Some(doc);
                 self.b_file = Some(path.to_path_buf());
                 self.error = None;
-                self.selected = None;
-                self.kept.clear();
-                self.side_a = Side::default();
-                self.side_b = Side::default();
-                self.side_a.expanded.insert(Vec::new());
-                self.side_b.expanded.insert(Vec::new());
+                self.reset_view();
                 self.recompute(a, true);
             }
             Err(e) => {
@@ -299,6 +328,17 @@ impl DiffState {
                 self.error = Some(format!("{}: {e}", path.display()).into());
             }
         }
+    }
+
+    /// Fresh view state for a new A/B pair: no selection, no decisions.
+    fn reset_view(&mut self) {
+        self.selected = None;
+        self.pick = None;
+        self.kept.clear();
+        self.side_a = Side::default();
+        self.side_b = Side::default();
+        self.side_a.expanded.insert(Vec::new());
+        self.side_b.expanded.insert(Vec::new());
     }
 
     /// Re-diff A against B and rebuild every derived structure. Runs on document
@@ -313,7 +353,16 @@ impl DiffState {
         let entries: Vec<Entry> = (0..self.changes.len())
             .map(|i| describe(i, &self.changes, ra, rb))
             .collect();
+        self.order = document_order(&entries);
         self.entries = Rc::new(entries);
+        if let Some(p) = &mut self.pick {
+            if let Some(pb) = &p.b {
+                p.a = unmap_path(pb, &self.changes);
+            }
+            if p.b.is_none() && p.a.as_deref().and_then(|x| a.root().node_at(x)).is_none() {
+                self.pick = None;
+            }
+        }
         self.retint(a, expand);
     }
 
@@ -354,19 +403,29 @@ impl DiffState {
         self.counts = counts;
         let show = self.show_dismissed;
         self.visible = Rc::new(
-            (0..entries.len())
+            self.order
+                .iter()
+                .copied()
                 .filter(|&i| show || !self.kept_flags[i])
                 .collect(),
         );
-        // A selection that is gone or hidden moves to the next visible change.
+        // A selection that is gone or hidden moves to the next visible change
+        // (in display order).
         if let Some(i) = self.selected {
             let i = i.min(entries.len().saturating_sub(1));
-            self.selected = self
-                .visible
+            let at = self.order.iter().position(|&j| j == i).unwrap_or(0);
+            self.selected = self.order[at..]
                 .iter()
                 .copied()
-                .find(|&j| j >= i)
+                .find(|&j| show || !self.kept_flags[j])
                 .or_else(|| self.visible.last().copied());
+        }
+        if let Some(p) = &mut self.pick {
+            p.count = entries
+                .iter()
+                .zip(self.kept_flags.iter())
+                .filter(|(e, &k)| !k && p.contains(e))
+                .count();
         }
         self.sync_selection(a);
     }
@@ -426,6 +485,7 @@ impl DiffState {
             return;
         }
         self.selected = Some(i);
+        self.pick = None;
         self.with_a(cx, |this, a| this.sync_selection(a));
     }
 
@@ -457,6 +517,19 @@ impl DiffState {
             Pane::B => e.b_path.as_ref() == Some(&path),
         });
         self.json = self.change_json(self.selected);
+        let kept = &self.kept_flags;
+        let mut pick = Pick {
+            a: here.clone(),
+            b: other.clone(),
+            count: 0,
+        };
+        pick.count = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| !kept.get(*i).copied().unwrap_or(false) && pick.contains(e))
+            .count();
+        self.pick = Some(pick);
         let (pa, pb) = (here, other);
         if let Some(p) = &pa {
             self.side_a.expand_to(p, false);
@@ -521,8 +594,12 @@ impl DiffState {
         // now-hidden change. Showing dismissed ones: step to the next open one.
         self.with_a(cx, |this, a| this.retint(a, false));
         if now_kept && self.show_dismissed {
-            let n = self.entries.len();
-            if let Some(next) = (1..n).map(|d| (i + d) % n).find(|&j| !self.is_kept(j)) {
+            let n = self.order.len();
+            let at = self.order.iter().position(|&j| j == i).unwrap_or(0);
+            if let Some(next) = (1..n)
+                .map(|d| self.order[(at + d) % n])
+                .find(|&j| !self.is_kept(j))
+            {
                 self.select_change(next, cx);
             }
         }
@@ -535,7 +612,7 @@ impl DiffState {
         let changes = if self.kept_count() == 0 {
             self.changes.clone()
         } else {
-            let Some(c) = self.unkept_changes(cx) else {
+            let Some(c) = self.unkept_changes(None, cx) else {
                 return;
             };
             c
@@ -557,26 +634,183 @@ impl DiffState {
 }
 
 impl DiffState {
-    /// Every unresolved change as one live sequence, skipping kept ones.
+    /// Every unresolved change as one live sequence, skipping kept ones
+    /// (and, with `within`, changes outside that subtree).
     /// Picks the first unkept change, applies it to a scratch copy of A,
     /// re-diffs, repeats: each pick is rebased against the changes before it
     /// in its own diff, so the result replays exactly onto A. Costs one diff
-    /// per applied change; only used when something is kept.
-    fn unkept_changes(&self, cx: &App) -> Option<Vec<Change>> {
+    /// per applied change; only used when something is kept or filtered.
+    fn unkept_changes(&self, within: Option<&Pick>, cx: &App) -> Option<Vec<Change>> {
         let b = self.b.as_ref()?.root();
         let mut work = self.a.read(cx).root().clone();
         let mut out = Vec::new();
+        // Without a B anchor the subtree is A-only (removed in B): its A path
+        // shifts as changes apply, so only the first match is safe to take.
+        let once = within.is_some_and(|p| p.b.is_none());
         for _ in 0..10_000 {
             let changes = work.diff(b);
-            let pick = (0..changes.len())
-                .find(|&i| !self.kept.contains(&describe(i, &changes, &work, b).key()));
+            let pick = (0..changes.len()).find(|&i| {
+                let e = describe(i, &changes, &work, b);
+                !self.kept.contains(&e.key()) && within.is_none_or(|p| p.contains(&e))
+            });
             let Some(i) = pick else { break };
             let c = rebase_change(&changes[i], &changes[..i])?;
             work.apply(std::slice::from_ref(&c)).ok()?;
             out.push(c);
+            if once {
+                break;
+            }
         }
         Some(out)
     }
+
+    /// Apply every open change inside the picked subtree as one undo step.
+    pub fn take_subtree(&mut self, cx: &mut Context<Self>) {
+        let Some(pick) = self.pick.as_ref().filter(|p| p.count > 0) else {
+            return;
+        };
+        let Some(changes) = self.unkept_changes(Some(pick), cx) else {
+            return;
+        };
+        if changes.is_empty() {
+            return;
+        }
+        let at = pick
+            .a
+            .as_ref()
+            .or(pick.b.as_ref())
+            .map(|p| fmt_path(p))
+            .unwrap_or_default();
+        let label = format!("Take B subtree {at} ({})", changes.len());
+        // Inspector then shows the picked node, not an unrelated change.
+        self.selected = None;
+        self.a.update(cx, |s, cx| {
+            s.edit(
+                label,
+                |t| {
+                    for c in changes {
+                        t.apply_change(c)?;
+                    }
+                    Ok::<(), tiptap_rusty_parser::ApplyError>(())
+                },
+                cx,
+            );
+        });
+    }
+
+    pub fn set_sync_scroll(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.sync_scroll = on;
+        cx.notify();
+    }
+
+    /// Swap A and B: B becomes the editable document, A the read-only source.
+    /// Undo history and Dismiss decisions reset (they describe the old pair).
+    pub fn swap(&mut self, cx: &mut Context<Self>) {
+        let Some(b_doc) = self.b.take() else {
+            return;
+        };
+        // `DocumentState` has no public constructor from a parsed document;
+        // `load(None)` (tiny bundled sample) gives a clean undo stack to fill.
+        let Ok(mut fresh) = DocumentState::load(None) else {
+            self.b = Some(b_doc);
+            return;
+        };
+        let b_file = self.b_file.take();
+        let a = self.a.clone();
+        let (old_doc, old_file) = a.update(cx, |s, cx| {
+            fresh.doc = b_doc;
+            fresh.file = b_file;
+            fresh.expanded.clear();
+            fresh.expand_to_depth(1);
+            fresh.revision = s.revision + 1;
+            fresh.last_change = Some("Swapped A and B".into());
+            let old = std::mem::replace(s, fresh);
+            cx.notify();
+            (old.doc, old.file)
+        });
+        self.b = Some(old_doc);
+        self.b_file = old_file;
+        self.reset_view();
+        self.with_a(cx, |this, a| this.recompute(a, true));
+    }
+}
+
+pub const SWAP_TOOLTIP: &str =
+    "Swap A and B: B becomes the editable A. Resets undo history and dismissed changes";
+
+/// Toolbar `Swap` click handler.
+pub fn swap_handler(diff: &Entity<DiffState>) -> impl Fn(&ClickEvent, &mut Window, &mut App) {
+    let diff = diff.clone();
+    move |_, window, cx| swap(diff.clone(), window, cx)
+}
+
+/// Toolbar `Sync scroll` checkbox handler.
+pub fn sync_scroll_handler(diff: &Entity<DiffState>) -> impl Fn(&bool, &mut Window, &mut App) {
+    let diff = diff.clone();
+    move |on, _, cx| diff.update(cx, |d, cx| d.set_sync_scroll(*on, cx))
+}
+
+/// Swap button: asks first when A has unsaved edits (Save / Swap anyway / Cancel).
+pub fn swap(diff: Entity<DiffState>, window: &mut Window, cx: &mut App) {
+    let a = diff.read(cx).a.clone();
+    if !diff.read(cx).has_b() {
+        return;
+    }
+    if !a.read(cx).dirty {
+        diff.update(cx, |d, cx| d.swap(cx));
+        return;
+    }
+    let rx = window.prompt(
+        PromptLevel::Warning,
+        "A has unsaved changes",
+        Some("B becomes editable; undo resets."),
+        &["Save", "Swap anyway", "Cancel"],
+        cx,
+    );
+    cx.spawn(async move |cx| match rx.await {
+        Ok(0) => {
+            let file = a.read_with(cx, |s, _| s.file.clone());
+            let path = match file {
+                Some(p) => Some(p),
+                None => {
+                    let dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                    let rx = cx.update(|cx| cx.prompt_for_new_path(&dir, Some("document.json")));
+                    match rx.await {
+                        Ok(Ok(p)) => p,
+                        _ => None,
+                    }
+                }
+            };
+            let Some(path) = path else { return };
+            a.update(cx, |s, cx| s.save_to(&path, cx));
+            // Save failed: keep the pair as it is.
+            if !a.read_with(cx, |s, _| s.dirty) {
+                diff.update(cx, |d, cx| d.swap(cx));
+            }
+        }
+        Ok(1) => diff.update(cx, |d, cx| d.swap(cx)),
+        _ => {}
+    })
+    .detach();
+}
+
+/// Entry indices sorted into document order by `Entry::order_key`; keyless
+/// entries follow their raw predecessor. Stable on ties (raw order).
+fn document_order(entries: &[Entry]) -> Vec<usize> {
+    let mut last: (Vec<usize>, u8) = (Vec::new(), 0);
+    let mut keyed: Vec<((Vec<usize>, u8), usize)> = Vec::with_capacity(entries.len());
+    for (i, e) in entries.iter().enumerate() {
+        let k = match &e.order_key {
+            Some(k) => {
+                last = k.clone();
+                k.clone()
+            }
+            None => (last.0.clone(), 3),
+        };
+        keyed.push((k, i));
+    }
+    keyed.sort();
+    keyed.into_iter().map(|(_, i)| i).collect()
 }
 
 /// Open B through the native file prompt; on failure fall back to the CLI path.
@@ -633,7 +867,12 @@ fn val(v: Option<&Value>) -> SharedString {
     v.map(short_value).unwrap_or_else(|| "∅".into()).into()
 }
 
-fn node_line(n: &Node) -> SharedString {
+/// Second line for an inserted/removed node: its text, else its summary.
+fn node_preview(n: &Node) -> SharedString {
+    let text = text_preview(n, 60);
+    if !text.is_empty() {
+        return format!("\"{text}\"").into();
+    }
     let s = node_summary(n);
     if s.is_empty() {
         node_type(n).to_string().into()
@@ -723,8 +962,8 @@ fn describe(i: usize, changes: &[Change], a: &Node, b: &Node) -> Entry {
                 na.map(|n| node_type(n).to_string().into()),
                 Some(node_type(node).to_string().into()),
             ),
-            Change::Insert { node, .. } => (None, None, Some(node_line(node))),
-            Change::Remove { .. } => (None, na.map(node_line), None),
+            Change::Insert { node, .. } => (None, None, Some(node_preview(node))),
+            Change::Remove { .. } => (None, na.map(node_preview), None),
             Change::Move { .. } => (
                 None,
                 a_path
@@ -738,6 +977,24 @@ fn describe(i: usize, changes: &[Change], a: &Node, b: &Node) -> Entry {
             ),
             _ => (None, None, None),
         };
+    // Rebase a node-free copy of the change: its path is then in A's own
+    // coordinates (slots for inserts), without cloning an inserted subtree.
+    let order_key = match &changes[i] {
+        Change::Insert { path, index, .. } => rebase_change(
+            &Change::Insert {
+                path: path.clone(),
+                index: *index,
+                node: Node::default(),
+            },
+            prior,
+        )
+        .and_then(|c| match c {
+            Change::Insert { path, index, .. } => Some((child(&path, index), 1)),
+            _ => None,
+        }),
+        Change::Remove { .. } => a_path.clone().map(|p| (p, 0)),
+        _ => a_path.clone().map(|p| (p, 2)),
+    };
     let shown = a_path.as_ref().or(b_path.as_ref());
     let ty = na.or(nb).map(node_type).unwrap_or("?");
     let label = format!(
@@ -755,6 +1012,7 @@ fn describe(i: usize, changes: &[Change], a: &Node, b: &Node) -> Entry {
         b_path,
         a_focus,
         b_focus,
+        order_key,
     }
 }
 
@@ -819,6 +1077,80 @@ impl DiffPanel {
             }
         }
         self.last = now;
+    }
+
+    /// Sync scroll: after a wheel event on `from`, scroll the other tree so
+    /// the row for the same node (via `map_path` / `unmap_path`) sits at the
+    /// same height. Falls back to the proportional offset when no row near
+    /// the top maps. Event-driven (never per frame); setting an offset fires
+    /// no wheel event, so there is no feedback loop.
+    fn sync_from(&mut self, from: Pane, cx: &mut Context<Self>) {
+        let d = self.diff.read(cx);
+        if !d.sync_scroll || !d.has_b() {
+            return;
+        }
+        let (src_rows, dst_rows, src, dst) = match from {
+            Pane::A => (
+                &d.side_a.rows,
+                &d.side_b.rows,
+                &self.scroll_a,
+                &self.scroll_b,
+            ),
+            Pane::B => (
+                &d.side_b.rows,
+                &d.side_a.rows,
+                &self.scroll_b,
+                &self.scroll_a,
+            ),
+        };
+        let (y, src_max, item_h) = {
+            let st = src.0.borrow();
+            let Some(size) = st.last_item_size else {
+                return;
+            };
+            let n = src_rows.len().max(1) as f64;
+            (
+                -st.base_handle.offset().y.to_f64(),
+                (size.contents.height - size.item.height).to_f64().max(0.),
+                (size.contents.height.to_f64() / n).max(1.),
+            )
+        };
+        let Some(dst_size) = dst.0.borrow().last_item_size else {
+            return;
+        };
+        let dst_max = (dst_size.contents.height - dst_size.item.height)
+            .to_f64()
+            .max(0.);
+        let top = (y / item_h).floor().max(0.) as usize;
+        let frac = y - top as f64 * item_h;
+        let find = |path: Vec<usize>| -> Option<usize> {
+            let mut p = path;
+            loop {
+                if let Some(j) = dst_rows.iter().position(|(r, _)| r.path == p) {
+                    return Some(j);
+                }
+                p.pop()?;
+            }
+        };
+        let mapped = (0..16).find_map(|k| {
+            let (row, _) = src_rows.get(top + k)?;
+            let other = match from {
+                Pane::A => map_path(&row.path, &d.changes),
+                Pane::B => unmap_path(&row.path, &d.changes),
+            }?;
+            let j = find(other)?;
+            Some(j as f64 - k as f64)
+        });
+        let target = match mapped {
+            Some(j) => j * item_h + frac,
+            None if src_max > 0. => y / src_max * dst_max,
+            None => 0.,
+        }
+        .clamp(0., dst_max);
+        let st = dst.0.borrow();
+        let x = st.base_handle.offset().x;
+        st.base_handle.set_offset(point(x, px(-target as f32)));
+        cx.notify();
     }
 
     fn empty(&self, cx: &mut Context<Self>) -> Div {
@@ -977,7 +1309,14 @@ impl DiffPanel {
             )
     }
 
-    fn tree_pane(&self, pane: Pane, d: &DiffState, file: SharedString, mono: &SharedString) -> Div {
+    fn tree_pane(
+        &self,
+        pane: Pane,
+        d: &DiffState,
+        file: SharedString,
+        mono: &SharedString,
+        on_wheel: impl Fn(&ScrollWheelEvent, &mut Window, &mut App) + 'static,
+    ) -> Div {
         let side = match pane {
             Pane::A => &d.side_a,
             Pane::B => &d.side_b,
@@ -1011,6 +1350,7 @@ impl DiffPanel {
             .bg(Tokens::panel())
             .border_r_1()
             .border_color(Tokens::border())
+            .on_scroll_wheel(on_wheel)
             .child(
                 pane_header(format!("{letter} · {file}")).child(
                     div()
@@ -1053,6 +1393,41 @@ impl DiffPanel {
             .overflow_y_scroll()
             .bg(Tokens::panel());
         let Some((i, e)) = d.selected.and_then(|i| d.entries.get(i).map(|e| (i, e))) else {
+            if let Some(p) = &d.pick {
+                let node =
+                    p.a.as_deref()
+                        .and_then(|x| a.root().node_at(x))
+                        .or_else(|| {
+                            p.b.as_deref()
+                                .and_then(|x| d.b.as_ref().and_then(|b| b.root().node_at(x)))
+                        });
+                let ty = node.map(node_type).unwrap_or("?").to_string();
+                let path = p.a.as_ref().or(p.b.as_ref());
+                return pane
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(8.))
+                            .h(px(34.))
+                            .flex_shrink_0()
+                            .px(px(16.))
+                            .border_b_1()
+                            .border_color(Tokens::border())
+                            .child(
+                                div()
+                                    .font_family(mono.clone())
+                                    .text_size(px(13.))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(ty),
+                            )
+                            .when_some(path, |d, p| d.child(chip(fmt_path(p), mono))),
+                    )
+                    .child(
+                        section("Resolve", Some("no change on this node".into()))
+                            .child(self.subtree_button(p)),
+                    );
+            }
             return pane.child(
                 div()
                     .flex_1()
@@ -1223,7 +1598,8 @@ impl DiffPanel {
                             .flex_1()
                             .on_click(move |_, _, cx| take.update(cx, |d, cx| d.take_b(cx))),
                     ),
-            ),
+            )
+            .when_some(d.pick.as_ref(), |s, p| s.child(self.subtree_button(p))),
         );
 
         // CHANGE (pretty JSON)
@@ -1241,6 +1617,25 @@ impl DiffPanel {
                     .child(d.json.clone()),
             ),
         )
+    }
+}
+
+impl DiffPanel {
+    /// "Take all B changes in this subtree": one undo step.
+    fn subtree_button(&self, p: &Pick) -> Button {
+        let diff = self.diff.clone();
+        Button::new("diff-take-subtree")
+            .outline()
+            .small()
+            .w_full()
+            .icon(Icon::new(IconName::ListTree).small())
+            .label(match p.count {
+                0 => "No B changes in subtree".to_string(),
+                n => format!("Take all B in subtree ({n})"),
+            })
+            .tooltip("Take all B changes in this subtree (one undo step)")
+            .disabled(p.count == 0)
+            .on_click(move |_, _, cx| diff.update(cx, |d, cx| d.take_subtree(cx)))
     }
 }
 
@@ -1384,13 +1779,24 @@ impl Render for DiffPanel {
         if !self.diff.read(cx).has_b() {
             return root.child(self.empty(cx));
         }
+        let wheel = |pane: Pane, cx: &mut Context<Self>| {
+            let this = cx.entity().downgrade();
+            move |_: &ScrollWheelEvent, _: &mut Window, cx: &mut App| {
+                // After the list applied the delta (dispatch order is not ours).
+                let this = this.clone();
+                cx.defer(move |cx| {
+                    this.update(cx, |p, cx| p.sync_from(pane, cx)).ok();
+                });
+            }
+        };
+        let (wheel_a, wheel_b) = (wheel(Pane::A, cx), wheel(Pane::B, cx));
         let d = self.diff.read(cx);
         let a = d.a.read(cx);
         let a_file = a.file_name();
         let b_file = d.b_name();
         root.child(self.changes_pane(d, &mono))
-            .child(self.tree_pane(Pane::A, d, a_file, &mono))
-            .child(self.tree_pane(Pane::B, d, b_file, &mono))
+            .child(self.tree_pane(Pane::A, d, a_file, &mono, wheel_a))
+            .child(self.tree_pane(Pane::B, d, b_file, &mono, wheel_b))
             .child(self.inspector_pane(d, a, &mono))
     }
 }
