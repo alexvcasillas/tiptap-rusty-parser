@@ -116,4 +116,4 @@ Or right-click the app → Open → Open. The CLI form works from the bundle: `"
 
 - Opening a `.json` from Finder launches the app, but the app reads files from `argv` only, so the document is not loaded yet (needs a gpui `on_open_urls` hook in `main.rs`).
 - Windows `.exe` is unsigned and has no embedded icon. No Linux AppImage.
-- No `Cargo.lock` is committed, so release builds resolve dependencies fresh (gpui-kit pins its gpui snapshot exactly).
+- `Cargo.lock` is committed and release builds use `--locked`, so every artifact is built from the same dependency versions. After changing dependencies, commit the updated lockfile.

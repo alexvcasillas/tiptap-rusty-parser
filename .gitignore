@@ -1,4 +1,3 @@
 /target
-Cargo.lock
 bindings/wasm/pkg/
 node_modules/

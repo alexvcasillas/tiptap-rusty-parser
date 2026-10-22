@@ -60,7 +60,7 @@ jobs:
         with:
           key: studio-macos-universal
       - name: Build (aarch64 + x86_64)
-        run: cargo build --release -p tiptap-rusty-studio --target aarch64-apple-darwin --target x86_64-apple-darwin
+        run: cargo build --release --locked -p tiptap-rusty-studio --target aarch64-apple-darwin --target x86_64-apple-darwin
       - name: Bundle .app (lipo)
         run: |
           studio/packaging/macos/bundle.sh app dist \
@@ -183,7 +183,7 @@ jobs:
         with:
           key: studio-windows-x86_64
       - name: Build
-        run: cargo build --release -p tiptap-rusty-studio --target x86_64-pc-windows-msvc
+        run: cargo build --release --locked -p tiptap-rusty-studio --target x86_64-pc-windows-msvc
       - name: Package .zip
         shell: pwsh
         run: |
@@ -223,7 +223,7 @@ jobs:
         with:
           key: studio-linux-x86_64
       - name: Build
-        run: cargo build --release -p tiptap-rusty-studio
+        run: cargo build --release --locked -p tiptap-rusty-studio
       - name: Headless smoke run (10 s, no panic)
         run: |
           set +e
