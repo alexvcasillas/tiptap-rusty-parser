@@ -2,6 +2,9 @@
 //! Tiptap/ProseMirror JSON. UI only; every document operation is delegated to
 //! `tiptap-rusty-parser`.
 
+// Release builds on Windows are GUI apps: no console window.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod clipboard;
 mod diff;
 mod files;

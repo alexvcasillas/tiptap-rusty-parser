@@ -173,8 +173,6 @@ jobs:
     runs-on: windows-2022 # MSVC + Windows SDK (gpui needs fxc.exe for HLSL shaders)
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      # GUI subsystem: no console window. Target-scoped so build scripts are unaffected.
-      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C link-arg=/SUBSYSTEM:WINDOWS -C link-arg=/ENTRY:mainCRTStartup"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
