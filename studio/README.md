@@ -22,7 +22,7 @@ Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [pa
 
 ```
 title bar   tiptap-studio · [Inspect | Diff] · file name · node stats
-toolbar     Open · Save · Save as… · Undo · Redo · JSON · Schema
+toolbar     Open · Save · Save as… · Undo · Redo · Server… · JSON · Schema
 panes       tree (280) · preview (fluid) · inspector (320), drag a divider to resize, double-click it to reset
 view        ⌘1 / ctrl-1 toggle tree (Diff: changes) · ⌘2 / ctrl-2 toggle inspector; widths, collapsed panes and window bounds persist per mode in <config>/tiptap-studio/layout.json
 
@@ -52,6 +52,22 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 | `assets/sample.json` | demo document with headings, marks, link, list, quote, a custom `callout`, rule, code block |
 | `assets/tiptap-starter-kit.schema.json` | Tiptap StarterKit v3 as a schema (content expressions, allowed attrs) |
 | `assets/sample-v2.json` | edited copy of the sample, for Diff mode |
+
+## Document Server
+
+`Server…` in the toolbar opens a sheet that lists documents and versions on a
+[Tiptap Document Server](https://tiptap.dev/docs/collaboration/documents/rest-api)
+and opens them as A, as B, or two versions straight into Diff mode
+(title shows the origin, e.g. `☁ my-app / doc-42 @ v3`; Save acts as Save as).
+Code: `cloud.rs` (state, requests), `cloud/view.rs`, `cloud/api.rs`, `cloud/secret.rs`, `cloud/store.rs`.
+
+Security model:
+
+- Bring your own token; nothing is bundled. A profile is a label, an app id (or an `https://` base URL; plain `http://` only for localhost) and a token.
+- Tokens live only in the OS keychain (`keyring`: macOS Keychain, Windows Credential Manager, Secret Service; service `dev.tiptap.studio`, account = profile id). `servers.json` in the config dir holds metadata only. No keychain → the token is kept in memory for the session and the UI says "Not saved".
+- Tokens never reach a file, env var, log, panic, `Debug` output or the clipboard: `Secret` redacts and zeroizes, the input is masked, and the token field is never pre-filled. `Forget token` deletes the keychain item.
+- Read-only by construction: `cloud/api.rs` exposes only `GET`, follows no redirects, and uses 10 s connect / 30 s read timeouts on a background thread.
+- JWTs (`Documents:Api:All`) are decoded, not verified, to show `aud`, permissions and expiry, with an amber warning when `exp` is missing or more than 24 h away. A legacy API secret gets a red warning and is stored only after ticking "Save to keychain anyway". Prefer short-lived JWTs signed on your server.
 
 ## Rules
 
