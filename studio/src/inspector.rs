@@ -959,7 +959,8 @@ impl Render for InspectorPanel {
                 node.text.as_deref().map(|t| t.chars().count()).unwrap_or(0)
             )
         } else {
-            let (n, t) = count(node);
+            // Cached per (selection, revision): the root walks the whole doc.
+            let (n, t) = (node.child_count(), s.selected_text_count());
             format!(
                 "{n} child{} · {t} text node{}",
                 if n == 1 { "" } else { "ren" },
@@ -1628,22 +1629,22 @@ impl Render for InspectorPanel {
     }
 }
 
-fn count(node: &Node) -> (usize, usize) {
-    let mut t = 0;
-    node.walk(&mut |n| {
-        if n.text.is_some() {
-            t += 1;
-        }
-    });
-    (node.child_count(), t)
-}
-
 /// Node with nested content collapsed to `[ … ]` for the JSON peek.
 fn shallow(node: &Node) -> serde_json::Value {
-    let mut v = serde_json::to_value(node).unwrap_or_default();
+    // Serialize the node's own fields only: `content` as an empty list keeps
+    // its key position, then becomes the `[ … n ]` label (no subtree walk).
+    let head = Node {
+        node_type: node.node_type.clone(),
+        attrs: node.attrs.clone(),
+        content: node.content.as_ref().map(|_| Vec::new()),
+        marks: node.marks.clone(),
+        text: node.text.clone(),
+        extra: node.extra.clone(),
+    };
+    let n = node.child_count();
+    let mut v = serde_json::to_value(&head).unwrap_or_default();
     if let Some(obj) = v.as_object_mut() {
         if let Some(c) = obj.get_mut("content") {
-            let n = c.as_array().map(Vec::len).unwrap_or(0);
             *c = serde_json::Value::String(format!("[ … {n} ]"));
         }
     }

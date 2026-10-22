@@ -244,6 +244,7 @@ impl FindState {
     }
 
     fn recompute(&mut self, cx: &mut Context<Self>) {
+        let _p = crate::profile::span("find recompute");
         let Some(q) = &self.query else {
             return;
         };

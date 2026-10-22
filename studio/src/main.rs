@@ -14,6 +14,7 @@ mod inspector;
 mod layout;
 mod nav;
 mod preview;
+mod profile;
 mod schema_panel;
 mod state;
 mod theme;
@@ -28,6 +29,7 @@ use gpui_kit::*;
 use crate::workspace::Workspace;
 
 fn main() {
+    profile::start();
     // `--schema path.json` (or `--schema=path.json`) anywhere; positional A, B.
     let mut schema_file: Option<PathBuf> = None;
     let mut positional = Vec::new();
@@ -65,7 +67,8 @@ fn main() {
             // A CLI arg wins; else a file the OS sent at launch replaces the sample.
             let file = file.or_else(|| os_open.take_launch());
             // A bad A never quits: the window opens in an error state instead.
-            let (state, start_error) = files::initial_state(file.as_deref());
+            let (state, start_error) =
+                profile::time("load+parse", || files::initial_state(file.as_deref()));
             let state = cx.new(|_| state);
 
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);

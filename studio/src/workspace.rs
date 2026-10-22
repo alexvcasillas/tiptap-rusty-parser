@@ -202,6 +202,7 @@ impl Workspace {
 
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::profile::frame(window);
         self.sync_title(window, cx);
         let files_error = self.error_view(cx);
         let drop_overlay = self.drop_overlay(cx);

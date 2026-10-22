@@ -4,12 +4,14 @@
 //! keeps its `Change` log and stores the inverse for undo. Panels never touch
 //! `&mut Node` directly.
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use gpui_kit::*;
 use serde_json::Value;
-use tiptap_rusty_parser::{invert, Change, Document, Mark, Node, Transform};
+use tiptap_rusty_parser::{Change, Document, Mark, Node, Transform};
 
 const SAMPLE: &str = include_str!("../assets/sample.json");
 
@@ -38,6 +40,82 @@ pub const KNOWN_TYPES: &[&str] = &[
 
 pub const BUILTIN_MARKS: &[&str] = &["bold", "italic", "underline", "strike", "code", "link"];
 
+/// Expanded tree paths plus a version that changes on every real mutation, so
+/// observers can tell an expansion change from a selection-only notify.
+/// Versions come from a global counter: a replaced set never reuses one.
+pub struct Expanded {
+    set: HashSet<Vec<usize>>,
+    version: u64,
+}
+
+fn next_version() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Default for Expanded {
+    fn default() -> Self {
+        Self {
+            set: HashSet::new(),
+            version: next_version(),
+        }
+    }
+}
+
+impl std::ops::Deref for Expanded {
+    type Target = HashSet<Vec<usize>>;
+    fn deref(&self) -> &Self::Target {
+        &self.set
+    }
+}
+
+impl FromIterator<Vec<usize>> for Expanded {
+    fn from_iter<I: IntoIterator<Item = Vec<usize>>>(iter: I) -> Self {
+        Self {
+            set: iter.into_iter().collect(),
+            version: next_version(),
+        }
+    }
+}
+
+impl IntoIterator for Expanded {
+    type Item = Vec<usize>;
+    type IntoIter = std::collections::hash_set::IntoIter<Vec<usize>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.set.into_iter()
+    }
+}
+
+impl Expanded {
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn insert(&mut self, path: Vec<usize>) -> bool {
+        let new = self.set.insert(path);
+        if new {
+            self.version = next_version();
+        }
+        new
+    }
+
+    pub fn remove(&mut self, path: &[usize]) -> bool {
+        let had = self.set.remove(path);
+        if had {
+            self.version = next_version();
+        }
+        had
+    }
+
+    pub fn clear(&mut self) {
+        self.set.clear();
+        self.version = next_version();
+    }
+}
+
+/// (node count, text node count, unknown-type count)
+pub type Stats = (usize, usize, usize);
+
 pub struct DocumentState {
     pub doc: Document,
     pub file: Option<PathBuf>,
@@ -45,13 +123,20 @@ pub struct DocumentState {
     /// Document Server: `☁ app / doc @ v3`). Shown instead of the file name.
     pub origin: Option<SharedString>,
     pub selection: Option<Vec<usize>>,
-    pub expanded: HashSet<Vec<usize>>,
+    pub expanded: Expanded,
     pub dirty: bool,
     pub last_change: Option<SharedString>,
     /// Bumped on every document mutation; observers skip selection-only notifies.
     pub revision: u64,
     undo: Vec<Vec<Change>>,
     redo: Vec<Vec<Change>>,
+    /// `stats()` per revision: the title bar asks every frame.
+    stats_cache: Cell<Option<(u64, Stats)>>,
+    /// Bumped only by edits that can change paths (insert/remove/replace/
+    /// move); the tree's flattened rows depend on this, not on `revision`.
+    pub structure_rev: u64,
+    /// Text nodes under the selection, per (revision, selection): inspector.
+    text_count_cache: std::cell::RefCell<Option<(u64, Vec<usize>, usize)>>,
 }
 
 impl DocumentState {
@@ -65,12 +150,15 @@ impl DocumentState {
             file: path.map(Path::to_path_buf),
             origin: None,
             selection: None,
-            expanded: HashSet::new(),
+            expanded: Expanded::default(),
             dirty: false,
             last_change: None,
             revision: 0,
             undo: Vec::new(),
             redo: Vec::new(),
+            stats_cache: Cell::new(None),
+            structure_rev: 0,
+            text_count_cache: Default::default(),
         };
         s.expand_to_depth(1);
         Ok(s)
@@ -90,6 +178,8 @@ impl DocumentState {
         self.undo.clear();
         self.redo.clear();
         self.revision += 1;
+        // Whole new tree: every structure-keyed cache (tree rows, stats) re-derives.
+        self.structure_rev += 1;
         cx.notify();
     }
 
@@ -114,8 +204,15 @@ impl DocumentState {
             .and_then(|p| self.root().node_at(p))
     }
 
-    /// (node count, text node count, unknown-type count)
+    /// (node count, text node count, unknown-type count). Walks the document
+    /// once per revision; cached otherwise.
     pub fn stats(&self) -> (usize, usize, usize) {
+        if let Some((rev, stats)) = self.stats_cache.get() {
+            if rev == self.revision {
+                return stats;
+            }
+        }
+        let _p = crate::profile::span("stats walk");
         let (mut n, mut t, mut u) = (0, 0, 0);
         self.root().walk(&mut |node| {
             n += 1;
@@ -125,6 +222,7 @@ impl DocumentState {
                 _ => {}
             }
         });
+        self.stats_cache.set(Some((self.revision, (n, t, u))));
         (n, t, u)
     }
 
@@ -143,6 +241,7 @@ impl DocumentState {
     // ---- selection / expansion -------------------------------------------------
 
     pub fn select(&mut self, path: Option<Vec<usize>>, cx: &mut Context<Self>) {
+        crate::profile::mark("select");
         if self.selection != path {
             if let Some(p) = &path {
                 for d in 0..p.len() {
@@ -166,7 +265,7 @@ impl DocumentState {
     }
 
     pub fn expand_to_depth(&mut self, depth: usize) {
-        fn go(node: &Node, path: &mut Vec<usize>, depth: usize, out: &mut HashSet<Vec<usize>>) {
+        fn go(node: &Node, path: &mut Vec<usize>, depth: usize, out: &mut Expanded) {
             if path.len() > depth {
                 return;
             }
@@ -195,33 +294,29 @@ impl DocumentState {
 
     // ---- mutation ---------------------------------------------------------------
 
-    /// Run one transaction. The root is cloned once before the transform so
-    /// `invert` has a base; incremental inverses inside `Transform` are a
-    /// later crate feature.
+    /// Run one transaction. The `Transform` records the inverse as it applies
+    /// (cost ∝ the edit, no root clone); on error it rolls back.
     pub fn edit<E: std::fmt::Display>(
         &mut self,
         label: impl Into<SharedString>,
         f: impl FnOnce(&mut Transform<'_>) -> Result<(), E>,
         cx: &mut Context<Self>,
     ) -> bool {
-        let before = self.root().clone();
+        crate::profile::mark("edit");
+        let _p = crate::profile::span("edit+invert");
         let mut t = self.doc.root_mut().transform();
         if let Err(e) = f(&mut t) {
             eprintln!("edit failed: {e}");
-            *self.doc.root_mut() = before;
+            t.rollback();
             return false;
         }
-        let changes = t.finish();
+        let (changes, inverse) = t.finish_with_inverse();
         if changes.is_empty() {
             return false;
         }
-        match invert(&before, &changes) {
-            Ok(inverse) => {
-                self.undo.push(inverse);
-                self.redo.clear();
-            }
-            Err(e) => eprintln!("invert failed, undo unavailable for this edit: {e}"),
-        }
+        self.undo.push(inverse);
+        self.redo.clear();
+        self.note_changes(&changes);
         self.remap_expanded(&changes);
         self.after_edit(label.into(), cx);
         true
@@ -231,13 +326,15 @@ impl DocumentState {
         let Some(inverse) = self.undo.pop() else {
             return;
         };
-        if let Ok(redo) = invert(self.root(), &inverse) {
-            self.redo.push(redo);
-        }
-        if let Err(e) = self.doc.apply(&inverse) {
-            eprintln!("undo failed: {e}");
-        }
+        crate::profile::mark("undo");
+        let _p = crate::profile::span("undo apply+invert");
+        // Remap reads only the list; apply consumes it (atomic on error).
+        self.note_changes(&inverse);
         self.remap_expanded(&inverse);
+        match self.doc.root_mut().apply_inverting(inverse) {
+            Ok(redo) => self.redo.push(redo),
+            Err(e) => eprintln!("undo failed: {e}"),
+        }
         self.after_edit("undo".into(), cx);
     }
 
@@ -245,14 +342,56 @@ impl DocumentState {
         let Some(changes) = self.redo.pop() else {
             return;
         };
-        if let Ok(inverse) = invert(self.root(), &changes) {
-            self.undo.push(inverse);
-        }
-        if let Err(e) = self.doc.apply(&changes) {
-            eprintln!("redo failed: {e}");
-        }
+        crate::profile::mark("redo");
+        let _p = crate::profile::span("redo apply+invert");
+        self.note_changes(&changes);
         self.remap_expanded(&changes);
+        match self.doc.root_mut().apply_inverting(changes) {
+            Ok(inverse) => self.undo.push(inverse),
+            Err(e) => eprintln!("redo failed: {e}"),
+        }
         self.after_edit("redo".into(), cx);
+    }
+
+    /// Before `after_edit` bumps the revision: changes that keep every path
+    /// and node type (attrs, text, marks, extra) keep the flattened tree and
+    /// the stats valid, so carry them to the next revision.
+    fn note_changes(&mut self, changes: &[Change]) {
+        let structural = changes.iter().any(|c| {
+            matches!(
+                c,
+                Change::Insert { .. }
+                    | Change::Remove { .. }
+                    | Change::Replace { .. }
+                    | Change::Move { .. }
+            )
+        });
+        if structural {
+            self.structure_rev += 1;
+        } else if let Some((rev, stats)) = self.stats_cache.get() {
+            if rev == self.revision {
+                self.stats_cache.set(Some((rev + 1, stats)));
+            }
+        }
+    }
+
+    /// Text nodes in the selected subtree (the inspector's content line);
+    /// walks once per (revision, selection).
+    pub fn selected_text_count(&self) -> usize {
+        let Some(path) = self.selection.as_deref() else {
+            return 0;
+        };
+        if let Some((rev, p, n)) = &*self.text_count_cache.borrow() {
+            if *rev == self.revision && p == path {
+                return *n;
+            }
+        }
+        let mut n = 0;
+        if let Some(node) = self.root().node_at(path) {
+            node.walk(&mut |c| n += usize::from(c.text.is_some()));
+        }
+        *self.text_count_cache.borrow_mut() = Some((self.revision, path.to_vec(), n));
+        n
     }
 
     fn after_edit(&mut self, label: SharedString, cx: &mut Context<Self>) {
@@ -638,8 +777,70 @@ impl DocumentState {
         out
     }
 
+    /// Whether `path` is a tree row now: resolves and every ancestor is expanded.
+    fn is_visible(&self, path: &[usize]) -> bool {
+        self.root().node_at(path).is_some() && (0..path.len()).all(|d| self.is_expanded(&path[..d]))
+    }
+
+    /// Row after visible `path` (document order), without flattening: O(depth).
+    fn next_visible(&self, path: &[usize]) -> Option<Vec<usize>> {
+        let root = self.root();
+        if root.node_at(path)?.child_count() > 0 && self.is_expanded(path) {
+            let mut p = path.to_vec();
+            p.push(0);
+            return Some(p);
+        }
+        let mut p = path.to_vec();
+        while let Some(last) = p.pop() {
+            if last + 1 < root.node_at(&p)?.child_count() {
+                p.push(last + 1);
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// Deepest last visible row under visible `path` (itself if collapsed).
+    fn last_visible_under(&self, mut p: Vec<usize>) -> Vec<usize> {
+        while let Some(n) = self.root().node_at(&p) {
+            if n.child_count() == 0 || !self.is_expanded(&p) {
+                break;
+            }
+            p.push(n.child_count() - 1);
+        }
+        p
+    }
+
+    /// Row before visible `path`: O(depth).
+    fn prev_visible(&self, path: &[usize]) -> Option<Vec<usize>> {
+        let (&last, parent) = path.split_last()?;
+        if last == 0 {
+            return Some(parent.to_vec());
+        }
+        let mut p = parent.to_vec();
+        p.push(last - 1);
+        Some(self.last_visible_under(p))
+    }
+
     /// ↑/↓: previous/next visible row. With no selection, starts at the ends.
+    /// Walks the tree from the selection (O(depth · |delta|)), no flatten.
     pub fn nav_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        crate::profile::mark("select");
+        if let Some(sel) = self.selection.clone().filter(|p| self.is_visible(p)) {
+            let mut cur = sel;
+            for _ in 0..delta.unsigned_abs() {
+                let next = if delta < 0 {
+                    self.prev_visible(&cur)
+                } else {
+                    self.next_visible(&cur)
+                };
+                match next {
+                    Some(n) => cur = n,
+                    None => break, // clamp at the ends
+                }
+            }
+            return self.select(Some(cur), cx);
+        }
         let rows = self.visible_paths();
         if rows.is_empty() {
             return;
@@ -688,13 +889,14 @@ impl DocumentState {
         }
     }
 
-    /// Home/End.
+    /// Home/End: the root row, or the deepest last visible row.
     pub fn nav_edge(&mut self, last: bool, cx: &mut Context<Self>) {
-        let rows = self.visible_paths();
-        let pick = if last { rows.last() } else { rows.first() };
-        if let Some(p) = pick.cloned() {
-            self.select(Some(p), cx);
-        }
+        let p = if last {
+            self.last_visible_under(Vec::new())
+        } else {
+            Vec::new()
+        };
+        self.select(Some(p), cx);
     }
 }
 
@@ -740,13 +942,16 @@ impl DocumentState {
             doc,
             file,
             selection: None,
-            expanded: HashSet::new(),
+            expanded: Expanded::default(),
             dirty: false,
             last_change: None,
             revision: 0,
             undo: Vec::new(),
             redo: Vec::new(),
             origin: None,
+            stats_cache: Cell::new(None),
+            structure_rev: 0,
+            text_count_cache: Default::default(),
         };
         s.expand_to_depth(1);
         s
@@ -775,6 +980,7 @@ impl DocumentState {
         self.redo.clear();
         self.dirty = false;
         self.revision += 1;
+        self.structure_rev += 1;
         if keep_view {
             if let Some(p) = &self.selection {
                 if self.doc.root().node_at(p).is_none() {

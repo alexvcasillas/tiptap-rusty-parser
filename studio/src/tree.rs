@@ -27,9 +27,28 @@ pub struct Row {
     pub problem: bool,
 }
 
+/// A visible tree row before labelling. Labels (type, marks, summary) are
+/// built only for the rows on screen, at render time.
+struct TreeRow {
+    path: Vec<usize>,
+    expanded: bool,
+}
+
+/// What the flattened rows depend on: document structure, expansion version,
+/// find match set (by pointer) and the "Only matches" filter. Selection-only
+/// notifies leave it unchanged, so they skip the flatten.
+#[derive(Clone, Copy, PartialEq)]
+struct RowsKey {
+    revision: u64,
+    expanded: u64,
+    matches: usize,
+    filtering: bool,
+}
+
 pub struct TreePanel {
     state: Entity<DocumentState>,
-    rows: Rc<Vec<Row>>,
+    rows: Rc<Vec<TreeRow>>,
+    rows_key: Option<RowsKey>,
     focus: FocusHandle,
     scroll: UniformListScrollHandle,
     last_selection: Option<Vec<usize>>,
@@ -65,6 +84,7 @@ impl TreePanel {
         let mut this = Self {
             state: state.clone(),
             rows: Rc::new(Vec::new()),
+            rows_key: None,
             focus,
             scroll: UniformListScrollHandle::new(),
             last_selection: None,
@@ -80,37 +100,70 @@ impl TreePanel {
         self.focus.clone()
     }
 
-    /// Flatten visible nodes. Runs on document/selection change, never per frame.
+    /// Flatten visible paths when the document, expansion or find set changed
+    /// (never on selection-only notifies, never per frame), then keep the
+    /// selection in view.
     fn rebuild(&mut self, cx: &App) {
         let state = self.state.read(cx);
         let find = self.find.read(cx);
-        let mut rows = if find.filtering() {
-            // "Only matches": matches plus their ancestors, ancestors expanded.
-            let (set, anc) = (&find.set, &find.ancestors);
-            let mut rows = flatten(state.root(), &|p| anc.contains(p));
-            rows.retain(|r| set.contains(&r.path) || anc.contains(&r.path));
-            rows
-        } else {
-            flatten(state.root(), &|p| state.is_expanded(p))
+        let key = RowsKey {
+            revision: state.structure_rev,
+            expanded: state.expanded.version(),
+            matches: Rc::as_ptr(&find.set) as usize,
+            filtering: find.filtering(),
         };
-        // Schema violations (schema_panel.rs) flag their rows.
-        if !self.problems.is_empty() {
-            for r in rows.iter_mut() {
-                r.problem = self.problems.contains(&r.path);
+        if self.rows_key != Some(key) {
+            let _p = crate::profile::span("tree flatten");
+            self.rows_key = Some(key);
+            let mut rows = Vec::new();
+            if find.filtering() {
+                // "Only matches": matches plus their ancestors, ancestors expanded.
+                let (set, anc) = (&find.set, &find.ancestors);
+                flatten_paths(
+                    state.root(),
+                    &|p| anc.contains(p),
+                    &mut Vec::new(),
+                    &mut rows,
+                );
+                rows.retain(|r| set.contains(&r.path) || anc.contains(&r.path));
+            } else {
+                let is_expanded = |p: &[usize]| state.is_expanded(p);
+                flatten_paths(state.root(), &is_expanded, &mut Vec::new(), &mut rows);
             }
+            self.rows = Rc::new(rows);
         }
-        self.rows = Rc::new(rows);
         // Keep the selected row in view whenever the selection moves
-        // (keyboard, preview click, structural edit).
+        // (keyboard, preview click, structural edit). Rows are in document
+        // order = lexicographic path order, so binary search.
         if state.selection != self.last_selection {
             self.last_selection = state.selection.clone();
-            if let Some(ix) = state
-                .selection
-                .as_ref()
-                .and_then(|p| self.rows.iter().position(|r| &r.path == p))
-            {
+            if let Some(Ok(ix)) = state.selection.as_ref().map(|p| {
+                self.rows
+                    .binary_search_by(|r| r.path.as_slice().cmp(p.as_slice()))
+            }) {
                 self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
             }
+        }
+    }
+}
+
+/// Visible paths only (no labels): the cheap part of [`flatten`].
+fn flatten_paths(
+    node: &tiptap_rusty_parser::Node,
+    is_expanded: &dyn Fn(&[usize]) -> bool,
+    path: &mut Vec<usize>,
+    out: &mut Vec<TreeRow>,
+) {
+    let expanded = is_expanded(path);
+    out.push(TreeRow {
+        path: path.clone(),
+        expanded,
+    });
+    if expanded {
+        for (i, c) in node.children().iter().enumerate() {
+            path.push(i);
+            flatten_paths(c, is_expanded, path, out);
+            path.pop();
         }
     }
 }
@@ -133,6 +186,19 @@ fn flatten_into(
     path: &mut Vec<usize>,
     out: &mut Vec<Row>,
 ) {
+    let expanded = is_expanded(path);
+    out.push(row_for(node, path, expanded));
+    if expanded {
+        for (i, c) in node.children().iter().enumerate() {
+            path.push(i);
+            flatten_into(c, is_expanded, path, out);
+            path.pop();
+        }
+    }
+}
+
+/// The labelled row for `node` at `path`.
+fn row_for(node: &tiptap_rusty_parser::Node, path: &[usize], expanded: bool) -> Row {
     let ty = node_type(node);
     let is_text = ty == "text";
     let (type_name, marks, summary) = if is_text {
@@ -151,9 +217,8 @@ fn flatten_into(
     } else {
         (ty.to_string(), String::new(), node_summary(node))
     };
-    let expanded = is_expanded(path);
-    out.push(Row {
-        path: path.clone(),
+    Row {
+        path: path.to_vec(),
         depth: path.len(),
         has_children: node.child_count() > 0,
         expanded,
@@ -163,13 +228,6 @@ fn flatten_into(
         marks: marks.into(),
         summary: summary.into(),
         problem: false,
-    });
-    if expanded {
-        for (i, c) in node.children().iter().enumerate() {
-            path.push(i);
-            flatten_into(c, is_expanded, path, out);
-            path.pop();
-        }
     }
 }
 
@@ -200,6 +258,7 @@ impl Render for TreePanel {
         let mono = cx.theme().mono_font_family.clone();
         let count = rows.len();
         let find = self.find.clone();
+        let state_rows = state.clone();
         let on_select: RowFn = Rc::new({
             let state = state.clone();
             move |path, window, cx| {
@@ -240,26 +299,36 @@ impl Render for TreePanel {
                     ),
             )
             .child(
-                uniform_list("tree-rows", count, move |range, _window, cx| {
-                    let find = find.read(cx);
-                    range
-                        .map(|i| {
-                            let row = &rows[i];
-                            let hit = find.row_match(&row.path, row.expanded);
-                            let selected = selection.as_deref() == Some(row.path.as_slice());
-                            render_row(
-                                "tree-row",
-                                i,
-                                row,
-                                selected,
-                                &Deco::NONE,
-                                &mono,
-                                &on_select,
-                                &on_toggle,
-                            )
-                            .map(|r| crate::find::decorate_row(r, hit, selected))
-                        })
-                        .collect()
+                uniform_list("tree-rows", count, {
+                    let problems = self.problems.clone();
+                    move |range, _window, cx| {
+                        let find = find.read(cx);
+                        let root = state_rows.read(cx).root();
+                        range
+                            .filter_map(|i| {
+                                let r = &rows[i];
+                                let mut row = row_for(root.node_at(&r.path)?, &r.path, r.expanded);
+                                // Schema violations (schema_panel.rs), visible rows only.
+                                row.problem = problems.contains(&row.path);
+                                let row = &row;
+                                let hit = find.row_match(&row.path, row.expanded);
+                                let selected = selection.as_deref() == Some(row.path.as_slice());
+                                Some(
+                                    render_row(
+                                        "tree-row",
+                                        i,
+                                        row,
+                                        selected,
+                                        &Deco::NONE,
+                                        &mono,
+                                        &on_select,
+                                        &on_toggle,
+                                    )
+                                    .map(|r| crate::find::decorate_row(r, hit, selected)),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    }
                 })
                 .track_scroll(&self.scroll)
                 .flex_1()

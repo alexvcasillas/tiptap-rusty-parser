@@ -373,6 +373,7 @@ impl DiffState {
     /// Re-diff A against B and rebuild every derived structure. Runs on document
     /// change only (revision guard), never per frame.
     fn recompute(&mut self, a: &DocumentState, expand: bool) {
+        let _p = crate::profile::span("diff recompute");
         self.seen_revision = Some(a.revision);
         let Some(b) = self.b.as_ref() else {
             return;

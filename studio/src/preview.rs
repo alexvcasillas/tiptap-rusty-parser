@@ -20,10 +20,17 @@ const BODY_SIZE: f32 = 15.;
 const BODY_LINE: f32 = 1.55;
 const LIST_TYPES: &[&str] = &["bulletList", "orderedList", "taskList"];
 
+/// Overdraw above/below the viewport, so fast scrolls don't pop in.
+const OVERDRAW: f32 = 800.;
+
+/// Virtualized: one `list()` item per top-level block. Only items near the
+/// viewport are built and laid out each frame; offscreen heights are cached by
+/// `ListState` and invalidated per document revision.
 pub struct PreviewPanel {
     state: Entity<DocumentState>,
     focus: FocusHandle,
-    scroll: ScrollHandle,
+    list: ListState,
+    seen_revision: u64,
     last_selection: Option<Vec<usize>>,
     find: Entity<FindState>,
     _subs: Vec<Subscription>,
@@ -32,11 +39,24 @@ pub struct PreviewPanel {
 impl PreviewPanel {
     pub fn new(state: Entity<DocumentState>, cx: &mut Context<Self>) -> Self {
         let sub = cx.observe(&state, |this, state, cx| {
-            let sel = state.read(cx).selection.clone();
+            let s = state.read(cx);
+            if s.revision != this.seen_revision {
+                this.seen_revision = s.revision;
+                let n = s.root().child_count();
+                if n == this.list.item_count() {
+                    // Same blocks, maybe new heights: keep the scroll anchor.
+                    this.list.remeasure();
+                } else {
+                    let top = this.list.logical_scroll_top();
+                    this.list.reset(n);
+                    this.list.scroll_to(top);
+                }
+            }
+            let sel = s.selection.clone();
             if sel != this.last_selection {
                 // Reveal the top-level block that holds the selection.
                 if let Some(&top) = sel.as_ref().and_then(|p| p.first()) {
-                    this.scroll.scroll_to_item(top);
+                    this.reveal(top);
                 }
                 this.last_selection = sel;
             }
@@ -44,13 +64,31 @@ impl PreviewPanel {
         });
         let find = crate::find::find_state(&state, cx);
         let find_sub = cx.observe(&find, |_, _, cx| cx.notify());
+        let s = state.read(cx);
+        let list = ListState::new(s.root().child_count(), ListAlignment::Top, px(OVERDRAW));
+        let seen_revision = s.revision;
         Self {
             state,
             focus: cx.focus_handle(),
-            scroll: ScrollHandle::new(),
+            list,
+            seen_revision,
             last_selection: None,
             find,
             _subs: vec![sub, find_sub],
+        }
+    }
+
+    /// Scroll block `ix` into view: minimal scroll when it was laid out last
+    /// frame (heights known), otherwise jump so it starts at the top (offscreen
+    /// heights are estimates, so a relative reveal could miss).
+    fn reveal(&self, ix: usize) {
+        if self.list.bounds_for_item(ix).is_some() {
+            self.list.scroll_to_reveal_item(ix);
+        } else {
+            self.list.scroll_to(ListOffset {
+                item_ix: ix,
+                offset_in_item: px(-24.),
+            });
         }
     }
 }
@@ -69,34 +107,46 @@ impl Render for PreviewPanel {
         let focused = self.focus.contains_focused(window, cx);
         let focus = self.focus.clone();
         let state = self.state.clone();
-        let s = self.state.read(cx);
+        // Shared, not cloned: the set is rebuilt only when find recomputes.
         let matches = self.find.read(cx).set.clone();
-        let ctx = Ctx {
-            state: &state,
-            root: s.root(),
-            selection: s.selection.as_deref(),
-            mono,
-            matches: &matches,
-        };
-        let mut path = Vec::new();
-        let blocks: Vec<AnyElement> = s
-            .root()
-            .children()
-            .iter()
-            .enumerate()
-            .map(|(i, child)| {
-                path.push(i);
-                // Direct children of the scroll container, so the scroll
-                // handle can reveal them by index.
-                let el = div()
-                    .w_full()
-                    .max_w(px(680.))
-                    .child(block(child, &mut path, &ctx))
-                    .into_any_element();
-                path.pop();
-                el
-            })
-            .collect();
+        let count = self.list.item_count();
+        let item_state = state.clone();
+        let items = gpui_kit::list(self.list.clone(), move |ix, window, cx| {
+            let t0 = crate::profile::now();
+            let s = item_state.read(cx);
+            let Some(child) = s.root().child(ix) else {
+                return div().into_any_element();
+            };
+            let ctx = Ctx {
+                state: &item_state,
+                root: s.root(),
+                selection: s.selection.as_deref(),
+                mono: mono.clone(),
+                matches: &matches,
+            };
+            let mut path = vec![ix];
+            // Column layout of the old scroll container: 40px top/bottom
+            // padding, 14px gaps, 56px sides, centered 680px measure.
+            let el = div()
+                .w_full()
+                .flex()
+                .justify_center()
+                .px(px(56.))
+                .pt(px(if ix == 0 { 40. } else { 14. }))
+                .when(ix + 1 == count, |d| d.pb(px(40.)))
+                .text_size(px(BODY_SIZE))
+                .line_height(relative(BODY_LINE))
+                .text_color(Tokens::foreground())
+                .child(
+                    div()
+                        .w_full()
+                        .max_w(px(680.))
+                        .child(block(child, &mut path, &ctx)),
+                )
+                .into_any_element();
+            crate::profile::accumulate(window, "preview items", t0);
+            el
+        });
 
         crate::nav::attach(div().id("preview-pane"), &state)
             .track_focus(&self.focus)
@@ -119,23 +169,7 @@ impl Render for PreviewPanel {
                             .child("read-only · click to select · arrows to navigate"),
                     ),
             )
-            .child(
-                div()
-                    .id("preview-scroll")
-                    .track_scroll(&self.scroll)
-                    .flex_1()
-                    .overflow_y_scroll()
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(14.))
-                    .px(px(56.))
-                    .py(px(40.))
-                    .text_size(px(BODY_SIZE))
-                    .line_height(relative(BODY_LINE))
-                    .text_color(Tokens::foreground())
-                    .children(blocks),
-            )
+            .child(items.flex_1().w_full())
     }
 }
 

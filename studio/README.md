@@ -39,8 +39,9 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 | --- | --- |
 | `main.rs` | boots `gpui_kit::application()`, applies the theme, opens one `Workspace` window |
 | `state.rs` | `DocumentState` entity: parser `Document` + selection path + expanded set + undo/redo. `edit()` runs a `Transform`, keeps the `Change` log, stores `invert()` for undo. Row summaries and type helpers |
-| `tree.rs` | `TreePanel`: flattens visible nodes into rows on state change, renders with `uniform_list`; chevron toggles, click selects |
-| `preview.rs` | `PreviewPanel`: read-only render; click a block to select it; unknown types render as a dashed amber block |
+| `tree.rs` | `TreePanel`: flattens visible paths only when structure/expansion/find change (not on selection), labels on-screen rows at render, `uniform_list`; chevron toggles, click selects |
+| `preview.rs` | `PreviewPanel`: read-only render, virtualized (`list()` + `ListState`, one item per top-level block, heights remeasured per revision); click a block to select it; unknown types render as a dashed amber block |
+| `profile.rs` | `TIPTAP_STUDIO_PROFILE=1`: stderr timings (load/parse, tree flatten, preview items, find/diff recompute, edit+invert, interaction → frame) |
 | `inspector.rs` | `InspectorPanel`: identity, attrs (value + remove), mark chips, structure actions (Insert ▾ before/after/inside with presets), JSON peek + `Edit JSON` (replace node) |
 | `clipboard.rs` | parse a paste payload: one node, an array of nodes, or a `doc` (its content) |
 | `diff.rs` | `DiffState` (doc B, `Document::diff` change list, per-path tints, recomputed on observe) and `DiffPanel` (change list, tinted trees A/B, before/after inspector). Take B = `rebase_change` + `Transform::apply_change` via `DocumentState::edit` |
@@ -75,7 +76,7 @@ Security model:
 - All mutations go through `DocumentState::edit`. Panels never hold `&mut Node`.
 - Selection is an index path `Vec<usize>` (root = `[]`), the same addressing `Node::node_at` and every `Change` use. Dropped when it stops resolving.
 - Unknown node and mark types must render and be selectable. Never match exhaustively on type.
-- Perf: no per-frame clones once panels are stable. Known cost: `edit` clones the root once before the transaction so `invert` has a base.
+- Perf: no per-frame clones once panels are stable; nothing per frame is O(document). `edit` takes the undo from `Transform::finish_with_inverse` (cost ∝ the edit), undo/redo use `Node::apply_inverting`. Large test docs: `python3 studio/assets/gen_large.py <out-dir>` (1k/10k/50k blocks + edited copies for Diff).
 - `cargo check`, `cargo clippy -p tiptap-rusty-studio -- -D warnings` and `cargo fmt --all` before every commit.
 - Find: ⌘F/ctrl-F focuses the box, ⏎/⇧⏎ and ⌘G/⇧⌘G step matches, Esc clears and returns to the tree. Grammar: `Query` rustdoc in the parser crate.
 - Keyboard: arrows / Home / End / Esc navigate in the `Document` context (tree, preview); alt-↑/↓ move the node; Diff mode: ↑/↓ step changes, ⏎ Take B.
