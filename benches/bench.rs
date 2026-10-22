@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tiptap_rusty_parser::{
     doc, Assoc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
-    PosContent, PosEdit, PosMap, Position, Query, Range, Schema,
+    PosContent, PosEdit, PosMap, Position, Query, Range, Schema, SourceMap,
 };
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
@@ -459,6 +459,23 @@ fn large(c: &mut Criterion) {
     }
     c.bench_function("diff_10k_blocks_50_scattered_edits", |b| {
         b.iter(|| black_box(base.diff(black_box(&edited)).len()))
+    });
+
+    // Studio JSON source view: pretty text + node spans, and the scan alone.
+    let pretty = serde_json::to_string_pretty(&base).unwrap();
+    c.bench_function("source_map_pretty_10k", |b| {
+        b.iter(|| black_box(SourceMap::pretty(black_box(&base)).1.len()))
+    });
+    c.bench_function("source_map_build_10k", |b| {
+        b.iter(|| black_box(SourceMap::build(black_box(&pretty)).unwrap().len()))
+    });
+    let map = SourceMap::build(&pretty).unwrap();
+    c.bench_function("source_map_path_at_10k", |b| {
+        let mut off = 0usize;
+        b.iter(|| {
+            off = (off + 7919) % pretty.len();
+            black_box(map.path_at(off))
+        })
     });
 }
 

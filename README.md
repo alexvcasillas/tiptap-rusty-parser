@@ -161,6 +161,22 @@ Access the root node explicitly when needed: `doc.root()`, `doc.root_mut()`,
 `doc.into_root()`. Wrap an existing node with `Document::new(node)` or
 `node.into()`.
 
+### Source maps
+
+Map node paths to byte ranges in JSON text and back (editors, debuggers, error
+UIs). One O(text) scan, exact for any formatting and for unknown types/fields:
+
+```rust
+use tiptap_rusty_parser::{Document, SourceMap};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#)?;
+let (text, map) = SourceMap::pretty(doc.root()); // == doc.to_string_pretty()
+let span = map.span(&[0]).unwrap();              // `{` … `}` of the paragraph
+assert_eq!(map.path_at(span.start), Some(vec![0]));
+let map = SourceMap::build(&text).unwrap();      // or scan any JSON text
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
 ---
 
 ## Querying
