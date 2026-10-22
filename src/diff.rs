@@ -434,7 +434,10 @@ fn diff_children(
         return;
     }
 
-    let steps = lcs_align(am, bm);
+    // Equality classes: one id per distinct child value, so alignment and move
+    // pairing compare integers instead of whole subtrees (O(size) once).
+    let (ida, idb) = intern(am, bm);
+    let steps = lcs_align(&ida, &idb);
 
     // Reconstruct the alignment: which bm index each am index matched (kept in
     // place), plus the per-gap unmatched deletions/insertions between anchors.
@@ -464,22 +467,21 @@ fn diff_children(
     gaps.push((cur_dels, cur_inss));
 
     // Move detection: pair value-equal nodes that LCS split into a deletion and
-    // an insertion. Greedy/FIFO over equal values -> stable on duplicates.
-    let all_dels: Vec<usize> = gaps.iter().flat_map(|(d, _)| d.iter().copied()).collect();
-    let mut del_used = vec![false; all_dels.len()];
+    // an insertion. Greedy/FIFO over equal values -> stable on duplicates: each
+    // insertion takes the first unused deletion of its class (per-class queues).
+    let mut dels_by_id: HashMap<u32, std::collections::VecDeque<usize>> = HashMap::new();
+    for (dels, _) in &gaps {
+        for &d in dels {
+            dels_by_id.entry(ida[d]).or_default().push_back(d);
+        }
+    }
     let mut bm_move_src: HashMap<usize, usize> = HashMap::new(); // bm_j -> am_d
     let mut am_moved: HashSet<usize> = HashSet::new();
     for (_, inss) in &gaps {
         for &j in inss {
-            if let Some(slot) = all_dels
-                .iter()
-                .enumerate()
-                .find(|(slot, &d)| !del_used[*slot] && am[d] == bm[j])
-                .map(|(slot, _)| slot)
-            {
-                del_used[slot] = true;
-                bm_move_src.insert(j, all_dels[slot]);
-                am_moved.insert(all_dels[slot]);
+            if let Some(d) = dels_by_id.get_mut(&idb[j]).and_then(|q| q.pop_front()) {
+                bm_move_src.insert(j, d);
+                am_moved.insert(d);
             }
         }
     }
@@ -610,8 +612,20 @@ fn diff_children(
     }
 }
 
-/// Longest-common-subsequence alignment of two child slices, by node equality.
-fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
+/// Below this many DP cells (`m·n`) the exact table LCS runs (small lists, the
+/// common case); above it Myers' O((m+n)·D) greedy LCS, which is linear for the
+/// typical "few edits in a long list". Both produce a longest common
+/// subsequence; tie-breaking between equally long alignments may differ.
+const DP_CELLS: usize = 1 << 16;
+
+/// Myers gives up past this many edits (its trace is O(D²)); then the table LCS
+/// runs if it fits in [`DP_FALLBACK_CELLS`], else no anchors are kept.
+const MYERS_MAX_D: usize = 4096;
+const DP_FALLBACK_CELLS: usize = 1 << 24;
+
+/// Longest-common-subsequence alignment of two child slices, by equality class
+/// (see [`intern`]).
+fn lcs_align(a: &[u32], b: &[u32]) -> Vec<Step> {
     let (m, n) = (a.len(), b.len());
     if m == 0 {
         return (0..n).map(Step::Ins).collect();
@@ -619,14 +633,32 @@ fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
     if n == 0 {
         return (0..m).map(Step::Del).collect();
     }
-    // dp[i][j] = LCS length of a[i..] vs b[j..].
-    let mut dp = vec![vec![0u32; n + 1]; m + 1];
+    if m.saturating_mul(n) <= DP_CELLS {
+        return lcs_table(a, b);
+    }
+    if let Some(steps) = myers(a, b, MYERS_MAX_D) {
+        return steps;
+    }
+    if m.saturating_mul(n) <= DP_FALLBACK_CELLS {
+        return lcs_table(a, b);
+    }
+    // Pathological (huge and mostly different): no anchors. Still correct:
+    // the gap pairs everything positionally as modify/replace.
+    (0..m).map(Step::Del).chain((0..n).map(Step::Ins)).collect()
+}
+
+/// Exact LCS by dynamic programming, O(m·n) time and space.
+fn lcs_table(a: &[u32], b: &[u32]) -> Vec<Step> {
+    let (m, n) = (a.len(), b.len());
+    // dp[i][j] = LCS length of a[i..] vs b[j..], flattened row-major.
+    let w = n + 1;
+    let mut dp = vec![0u32; (m + 1) * w];
     for i in (0..m).rev() {
         for j in (0..n).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
+            dp[i * w + j] = if a[i] == b[j] {
+                dp[(i + 1) * w + j + 1] + 1
             } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+                dp[(i + 1) * w + j].max(dp[i * w + j + 1])
             };
         }
     }
@@ -637,7 +669,7 @@ fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
             steps.push(Step::Match);
             i += 1;
             j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
+        } else if dp[(i + 1) * w + j] >= dp[i * w + j + 1] {
             steps.push(Step::Del(i));
             i += 1;
         } else {
@@ -654,6 +686,227 @@ fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
         j += 1;
     }
     steps
+}
+
+/// Myers' greedy shortest-edit-script (= LCS) alignment, O((m+n)·D) time and
+/// O(D²) trace space. `None` if more than `max_d` edits are needed.
+fn myers(a: &[u32], b: &[u32], max_d: usize) -> Option<Vec<Step>> {
+    let (n, m) = (a.len() as isize, b.len() as isize);
+    let max_d = max_d.min(a.len() + b.len()) as isize;
+    let off = max_d + 1;
+    // v[k + off] = furthest x on diagonal k = x - y.
+    let mut v = vec![0isize; (2 * off + 1) as usize];
+    // trace[d] = v[-d..=d] before round d.
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut end_d = None;
+    'outer: for d in 0..=max_d {
+        trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
+        let mut k = -d;
+        while k <= d {
+            let down = k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize]);
+            let mut x = if down {
+                v[(off + k + 1) as usize]
+            } else {
+                v[(off + k - 1) as usize] + 1
+            };
+            let mut y = x - k;
+            while x < n && y < m && a[x as usize] == b[y as usize] {
+                x += 1;
+                y += 1;
+            }
+            v[(off + k) as usize] = x;
+            if x >= n && y >= m {
+                end_d = Some(d);
+                break 'outer;
+            }
+            k += 2;
+        }
+    }
+    end_d?;
+    // Backtrack from (n, m) through the saved rounds.
+    let mut steps = Vec::with_capacity((n + m) as usize);
+    let (mut x, mut y) = (n, m);
+    for d in (0..trace.len() as isize).rev() {
+        if d == 0 {
+            while x > 0 && y > 0 {
+                steps.push(Step::Match);
+                x -= 1;
+                y -= 1;
+            }
+            break;
+        }
+        let vd = &trace[d as usize];
+        let get = |k: isize| vd[(k + d) as usize];
+        let k = x - y;
+        let prev_k = if k == -d || (k != d && get(k - 1) < get(k + 1)) {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = get(prev_k);
+        let prev_y = prev_x - prev_k;
+        while x > prev_x && y > prev_y {
+            steps.push(Step::Match);
+            x -= 1;
+            y -= 1;
+        }
+        if x == prev_x {
+            steps.push(Step::Ins((y - 1) as usize));
+        } else {
+            steps.push(Step::Del((x - 1) as usize));
+        }
+        x = prev_x;
+        y = prev_y;
+    }
+    steps.reverse();
+    Some(steps)
+}
+
+/// Map every child of `a` and `b` to an equality-class id: equal ids iff the
+/// nodes are equal (`==`). Hash-bucketed, each node is hashed once and compared
+/// deeply only against its bucket's representatives, so the cost is O(total
+/// size) instead of O(m·n) subtree comparisons.
+fn intern(a: &[Node], b: &[Node]) -> (Vec<u32>, Vec<u32>) {
+    let mut buckets: HashMap<u64, Vec<(u32, &Node)>> = HashMap::with_capacity(a.len() + b.len());
+    let mut next = 0u32;
+    let mut out_a = Vec::with_capacity(a.len());
+    let mut out_b = Vec::with_capacity(b.len());
+    for (side, nodes) in [(0, a), (1, b)] {
+        for n in nodes {
+            let bucket = buckets.entry(node_hash(n)).or_default();
+            let found = bucket.iter().find(|(_, rep)| *rep == n).map(|(i, _)| *i);
+            let i = found.unwrap_or_else(|| {
+                let i = next;
+                next += 1;
+                bucket.push((i, n));
+                i
+            });
+            if side == 0 {
+                out_a.push(i);
+            } else {
+                out_b.push(i);
+            }
+        }
+    }
+    (out_a, out_b)
+}
+
+/// Structural hash consistent with `Node: PartialEq` (maps hash
+/// order-insensitively, like their equality).
+fn node_hash(n: &Node) -> u64 {
+    let mut h = Fx::default();
+    hash_node(n, &mut h);
+    h.0
+}
+
+#[derive(Default)]
+struct Fx(u64);
+
+impl Fx {
+    #[inline]
+    fn add(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    #[inline]
+    fn bytes(&mut self, s: &[u8]) {
+        let mut chunks = s.chunks_exact(8);
+        for c in &mut chunks {
+            self.add(u64::from_le_bytes(c.try_into().unwrap()));
+        }
+        let mut tail = [0u8; 8];
+        let rest = chunks.remainder();
+        tail[..rest.len()].copy_from_slice(rest);
+        self.add(u64::from_le_bytes(tail) ^ ((s.len() as u64) << 56));
+    }
+    #[inline]
+    fn opt_str(&mut self, s: Option<&str>) {
+        match s {
+            None => self.add(0x9e37),
+            Some(s) => self.bytes(s.as_bytes()),
+        }
+    }
+}
+
+fn hash_node(n: &Node, h: &mut Fx) {
+    h.opt_str(n.node_type.as_deref());
+    hash_opt_map(n.attrs.as_ref(), h);
+    match &n.content {
+        None => h.add(1),
+        Some(c) => {
+            h.add(2 ^ ((c.len() as u64) << 8));
+            for child in c {
+                hash_node(child, h);
+            }
+        }
+    }
+    match &n.marks {
+        None => h.add(3),
+        Some(ms) => {
+            h.add(4 ^ ((ms.len() as u64) << 8));
+            for m in ms {
+                h.bytes(m.mark_type.as_bytes());
+                hash_opt_map(m.attrs.as_ref(), h);
+                hash_map(&m.extra, h);
+            }
+        }
+    }
+    h.opt_str(n.text.as_deref());
+    hash_map(&n.extra, h);
+}
+
+fn hash_opt_map(m: Option<&Map<String, Value>>, h: &mut Fx) {
+    match m {
+        None => h.add(5),
+        Some(m) => hash_map(m, h),
+    }
+}
+
+/// Order-insensitive: sum of independent per-entry hashes.
+fn hash_map(m: &Map<String, Value>, h: &mut Fx) {
+    let mut sum = 0u64;
+    for (k, v) in m {
+        let mut e = Fx::default();
+        e.bytes(k.as_bytes());
+        hash_value(v, &mut e);
+        sum = sum.wrapping_add(e.0);
+    }
+    h.add(6 ^ ((m.len() as u64) << 8));
+    h.add(sum);
+}
+
+fn hash_value(v: &Value, h: &mut Fx) {
+    match v {
+        Value::Null => h.add(10),
+        Value::Bool(b) => h.add(11 + *b as u64),
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                h.add(13);
+                h.add(u);
+            } else if let Some(i) = n.as_i64() {
+                h.add(14);
+                h.add(i as u64);
+            } else {
+                // Float: `==` treats 0.0 and -0.0 as equal.
+                let f = n.as_f64().unwrap_or(0.0);
+                h.add(15);
+                h.add(if f == 0.0 { 0 } else { f.to_bits() });
+            }
+        }
+        Value::String(s) => {
+            h.add(16);
+            h.bytes(s.as_bytes());
+        }
+        Value::Array(a) => {
+            h.add(17 ^ ((a.len() as u64) << 8));
+            for x in a {
+                hash_value(x, h);
+            }
+        }
+        Value::Object(m) => {
+            h.add(18);
+            hash_map(m, h);
+        }
+    }
 }
 
 // ---- apply internals ----------------------------------------------------
