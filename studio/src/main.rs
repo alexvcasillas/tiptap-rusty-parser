@@ -10,6 +10,7 @@ mod diff;
 mod files;
 mod find;
 mod inspector;
+mod layout;
 mod nav;
 mod preview;
 mod state;
@@ -37,6 +38,8 @@ fn main() {
             nav::bind_keys(cx);
             diff::bind_keys(cx);
             files::bind_keys(cx);
+            layout::bind_keys(cx);
+            layout::init(cx);
 
             // A bad A never quits: the window opens in an error state instead.
             let (state, start_error) = files::initial_state(file.as_deref());
@@ -44,7 +47,9 @@ fn main() {
 
             let bounds = Bounds::centered(None, size(px(1440.), px(900.)), cx);
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_bounds: Some(
+                    layout::saved_window(cx).unwrap_or(WindowBounds::Windowed(bounds)),
+                ),
                 titlebar: Some(TitlebarOptions {
                     title: Some("tiptap-studio".into()),
                     ..Default::default()
@@ -54,6 +59,7 @@ fn main() {
             gpui_kit::open_window(options, cx, |window, cx| {
                 let ws = cx.new(|cx| Workspace::new(state, file_b, cx));
                 files::install(&ws, start_error, window, cx);
+                layout::track_window(window, cx);
                 let focus = ws.read(cx).tree_focus(cx);
                 window.focus(&focus, cx);
                 ws

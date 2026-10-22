@@ -145,7 +145,7 @@ fn empty_state() -> DocumentState {
 
 // ---- recent files ------------------------------------------------------------------
 
-fn config_dir() -> Option<PathBuf> {
+pub(crate) fn config_dir() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     #[cfg(target_os = "macos")]
     let base = home.map(|h| h.join("Library/Application Support"));

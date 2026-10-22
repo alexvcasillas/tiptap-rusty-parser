@@ -220,6 +220,12 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::open_file))
             .on_action(cx.listener(Self::quit))
+            .on_action(move |_: &crate::layout::ToggleLeftPane, _, cx| {
+                crate::layout::toggle(mode, false, cx)
+            })
+            .on_action(move |_: &crate::layout::ToggleRightPane, _, cx| {
+                crate::layout::toggle(mode, true, cx)
+            })
             .on_drop(cx.listener(|this, paths: &ExternalPaths, w, cx| {
                 this.drop_paths(paths, false, w, cx)
             }))
@@ -425,10 +431,12 @@ impl Render for Workspace {
             .child(div().relative().flex().flex_1().min_h_0().map(|panes| {
                 match mode {
                     _ if files_error.is_some() => panes.children(files_error),
-                    Mode::Inspect => panes
-                        .child(self.tree.clone())
-                        .child(self.preview.clone())
-                        .child(self.inspector.clone()),
+                    Mode::Inspect => panes.child(crate::layout::inspect_row(
+                        self.tree.clone(),
+                        self.preview.clone(),
+                        self.inspector.clone(),
+                        cx,
+                    )),
                     Mode::Diff => panes.child(self.diff_panel.clone()),
                 }
                 .children(drop_overlay)

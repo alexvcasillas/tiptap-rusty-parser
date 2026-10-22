@@ -1785,9 +1785,12 @@ impl Render for DiffPanel {
         let a = d.a.read(cx);
         let a_file = a.file_name();
         let b_file = d.b_name();
-        root.child(self.changes_pane(d, &mono))
-            .child(self.tree_pane(Pane::A, d, a_file, &mono, wheel_a))
-            .child(self.tree_pane(Pane::B, d, b_file, &mono, wheel_b))
-            .child(self.inspector_pane(d, a, &mono))
+        root.child(crate::layout::diff_row(
+            self.changes_pane(d, &mono),
+            self.tree_pane(Pane::A, d, a_file, &mono, wheel_a),
+            self.tree_pane(Pane::B, d, b_file, &mono, wheel_b),
+            self.inspector_pane(d, a, &mono),
+            cx,
+        ))
     }
 }

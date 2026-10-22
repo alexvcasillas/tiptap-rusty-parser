@@ -191,7 +191,7 @@ impl Render for TreePanel {
             .track_focus(&self.focus)
             .flex()
             .flex_col()
-            .w(px(280.))
+            .w_full()
             .flex_shrink_0()
             .h_full()
             .bg(Tokens::panel())

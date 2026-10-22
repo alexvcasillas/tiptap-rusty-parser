@@ -22,7 +22,8 @@ Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [pa
 ```
 title bar   tiptap-studio · [Inspect | Diff] · file name · node stats
 toolbar     Open · Save · Save as… · Undo · Redo · JSON · Schema
-panes       tree (280) · preview (fluid) · inspector (320)
+panes       tree (280) · preview (fluid) · inspector (320), drag a divider to resize, double-click it to reset
+view        ⌘1 / ctrl-1 toggle tree (Diff: changes) · ⌘2 / ctrl-2 toggle inspector; widths, collapsed panes and window bounds persist per mode in <config>/tiptap-studio/layout.json
 
 Diff mode
 title bar   a.json → b.json · +n −n ~n · total changes
@@ -43,6 +44,7 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 | `clipboard.rs` | parse a paste payload: one node, an array of nodes, or a `doc` (its content) |
 | `diff.rs` | `DiffState` (doc B, `Document::diff` change list, per-path tints, recomputed on observe) and `DiffPanel` (change list, tinted trees A/B, before/after inspector). Take B = `rebase_change` + `Transform::apply_change` via `DocumentState::edit` |
 | `find.rs` | `FindState` (parser `Query`, matches recomputed per document revision) and `FindBar` (toolbar input, error popover, `n / N` counter, prev/next, Only matches). Tree rows get a 2px accent bar, preview blocks a light accent fill |
+| `layout.rs` | `Layout` entity (global): per-mode side widths, A/B split, collapsed flags, window bounds; `inspect_row` / `diff_row` lay out panes with `resize_handle` dividers; `layout.json` saved 500 ms after the last change and on quit |
 | `workspace.rs` | title bar, Inspect/Diff `Mode`, toolbar, actions and key bindings, pane layout |
 | `theme.rs` | visual tokens from the design canvas, applied over the gpui-component dark theme |
 | `assets/sample.json` | demo document with headings, marks, link, list, quote, a custom `callout`, rule, code block |
@@ -70,6 +72,6 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 - [x] Diff: document-ordered change list, sync scroll, Swap A/B, take all B in a subtree
 - [x] Save (⌘S), Save as… (⇧⌘S)
 - [ ] Open dialog for A, recent files
-- [ ] Resizable panes via `DockArea`
+- [x] Resizable, collapsible panes with persisted layout (`layout.rs`)
 - [ ] Schema panel surfacing `Violation`s
 - [ ] WASM build as a web playground

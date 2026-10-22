@@ -902,7 +902,7 @@ impl Render for InspectorPanel {
         let mut pane = div()
             .flex()
             .flex_col()
-            .w(px(320.))
+            .w_full()
             .flex_shrink_0()
             .h_full()
             .bg(Tokens::panel())
