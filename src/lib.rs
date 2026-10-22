@@ -7,6 +7,8 @@
 //!   preserved).
 //! - **Query** with predicate closures: [`Node::find`], [`Node::find_all`],
 //!   [`Node::walk`], [`Node::descendants`].
+//! - **Query language**: compile `type == heading && attrs.level > 1` once,
+//!   match without allocating: [`Query::parse`], [`Query::find_paths`].
 //! - **Select** by type/mark/attr: [`Node::by_type`], [`Node::by_mark`],
 //!   [`Node::by_attr`].
 //! - **Address** by index path: [`Node::node_at`], [`Node::path_to`]; or by flat
@@ -72,6 +74,7 @@ mod pos;
 mod pos_edit;
 mod pos_map;
 mod query;
+mod query_lang;
 mod range;
 mod schema;
 mod select;
@@ -93,6 +96,7 @@ pub use pos::{LeafPolicy, PosError, PosRange, ResolvedPos, TextPoint};
 pub use pos_edit::{PosContent, PosEdit, PosEditError};
 pub use pos_map::{Assoc, PosMap};
 pub use query::Descendants;
+pub use query_lang::{Query, QueryError, QueryErrorKind};
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};
 pub use text_diff::{diff_text, DiffGranularity, DiffOptions, SegKind, TextSegment};

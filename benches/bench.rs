@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tiptap_rusty_parser::{
     doc, Assoc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
-    PosContent, PosEdit, PosMap, Position, Range, Schema,
+    PosContent, PosEdit, PosMap, Position, Query, Range, Schema,
 };
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
@@ -298,6 +298,51 @@ fn benches(c: &mut Criterion) {
                 acc = acc.wrapping_add(pos_map.map(black_box(p), Assoc::Right));
             }
             black_box(acc)
+        })
+    });
+
+    // Query language: compile once, match over a large mixed doc (no per-node alloc).
+    let mixed = Document::new(doc((0..2000).map(|i| match i % 4 {
+        0 => Node::element("heading")
+            .with_attr("level", (i % 3 + 1) as u64)
+            .with_text(format!("Section {i}")),
+        1 => Node::element("callout")
+            .with_attr(
+                "meta",
+                serde_json::json!({"source": if i % 8 == 1 { "import" } else { "manual" }}),
+            )
+            .with_child(Node::element("paragraph").with_text("note")),
+        _ => Node::element("paragraph").with_children((0..10).map(move |s| {
+            let t = format!("word{s} Roundtrip diff engine {i} ");
+            if s % 3 == 0 {
+                Node::text_with_marks(t, [Mark::new("bold")])
+            } else {
+                Node::text(t)
+            }
+        })),
+    })));
+    let q_struct =
+        Query::parse("type == heading && attrs.level > 1 || attrs.meta.source == import").unwrap();
+    let q_text = Query::parse("\"diff ENGINE 1999\" || has mark bold && text ~ word9").unwrap();
+    c.bench_function("query_parse", |b| {
+        b.iter(|| {
+            Query::parse(black_box(
+                "type == heading && attrs.level > 1 || (has mark bold && !text ~ foo)",
+            ))
+            .unwrap()
+        })
+    });
+    c.bench_function("query_find_paths_struct", |b| {
+        b.iter(|| black_box(q_struct.find_paths(mixed.root()).len()))
+    });
+    c.bench_function("query_find_paths_text", |b| {
+        b.iter(|| black_box(q_text.find_paths(mixed.root()).len()))
+    });
+    c.bench_function("query_matches_walk", |b| {
+        b.iter(|| {
+            let mut n = 0usize;
+            mixed.walk(&mut |node| n += q_text.matches(node) as usize);
+            black_box(n)
         })
     });
 }
