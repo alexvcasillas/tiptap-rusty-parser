@@ -424,6 +424,31 @@ fn large(c: &mut Criterion) {
             criterion::BatchSize::LargeInput,
         )
     });
+
+    // Diff of the 10k doc vs a copy with 50 scattered edits.
+    let mut edited = base.clone();
+    {
+        let kids = edited.content.as_mut().unwrap();
+        for k in 0..50 {
+            let i = k * 197 + 13;
+            match k % 4 {
+                0 => kids.insert(i, Node::element("paragraph").with_child(Node::text("ins"))),
+                1 => {
+                    kids.remove(i);
+                }
+                2 => {
+                    kids[i].set_attr("data-edit", k as u64);
+                }
+                _ => {
+                    let n = kids.remove(i);
+                    kids.insert(i + 40, n);
+                }
+            }
+        }
+    }
+    c.bench_function("diff_10k_blocks_50_scattered_edits", |b| {
+        b.iter(|| black_box(base.diff(black_box(&edited)).len()))
+    });
 }
 
 criterion_group!(g, benches, large);
