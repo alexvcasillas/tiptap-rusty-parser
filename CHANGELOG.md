@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.4.3...v0.4.4) - 2026-10-22
+
+### Other
+
+- *(diff)* fix exponential Move cascade on reordered equal siblings ([#47](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/47))
+
 ## [0.4.3](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.4.2...v0.4.3) - 2026-05-31
 
 ### Added
