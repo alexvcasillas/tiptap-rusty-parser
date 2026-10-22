@@ -13,3 +13,9 @@
 name = "tiptap-rusty-parser-wasm"
 release = false
 publish = false
+
+# The GPUI desktop app is a dev tool for this repo, never published.
+[[package]]
+name = "tiptap-rusty-studio"
+release = false
+publish = false

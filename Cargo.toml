@@ -30,4 +30,4 @@ lto = true
 codegen-units = 1
 
 [workspace]
-members = ["bindings/wasm"]
+members = ["bindings/wasm", "studio"]
