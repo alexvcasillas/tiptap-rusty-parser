@@ -191,7 +191,15 @@ pub fn init(cx: &mut App) {
 
 /// The saved window bounds, if any.
 pub fn saved_window(cx: &App) -> Option<WindowBounds> {
-    cx.global::<LayoutGlobal>().0.read(cx).window
+    let saved = cx.global::<LayoutGlobal>().0.read(cx).window?;
+    // A position saved on a monitor that is gone would open off-screen: only
+    // reuse it when the window's title strip lands on a connected display.
+    let b = saved.get_bounds();
+    let title_strip = Bounds::new(b.origin, size(b.size.width, px(40.)));
+    cx.displays()
+        .iter()
+        .any(|d| d.bounds().intersects(&title_strip))
+        .then_some(saved)
 }
 
 /// Track the window's bounds so the next launch reopens it there.
