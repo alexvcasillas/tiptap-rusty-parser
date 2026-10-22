@@ -51,13 +51,14 @@ keys        ↑/↓ step changes · ⏎ Take B · ctrl/cmd-z undo
 - Selection is an index path `Vec<usize>` (root = `[]`), the same addressing `Node::node_at` and every `Change` use. Dropped when it stops resolving.
 - Unknown node and mark types must render and be selectable. Never match exhaustively on type.
 - Perf: no per-frame clones once panels are stable. Known cost: `edit` clones the root once before the transaction so `invert` has a base.
-- `cargo check -p tiptap-rusty-studio` and `cargo fmt --all` before every commit.
+- `cargo check`, `cargo clippy -p tiptap-rusty-studio -- -D warnings` and `cargo fmt --all` before every commit.
+- Keyboard: arrows / Home / End / Esc navigate in the `Document` context (tree, preview); alt-↑/↓ move the node; Diff mode: ↑/↓ step changes, ⏎ Take B.
 
 ## Roadmap
 
-- [ ] Typed attribute editors (string → input, number → stepper, bool → switch, object/array → JSON textarea)
-- [ ] Add attribute; add mark with attrs (link `href`)
-- [ ] Wrap in…, split, join
+- [x] Typed attribute editors (string → input, number → stepper, bool → switch, object/array → JSON textarea)
+- [x] Add attribute; add mark with attrs (link `href`)
+- [x] Wrap in…, split, join
 - [x] Diff mode: second document, `Document::diff` change list, tinted rows in both trees, before/after inspector
 - [ ] Diff: Swap A/B, sync scroll, remembered Keep A decisions
 - [ ] Open / save dialogs, recent files
