@@ -1,6 +1,6 @@
 //! Change-list algebra: compose / compact / map_path.
 
-use tiptap_rusty_parser::{apply, compact, compose, map_path, Change, Node};
+use tiptap_rusty_parser::{apply, compact, compose, map_path, unmap_path, Change, Node};
 
 fn p(text: &str) -> Node {
     Node::element("paragraph").with_child(Node::text(text))
@@ -374,4 +374,58 @@ fn fuzz_map_path_matches_post_apply_node() {
             }
         }
     }
+}
+
+// ---- unmap_path ---------------------------------------------------------
+
+#[test]
+fn unmap_path_inverts_map_path_over_a_real_diff() {
+    let a = doc([p("a"), p("b"), p("c"), p("d"), p("e")]);
+    let b = doc([p("x"), p("b"), p("e"), p("c"), p("c2")]);
+    let changes = a.diff(&b);
+    assert!(!changes.is_empty());
+    for (i, _) in a.children().iter().enumerate() {
+        if let Some(mapped) = map_path(&[i, 0], &changes) {
+            assert_eq!(unmap_path(&mapped, &changes), Some(vec![i, 0]), "child {i}");
+        }
+    }
+    // Each prefix of the list round-trips too (the live-path case a UI needs).
+    for n in 0..=changes.len() {
+        for i in 0..a.child_count() {
+            if let Some(mapped) = map_path(&[i], &changes[..n]) {
+                assert_eq!(
+                    unmap_path(&mapped, &changes[..n]),
+                    Some(vec![i]),
+                    "prefix {n} child {i}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unmap_path_drops_inserted_and_replaced_nodes() {
+    let ins = vec![Change::Insert {
+        path: vec![],
+        index: 1,
+        node: p("n"),
+    }];
+    assert_eq!(unmap_path(&[1], &ins), None);
+    assert_eq!(unmap_path(&[1, 0], &ins), None);
+    assert_eq!(unmap_path(&[2], &ins), Some(vec![1]));
+    assert_eq!(unmap_path(&[0], &ins), Some(vec![0]));
+    let rep = vec![Change::Replace {
+        path: vec![1],
+        node: p("r"),
+    }];
+    assert_eq!(unmap_path(&[1], &rep), Some(vec![1]));
+    assert_eq!(unmap_path(&[1, 0], &rep), None);
+    let mv = vec![Change::Move {
+        path: vec![],
+        from: 0,
+        to: 2,
+    }];
+    assert_eq!(unmap_path(&[2], &mv), Some(vec![0]));
+    assert_eq!(unmap_path(&[0], &mv), Some(vec![1]));
+    assert_eq!(unmap_path(&[1], &mv), Some(vec![2]));
 }

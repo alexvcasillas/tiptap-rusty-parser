@@ -81,7 +81,7 @@ mod transform;
 
 pub use block::{BlockError, BlockRange};
 pub use builder::doc;
-pub use change_ops::{compact, compose, map_path};
+pub use change_ops::{compact, compose, map_path, unmap_path};
 pub use content::{ContentExpr, ContentRule, ParseExprError};
 pub use diff::{apply, diff, invert, ApplyError, Change};
 pub use document::Document;

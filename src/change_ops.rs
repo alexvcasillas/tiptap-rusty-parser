@@ -200,3 +200,65 @@ pub fn map_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
     }
     Some(q)
 }
+
+/// Inverse of [`map_path`]: given a path in the tree *after* `changes` were
+/// applied, where was that node before them? Returns `None` if the node did
+/// not exist before (it was inserted, or lives inside a replaced subtree).
+///
+/// Lets a UI relate a [`Change`] taken from the middle of a [`diff`](crate::diff)
+/// list (whose paths are live, partially-mutated indices) back to the original
+/// tree: `unmap_path(live, &changes[..i])`.
+///
+/// ```
+/// use tiptap_rusty_parser::{map_path, unmap_path, Change};
+/// let changes = vec![Change::Insert { path: vec![], index: 0, node: Default::default() }];
+/// assert_eq!(unmap_path(&[2, 0], &changes), Some(vec![1, 0]));
+/// assert_eq!(unmap_path(&[0], &changes), None); // the inserted node itself
+/// let removed = vec![Change::Remove { path: vec![], index: 1 }];
+/// assert_eq!(unmap_path(&[1], &removed), Some(vec![2]));
+/// ```
+pub fn unmap_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
+    let mut q = path.to_vec();
+    for change in changes.iter().rev() {
+        match change {
+            Change::Insert { path: p, index, .. } => {
+                if let Some(d) = affected_level(&q, p) {
+                    if *index == q[d] {
+                        return None; // the node on the path was inserted
+                    } else if *index < q[d] {
+                        q[d] -= 1;
+                    }
+                }
+            }
+            Change::Remove { path: p, index } => {
+                if let Some(d) = affected_level(&q, p) {
+                    if *index <= q[d] {
+                        q[d] += 1;
+                    }
+                }
+            }
+            Change::Move { path: p, from, to } => {
+                if let Some(d) = affected_level(&q, p) {
+                    let k = q[d];
+                    if *to == k {
+                        q[d] = *from;
+                    } else {
+                        // undo insert(to), then undo remove(from)
+                        let after_remove = if *to < k { k - 1 } else { k };
+                        q[d] = if *from <= after_remove {
+                            after_remove + 1
+                        } else {
+                            after_remove
+                        };
+                    }
+                }
+            }
+            // A node strictly inside a replaced subtree did not exist before.
+            Change::Replace { path: p, .. } if p.len() < q.len() && q[..p.len()] == *p => {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    Some(q)
+}
