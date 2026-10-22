@@ -22,9 +22,9 @@ Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [pa
 
 ```
 title bar   tiptap-studio · [Inspect | Diff] · file name · node stats
-toolbar     Open · Save · Save as… · Undo · Redo · Server… · JSON · Schema
+toolbar     Open · Save · Save as… · Undo · Redo · Server… · JSON · Source · Schema
 panes       tree (280) · preview (fluid) · inspector (320), drag a divider to resize, double-click it to reset
-view        ⌘1 / ctrl-1 toggle tree (Diff: changes) · ⌘2 / ctrl-2 toggle inspector; widths, collapsed panes and window bounds persist per mode in <config>/tiptap-studio/layout.json
+view        ⌘1 / ctrl-1 toggle tree (Diff: changes) · ⌘2 / ctrl-2 toggle inspector · ⌘3 / ctrl-3 preview ↔ JSON source; widths, collapsed panes and window bounds persist per mode in <config>/tiptap-studio/layout.json
 
 Diff mode
 title bar   a.json → b.json · +n −n ~n · total changes
@@ -42,6 +42,7 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 | `tree.rs` | `TreePanel`: flattens visible paths only when structure/expansion/find change (not on selection), labels on-screen rows at render, `uniform_list`; chevron toggles, click selects |
 | `preview.rs` | `PreviewPanel`: read-only render, virtualized (`list()` + `ListState`, one item per top-level block, heights remeasured per revision); click a block to select it; unknown types render as a dashed amber block |
 | `profile.rs` | `TIPTAP_STUDIO_PROFILE=1`: stderr timings (load/parse, tree flatten, preview items, find/diff recompute, edit+invert, interaction → frame) |
+| `source.rs` | `SourcePanel`: read-only pretty JSON of A in place of the preview (toolbar `Source`, ⌘3 / ctrl-3, persisted as `source` in `layout.json`). `uniform_list` by line with line numbers and token colors; text + `SourceMap` rebuilt once per revision, only while shown. Selection highlights its line span and scrolls to it; clicking a line selects the deepest node there. Also the numbered excerpt with a caret in the parse-error view |
 | `inspector.rs` | `InspectorPanel`: identity, attrs (value + remove), mark chips, structure actions (Insert ▾ before/after/inside with presets), JSON peek + `Edit JSON` (replace node) |
 | `clipboard.rs` | parse a paste payload: one node, an array of nodes, or a `doc` (its content) |
 | `diff.rs` | `DiffState` (doc B, `Document::diff` change list, per-path tints, recomputed on observe) and `DiffPanel` (change list, tinted trees A/B, before/after inspector). Take B = `rebase_change` + `Transform::apply_change` via `DocumentState::edit` |

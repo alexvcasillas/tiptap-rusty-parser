@@ -16,6 +16,7 @@ mod nav;
 mod preview;
 mod profile;
 mod schema_panel;
+mod source;
 mod state;
 mod theme;
 mod tree;

@@ -35,6 +35,8 @@
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Validate** (opt-in) against a schema, incl. ProseMirror content
 //!   expressions: [`Node::validate`], [`Schema`], [`ContentExpr`].
+//! - **Source map** JSON text: node path ↔ byte span, for editors and debuggers:
+//!   [`SourceMap::pretty`], [`SourceMap::span`], [`SourceMap::path_at`].
 //! - **Render** to HTML: [`Node::to_html`], [`HtmlOptions`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
 //!
@@ -78,6 +80,7 @@ mod query_lang;
 mod range;
 mod schema;
 mod select;
+mod source_map;
 mod text;
 mod text_diff;
 mod transform;
@@ -99,5 +102,6 @@ pub use query::Descendants;
 pub use query_lang::{Query, QueryError, QueryErrorKind};
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};
+pub use source_map::{SourceMap, SourceMapError};
 pub use text_diff::{diff_text, DiffGranularity, DiffOptions, SegKind, TextSegment};
 pub use transform::Transform;
