@@ -5,6 +5,11 @@ edition = "2021"
 publish = false
 description = "GPUI desktop inspector, structural editor and differ for Tiptap/ProseMirror JSON"
 license = "MIT"
+repository = "https://github.com/alexvcasillas/tiptap-rusty-parser"
+homepage = "https://github.com/alexvcasillas/tiptap-rusty-parser/tree/main/studio"
+readme = "README.md"
+# Release packaging (macOS .app/.dmg, Windows .zip, Linux .tar.gz) reads `version`
+# from here: studio/packaging/README.md. Bump it, then tag `studio-v<version>`.
 
 [[bin]]
 name = "tiptap-studio"
