@@ -229,7 +229,8 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-type Then = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
+/// Continuation run by [`Workspace::guard`] once A may be replaced.
+pub(crate) type Then = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
 /// Wire the workspace to its window: start error, recent list, close guard,
 /// disk polling.
@@ -269,8 +270,9 @@ impl Workspace {
     // ---- guard ------------------------------------------------------------------------
 
     /// Run `then` once the current A may be discarded: right away when clean,
-    /// else after Save (saved) or Don't Save; Cancel drops it.
-    fn guard(&mut self, window: &mut Window, cx: &mut Context<Self>, then: Then) {
+    /// else after Save (saved) or Don't Save; Cancel drops it. Also used by
+    /// the Document Server sheet (`cloud.rs`) before it replaces A.
+    pub(crate) fn guard(&mut self, window: &mut Window, cx: &mut Context<Self>, then: Then) {
         if !self.state.read(cx).dirty {
             return then(self, window, cx);
         }
@@ -504,6 +506,13 @@ impl Workspace {
     /// Every `POLL`: one `stat` of the open file. Changed and clean: reload in
     /// place. Changed and dirty: ask via the banner.
     fn poll_disk(&mut self, cx: &mut Context<Self>) {
+        // A replaced without `open_a` (Document Server, Swap, Swap's Save):
+        // watch its file now, never the old one, which would reload over it.
+        let file = self.state.read(cx).file.as_ref();
+        if self.files.watched.as_ref().map(|(p, _)| p) != file {
+            self.files.watched = file.map(|p| (p.clone(), mtime(p)));
+            return;
+        }
         let Some((path, seen)) = self.files.watched.as_mut() else {
             return;
         };

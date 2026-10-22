@@ -29,6 +29,7 @@ use self::secret::{Secret, TokenInfo};
 use self::store::Profile;
 use crate::diff::DiffState;
 use crate::state::DocumentState;
+use crate::workspace::Workspace;
 
 /// Switches the workspace to Diff mode (handed in by the toolbar item).
 pub type OnDiff = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -38,9 +39,12 @@ impl Global for CloudGlobal {}
 
 /// Open the server sheet. The panel entity is kept for the app's lifetime, so
 /// lists and session tokens survive closing the sheet.
+/// `workspace` runs the unsaved-changes guard (`Workspace::guard`) before A
+/// is replaced.
 pub fn open(
     state: Entity<DocumentState>,
     diff: Entity<DiffState>,
+    workspace: WeakEntity<Workspace>,
     on_diff: OnDiff,
     window: &mut Window,
     cx: &mut App,
@@ -48,11 +52,13 @@ pub fn open(
     let panel = match cx.try_global::<CloudGlobal>() {
         Some(g) => g.0.clone(),
         None => {
-            let p = cx.new(|cx| CloudPanel::new(state, diff, on_diff, window, cx));
+            let p = cx.new(|cx| CloudPanel::new(state, diff, workspace, on_diff, window, cx));
             cx.set_global(CloudGlobal(p.clone()));
             p
         }
     };
+    #[cfg(debug_assertions)]
+    simulate_open(&panel, window, cx);
     window.open_sheet(cx, move |sheet, _, _| {
         sheet
             .title("Tiptap Document Server")
@@ -136,6 +142,7 @@ struct Form {
 pub struct CloudPanel {
     state: Entity<DocumentState>,
     diff: Entity<DiffState>,
+    workspace: WeakEntity<Workspace>,
     on_diff: OnDiff,
     profiles: Vec<Profile>,
     current: Option<usize>,
@@ -168,6 +175,7 @@ impl CloudPanel {
     fn new(
         state: Entity<DocumentState>,
         diff: Entity<DiffState>,
+        workspace: WeakEntity<Workspace>,
         on_diff: OnDiff,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -205,6 +213,7 @@ impl CloudPanel {
         let mut this = Self {
             state,
             diff,
+            workspace,
             on_diff,
             profiles,
             current,
@@ -565,7 +574,9 @@ impl CloudPanel {
         format!("☁ {app} / {doc} @ {}", v.label()).into()
     }
 
-    /// Run `then` now, or after the user confirms discarding A's unsaved edits.
+    /// Run `then` now when A is clean, else through the file guard
+    /// (`Workspace::guard`): Save (to A's file, or a picked path when A has
+    /// none, e.g. it came from this server) / Don't Save / Cancel.
     fn guard_a(
         &mut self,
         window: &mut Window,
@@ -573,23 +584,17 @@ impl CloudPanel {
         then: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
         if !self.state.read(cx).dirty {
+            // Synchronous: the guard would call back into this (leased) panel.
             then(self, window, cx);
             return;
         }
-        let rx = window.prompt(
-            PromptLevel::Warning,
-            "A has unsaved changes",
-            Some("Opening from the server replaces A."),
-            &["Discard and open", "Cancel"],
-            cx,
-        );
-        cx.spawn_in(window, async move |this, cx| {
-            if rx.await == Ok(0) {
-                cx.update(|window, cx| this.update(cx, |this, cx| then(this, window, cx)))
-                    .ok();
-            }
-        })
-        .detach();
+        let panel = cx.entity().downgrade();
+        let then: crate::files::Then = Box::new(move |_, window, cx| {
+            panel.update(cx, |this, cx| then(this, window, cx)).ok();
+        });
+        self.workspace
+            .update(cx, |ws, cx| ws.guard(window, cx, then))
+            .ok();
     }
 
     fn open_as(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
@@ -671,6 +676,39 @@ impl CloudPanel {
             );
         });
     }
+}
+
+/// Debug-only test hook: `TIPTAP_STUDIO_SIM_SERVER_OPEN=doc.json` makes every
+/// `Server…` click open that file as A after 1s, as if fetched from a server,
+/// through the same guard as a real open (headless runs have no server).
+#[cfg(debug_assertions)]
+fn simulate_open(panel: &Entity<CloudPanel>, window: &mut Window, cx: &mut App) {
+    let Ok(path) = std::env::var("TIPTAP_STUDIO_SIM_SERVER_OPEN") else {
+        return;
+    };
+    let panel = panel.downgrade();
+    window
+        .spawn(cx, async move |cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_secs(1))
+                .await;
+            cx.update(|window, cx| {
+                panel
+                    .update(cx, |this, cx| {
+                        this.guard_a(window, cx, move |this, _, cx| match crate::files::read_doc(
+                            std::path::Path::new(&path),
+                        ) {
+                            Ok(d) => this.state.update(cx, |s, cx| {
+                                s.load_document(d, "☁ sim / doc @ latest".into(), cx)
+                            }),
+                            Err(e) => eprintln!("tiptap-studio: sim open {}", e.summary()),
+                        })
+                    })
+                    .ok();
+            })
+            .ok();
+        })
+        .detach();
 }
 
 fn fetch_doc(c: &api::Client, id: &str, version: Option<&str>) -> Result<Document, ApiError> {

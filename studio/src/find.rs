@@ -137,6 +137,43 @@ pub enum RowMatch {
     Inside,
 }
 
+/// Match paths plus their strict prefixes, for decorating a tree other than
+/// the Inspect one (Diff A/B). Built once per query or document change.
+#[derive(Clone, Default)]
+pub struct MatchSet {
+    pub set: Rc<HashSet<Vec<usize>>>,
+    pub ancestors: Rc<HashSet<Vec<usize>>>,
+}
+
+impl MatchSet {
+    pub fn from_paths(matches: &[Vec<usize>]) -> Self {
+        let mut ancestors = HashSet::new();
+        for m in matches {
+            // Longest prefix first: once one is present, all shorter ones are.
+            for d in (0..m.len()).rev() {
+                if ancestors.contains(&m[..d]) {
+                    break;
+                }
+                ancestors.insert(m[..d].to_vec());
+            }
+        }
+        Self {
+            set: Rc::new(matches.iter().cloned().collect()),
+            ancestors: Rc::new(ancestors),
+        }
+    }
+
+    pub fn row_match(&self, path: &[usize], expanded: bool) -> RowMatch {
+        if self.set.contains(path) {
+            RowMatch::Hit
+        } else if !expanded && self.ancestors.contains(path) {
+            RowMatch::Inside
+        } else {
+            RowMatch::None
+        }
+    }
+}
+
 pub struct FindState {
     doc: Entity<DocumentState>,
     /// Raw text of the box.
@@ -155,6 +192,8 @@ pub struct FindState {
     /// Where `esc` sends focus (the tree registers itself).
     pub return_focus: Option<FocusHandle>,
     revision: u64,
+    /// Bumped whenever `query` changes (set or cleared).
+    query_gen: u64,
     _subs: Vec<Subscription>,
 }
 
@@ -182,6 +221,7 @@ impl FindState {
             only_matches: false,
             return_focus: None,
             revision,
+            query_gen: 0,
             _subs: vec![sub],
         }
     }
@@ -198,6 +238,24 @@ impl FindState {
             RowMatch::Inside
         } else {
             RowMatch::None
+        }
+    }
+
+    /// The active query, for matching another document (Diff B).
+    pub fn query(&self) -> Option<&Query> {
+        self.query.as_ref()
+    }
+
+    /// Changes whenever [`Self::query`] does; cheap change detection.
+    pub fn query_generation(&self) -> u64 {
+        self.query_gen
+    }
+
+    /// Current matches as a shareable set (Rc clones, no copy).
+    pub fn match_set(&self) -> MatchSet {
+        MatchSet {
+            set: self.set.clone(),
+            ancestors: self.ancestors.clone(),
         }
     }
 
@@ -218,6 +276,7 @@ impl FindState {
             Ok(q) => {
                 self.error = None;
                 self.query = Some(q);
+                self.query_gen += 1;
                 self.recompute(cx);
             }
             Err(e) => {
@@ -229,7 +288,9 @@ impl FindState {
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
         self.text = SharedString::default();
-        self.query = None;
+        if self.query.take().is_some() {
+            self.query_gen += 1;
+        }
         self.error = None;
         self.matches = Rc::default();
         self.set = Rc::default();
@@ -249,18 +310,9 @@ impl FindState {
             return;
         };
         let matches = q.find_paths(self.doc.read(cx).root());
-        let mut ancestors = HashSet::new();
-        for m in &matches {
-            // Longest prefix first: once one is present, all shorter ones are.
-            for d in (0..m.len()).rev() {
-                if ancestors.contains(&m[..d]) {
-                    break;
-                }
-                ancestors.insert(m[..d].to_vec());
-            }
-        }
-        self.set = Rc::new(matches.iter().cloned().collect());
-        self.ancestors = Rc::new(ancestors);
+        let MatchSet { set, ancestors } = MatchSet::from_paths(&matches);
+        self.set = set;
+        self.ancestors = ancestors;
         self.matches = Rc::new(matches);
         self.sync_current(cx);
         cx.notify();
@@ -518,4 +570,28 @@ pub fn inline_match_fill() -> Hsla {
     let mut c = Tokens::accent();
     c.a = 0.30;
     c
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MatchSet, RowMatch};
+
+    #[test]
+    fn match_set_hits_and_collapsed_ancestors() {
+        let m = MatchSet::from_paths(&[vec![0, 1], vec![0, 2, 0], vec![3]]);
+        assert!(m.row_match(&[0, 1], false) == RowMatch::Hit);
+        assert!(m.row_match(&[3], true) == RowMatch::Hit);
+        // Collapsed ancestors hint at a match below; expanded ones do not.
+        assert!(m.row_match(&[], false) == RowMatch::Inside);
+        assert!(m.row_match(&[0, 2], false) == RowMatch::Inside);
+        assert!(m.row_match(&[0], true) == RowMatch::None);
+        assert!(m.row_match(&[1], false) == RowMatch::None);
+        let anc: Vec<_> = {
+            let mut v: Vec<_> = m.ancestors.iter().cloned().collect();
+            v.sort();
+            v
+        };
+        assert_eq!(anc, vec![vec![], vec![0], vec![0, 2]]);
+        assert!(MatchSet::from_paths(&[]).set.is_empty());
+    }
 }

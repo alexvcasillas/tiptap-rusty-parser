@@ -19,6 +19,7 @@ use gpui_kit::*;
 use serde_json::Value;
 use tiptap_rusty_parser::{map_path, rebase_change, unmap_path, Change, Document, Node};
 
+use crate::find::{FindState, MatchSet};
 use crate::inspector::{chip, section};
 use crate::state::{fmt_path, node_summary, node_type, short_value, text_preview, DocumentState};
 use crate::theme::Tokens;
@@ -239,6 +240,18 @@ pub struct DiffState {
     seen_revision: Option<u64>,
     /// (+ inserted, − removed, ~ modified/moved)
     pub counts: (usize, usize, usize),
+    /// A's find state (toolbar query). Its matches decorate tree A; the same
+    /// query runs against B for tree B.
+    find: Entity<FindState>,
+    find_a: MatchSet,
+    find_b: MatchSet,
+    /// Query generation `find_b` was computed for.
+    find_gen: u64,
+    /// A find query is active (pane headers show match counts).
+    find_active: bool,
+    /// A's selection as last seen, to follow find next/prev (which selects
+    /// in A's `DocumentState`) without echoing our own pushes.
+    seen_a_selection: Option<Vec<usize>>,
     _subs: Vec<Subscription>,
 }
 
@@ -246,10 +259,31 @@ impl DiffState {
     pub fn new(a: Entity<DocumentState>, b: Option<PathBuf>, cx: &mut Context<Self>) -> Self {
         let sub = cx.observe(&a, |this, a, cx| {
             let a = a.read(cx);
+            let moved = a.selection != this.seen_a_selection;
+            if moved {
+                this.seen_a_selection = a.selection.clone();
+            }
             if this.seen_revision != Some(a.revision) {
                 this.recompute(a, false);
+            } else if moved && this.b.is_some() {
+                // Selection-only: find next/prev selected a match in A's
+                // `DocumentState`; tree A follows. Other moves (Inspect
+                // arrow keys) are ignored: a follow re-flattens both trees.
+                if let Some(p) = a.selection.clone() {
+                    if this.find_a.set.contains(&p) && this.side_a.selection.as_ref() != Some(&p) {
+                        this.select_path_in(Pane::A, &p, a);
+                    }
+                }
             }
-            // Selection-only notifies change nothing here.
+            cx.notify();
+        });
+        let find = crate::find::find_state(&a, cx);
+        let find_sub = cx.observe(&find, |this, find, cx| {
+            let f = find.read(cx);
+            this.find_a = f.match_set();
+            if f.query_generation() != this.find_gen {
+                this.refind_b(cx);
+            }
             cx.notify();
         });
         let mut this = Self {
@@ -275,11 +309,18 @@ impl DiffState {
             only_changed: false,
             seen_revision: None,
             counts: (0, 0, 0),
-            _subs: vec![sub],
+            find,
+            find_a: MatchSet::default(),
+            find_b: MatchSet::default(),
+            find_gen: 0,
+            find_active: false,
+            seen_a_selection: a.read(cx).selection.clone(),
+            _subs: vec![sub, find_sub],
         };
         if let Some(p) = b {
             this.load_b_inner(&p, a.read(cx));
         }
+        this.refind_b(cx);
         this
     }
 
@@ -319,7 +360,38 @@ impl DiffState {
     pub fn load_b(&mut self, path: &Path, cx: &mut Context<Self>) {
         let a = self.a.clone();
         self.load_b_inner(path, a.read(cx));
+        self.refind_b(cx);
         cx.notify();
+    }
+
+    /// Run the find query against B. On B or query change only, never per frame.
+    fn refind_b(&mut self, cx: &App) {
+        let f = self.find.read(cx);
+        self.find_gen = f.query_generation();
+        self.find_active = f.query().is_some();
+        self.find_b = match (f.query(), self.b.as_ref()) {
+            (Some(q), Some(b)) => {
+                let _p = crate::profile::span("find B");
+                MatchSet::from_paths(&q.find_paths(b.root()))
+            }
+            _ => MatchSet::default(),
+        };
+    }
+
+    /// Find matches for one tree.
+    pub fn matches(&self, pane: Pane) -> &MatchSet {
+        match pane {
+            Pane::A => &self.find_a,
+            Pane::B => &self.find_b,
+        }
+    }
+
+    /// Select `path` in A's `DocumentState` too (find counter, next/prev
+    /// from here, Inspect selection), without echoing it back to us.
+    fn push_a_selection(&mut self, path: Option<Vec<usize>>, cx: &mut Context<Self>) {
+        let Some(p) = path else { return };
+        self.seen_a_selection = Some(p.clone());
+        self.a.update(cx, |s, cx| s.select(Some(p), cx));
     }
 
     /// Load B from an in-memory document (no file), e.g. a server version.
@@ -336,6 +408,7 @@ impl DiffState {
         self.side_a.expanded.insert(Vec::new());
         self.side_b.expanded.insert(Vec::new());
         self.recompute(a.read(cx), true);
+        self.refind_b(cx);
         cx.notify();
     }
 
@@ -517,6 +590,7 @@ impl DiffState {
         self.selected = Some(i);
         self.pick = None;
         self.with_a(cx, |this, a| this.sync_selection(a));
+        self.push_a_selection(self.side_a.selection.clone(), cx);
     }
 
     pub fn step(&mut self, delta: isize, cx: &mut Context<Self>) {
@@ -536,6 +610,13 @@ impl DiffState {
     /// Click in a tree: select there, map the path to the other tree and pick
     /// the change that touches it (if any).
     pub fn select_path(&mut self, pane: Pane, path: &[usize], cx: &mut Context<Self>) {
+        let a = self.a.clone();
+        self.select_path_in(pane, path, a.read(cx));
+        cx.notify();
+        self.push_a_selection(self.side_a.selection.clone(), cx);
+    }
+
+    fn select_path_in(&mut self, pane: Pane, path: &[usize], a: &DocumentState) {
         let path = path.to_vec();
         // (A path, B path)
         let (here, other) = match pane {
@@ -569,7 +650,7 @@ impl DiffState {
         }
         self.side_a.selection = pa;
         self.side_b.selection = pb;
-        self.with_a(cx, |this, a| this.rebuild_rows(a));
+        self.rebuild_rows(a);
     }
 
     pub fn toggle(&mut self, pane: Pane, path: &[usize], cx: &mut Context<Self>) {
@@ -753,6 +834,7 @@ impl DiffState {
         self.b_file = old_file;
         self.reset_view();
         self.with_a(cx, |this, a| this.recompute(a, true));
+        self.refind_b(cx);
     }
 }
 
@@ -1345,6 +1427,10 @@ impl DiffPanel {
         let rows = side.rows.clone();
         let selection = side.selection.clone();
         let count = rows.len();
+        let matches = d.matches(pane).clone();
+        let found = d
+            .find_active
+            .then(|| format!(" · {} found", matches.set.len()));
         let focus = self.focus.clone();
         let on_select: RowFn = Rc::new({
             let diff = self.diff.clone();
@@ -1376,7 +1462,7 @@ impl DiffPanel {
                 pane_header(format!("{letter} · {file}")).child(
                     div()
                         .font_family(mono.clone())
-                        .child(format!("{count} rows")),
+                        .child(format!("{count} rows{}", found.unwrap_or_default())),
                 ),
             )
             .child(
@@ -1385,8 +1471,15 @@ impl DiffPanel {
                         .map(|i| {
                             let (row, deco) = &rows[i];
                             let selected = selection.as_deref() == Some(row.path.as_slice());
-                            render_row(
-                                row_id, i, row, selected, deco, &mono2, &on_select, &on_toggle,
+                            let hit = matches.row_match(&row.path, row.expanded);
+                            // Same find decoration as the Inspect tree; a
+                            // diff-tinted row keeps its tint (bar only).
+                            crate::find::decorate_row(
+                                render_row(
+                                    row_id, i, row, selected, deco, &mono2, &on_select, &on_toggle,
+                                ),
+                                hit,
+                                selected || deco.tint.is_some(),
                             )
                             .w_full()
                         })
