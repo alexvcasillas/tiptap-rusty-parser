@@ -1045,12 +1045,11 @@ impl Fx {
     }
     #[inline]
     fn bytes(&mut self, s: &[u8]) {
-        let mut chunks = s.chunks_exact(8);
-        for c in &mut chunks {
-            self.add(u64::from_le_bytes(c.try_into().unwrap()));
+        let (chunks, rest) = s.as_chunks::<8>();
+        for c in chunks {
+            self.add(u64::from_le_bytes(*c));
         }
         let mut tail = [0u8; 8];
-        let rest = chunks.remainder();
         tail[..rest.len()].copy_from_slice(rest);
         self.add(u64::from_le_bytes(tail) ^ ((s.len() as u64) << 56));
     }
