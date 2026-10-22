@@ -434,7 +434,10 @@ fn diff_children(
         return;
     }
 
-    let steps = lcs_align(am, bm);
+    // Equality classes: one id per distinct child value, so alignment and move
+    // pairing compare integers instead of whole subtrees (O(size) once).
+    let (ida, idb) = intern(am, bm);
+    let steps = lcs_align(&ida, &idb);
 
     // Reconstruct the alignment: which bm index each am index matched (kept in
     // place), plus the per-gap unmatched deletions/insertions between anchors.
@@ -464,22 +467,21 @@ fn diff_children(
     gaps.push((cur_dels, cur_inss));
 
     // Move detection: pair value-equal nodes that LCS split into a deletion and
-    // an insertion. Greedy/FIFO over equal values -> stable on duplicates.
-    let all_dels: Vec<usize> = gaps.iter().flat_map(|(d, _)| d.iter().copied()).collect();
-    let mut del_used = vec![false; all_dels.len()];
+    // an insertion. Greedy/FIFO over equal values -> stable on duplicates: each
+    // insertion takes the first unused deletion of its class (per-class queues).
+    let mut dels_by_id: HashMap<u32, std::collections::VecDeque<usize>> = HashMap::new();
+    for (dels, _) in &gaps {
+        for &d in dels {
+            dels_by_id.entry(ida[d]).or_default().push_back(d);
+        }
+    }
     let mut bm_move_src: HashMap<usize, usize> = HashMap::new(); // bm_j -> am_d
     let mut am_moved: HashSet<usize> = HashSet::new();
     for (_, inss) in &gaps {
         for &j in inss {
-            if let Some(slot) = all_dels
-                .iter()
-                .enumerate()
-                .find(|(slot, &d)| !del_used[*slot] && am[d] == bm[j])
-                .map(|(slot, _)| slot)
-            {
-                del_used[slot] = true;
-                bm_move_src.insert(j, all_dels[slot]);
-                am_moved.insert(all_dels[slot]);
+            if let Some(d) = dels_by_id.get_mut(&idb[j]).and_then(|q| q.pop_front()) {
+                bm_move_src.insert(j, d);
+                am_moved.insert(d);
             }
         }
     }
@@ -510,9 +512,11 @@ fn diff_children(
         removed_am.extend_from_slice(&rem_dels[pairs..]);
     }
 
-    // Target key sequence for the middle (what the live list must become), plus
-    // a key -> target-index lookup used to place relocated nodes minimally.
-    let mut target: Vec<Key> = Vec::with_capacity(bm.len());
+    // Target key sequence for the middle (what the live list must become), as
+    // dense ids: `Orig(i)` -> `i`, `New(j)` -> `am.len() + j`. Plus an
+    // id -> target-index lookup used to place relocated nodes minimally.
+    let n_orig = am.len() as u32;
+    let mut target: Vec<u32> = Vec::with_capacity(bm.len());
     for j in 0..bm.len() {
         let key = if let Some(&i) = bm_match_src.get(&j) {
             Key::Orig(i)
@@ -524,69 +528,55 @@ fn diff_children(
                 None => Key::New(j),
             }
         };
-        target.push(key);
+        target.push(match key {
+            Key::Orig(i) => i as u32,
+            Key::New(j) => n_orig + j as u32,
+        });
     }
-    let target_pos: HashMap<Key, usize> = target.iter().enumerate().map(|(i, &k)| (k, i)).collect();
-    let is_moved = |k: Key| matches!(k, Key::Orig(x) if am_moved.contains(&x));
+    let n_ids = am.len() + bm.len();
+    let mut target_pos = vec![u32::MAX; n_ids];
+    for (t, &k) in target.iter().enumerate() {
+        target_pos[k as usize] = t as u32;
+    }
+    let mut is_moved = vec![false; n_ids];
+    for &d in &am_moved {
+        is_moved[d] = true;
+    }
 
-    // Simulate the live list and emit ops whose indices are valid by
-    // construction. Absolute index = start + position in the middle.
-    let mut live: Vec<Key> = (0..am.len()).map(Key::Orig).collect();
-
-    // 1. Plain removes (indices computed against the shrinking live list).
-    for &d in &removed_am {
-        let idx = live.iter().position(|&k| k == Key::Orig(d)).unwrap();
+    // 1. Plain removes. `removed_am` is ascending (gap order, then index order
+    //    within a gap), so the live index is the original minus prior removals.
+    for (k, &d) in removed_am.iter().enumerate() {
         out.push(Change::Remove {
             path: path.clone(),
-            index: start + idx,
+            index: start + d - k,
         });
-        live.remove(idx);
     }
+    let mut is_removed = vec![false; am.len()];
+    for &d in &removed_am {
+        is_removed[d] = true;
+    }
+    let post_remove = || (0..n_orig).filter(|&i| !is_removed[i as usize]);
 
-    // 2. Settle each target position left to right, maintaining the invariant
-    //    `live[..p] == target[..p]`. New nodes are inserted; otherwise we
-    //    relocate exactly one genuinely-moved node (the displaced occupant, or
-    //    the wanted node if it's the one that moved) to its sorted destination —
-    //    one Move per moved node, never disturbing the matched skeleton.
-    let mut p = 0;
-    while p < target.len() {
-        let want = target[p];
-        if live.get(p).copied() == Some(want) {
-            p += 1;
-            continue;
-        }
-        if let Key::New(j) = want {
-            out.push(Change::Insert {
-                path: path.clone(),
-                index: start + p,
-                node: bm[j].clone(),
-            });
-            live.insert(p, want);
-            p += 1;
-            continue;
-        }
-        // `want` is an original node not yet at `p`. Move the displaced occupant
-        // if it is the relocated one, else pull `want` (itself relocated) here.
-        let cur = live[p];
-        let mover = if is_moved(cur) { cur } else { want };
-        let from = live.iter().position(|&k| k == mover).unwrap();
-        let tmover = target_pos[&mover];
-        // Destination = number of currently-present elements that precede it in
-        // the target order (excluding the mover itself).
-        let dest = live
-            .iter()
-            .filter(|&&k| k != mover && target_pos[&k] < tmover)
-            .count();
-        out.push(Change::Move {
-            path: path.clone(),
-            from: start + from,
-            to: start + dest,
-        });
-        let k = live.remove(from);
-        live.insert(dest, k);
-        // Re-check `p` (the move may or may not have settled this slot).
+    // 2. Simulate the live list and emit ops whose indices are valid by
+    //    construction. Absolute index = start + position in the middle.
+    let mark = out.len();
+    if !settle_sorted(
+        bm,
+        &target,
+        &target_pos,
+        &is_moved,
+        am_moved.len(),
+        post_remove(),
+        start,
+        path,
+        out,
+    ) {
+        // The sorted settle cascaded (re-moving nodes it already placed, which
+        // blows up on many value-equal reordered siblings): redo it with
+        // exactly one Move per relocated node.
+        out.truncate(mark);
+        settle_cursor(bm, &target, &is_moved, post_remove(), start, path, out);
     }
-    debug_assert_eq!(live, target, "diff move simulation diverged from target");
 
     // 3. Value fixes for modify/replace pairs, at their final positions (the
     //    structural layout is now settled, so index = start + bm index).
@@ -610,8 +600,259 @@ fn diff_children(
     }
 }
 
-/// Longest-common-subsequence alignment of two child slices, by node equality.
-fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
+/// Settle each target position left to right, maintaining the invariant
+/// `live[..p] == target[..p]`. New nodes are inserted; otherwise relocate one
+/// genuinely-moved node (the displaced occupant, or the wanted node if it's the
+/// one that moved) to its sorted destination, never disturbing the matched
+/// skeleton. Usually one Move per moved node; returns `false` (output partial)
+/// once more than `budget` Moves would be needed, i.e. it started cascading.
+#[allow(clippy::too_many_arguments)]
+fn settle_sorted(
+    bm: &[Node],
+    target: &[u32],
+    target_pos: &[u32],
+    is_moved: &[bool],
+    budget: usize,
+    live0: impl Iterator<Item = u32>,
+    start: usize,
+    path: &[usize],
+    out: &mut Vec<Change>,
+) -> bool {
+    let n_orig = is_moved.len() - bm.len();
+    let mut live = LiveList::new(live0, is_moved.len());
+    // `present.prefix(t)` = live elements whose target index is < t.
+    let mut present = Fenwick::new(target.len());
+    for (t, &k) in target.iter().enumerate() {
+        if (k as usize) < n_orig {
+            present.add(t);
+        }
+    }
+    let mut moves = 0;
+    let mut p = 0;
+    while p < target.len() {
+        let want = target[p];
+        let cur = live.get(p);
+        if cur == Some(want) {
+            p += 1;
+            continue;
+        }
+        if want as usize >= n_orig {
+            out.push(Change::Insert {
+                path: path.to_vec(),
+                index: start + p,
+                node: bm[want as usize - n_orig].clone(),
+            });
+            live.insert(p, want);
+            present.add(p);
+            p += 1;
+            continue;
+        }
+        if moves == budget {
+            return false;
+        }
+        moves += 1;
+        // `want` is an original node not yet at `p`. Move the displaced occupant
+        // if it is the relocated one, else pull `want` (itself relocated) here.
+        let cur = cur.expect("original node missing from live list");
+        let mover = if is_moved[cur as usize] { cur } else { want };
+        let from = live.index_of(mover);
+        // Destination = number of currently-present elements that precede it in
+        // the target order (the mover itself is not counted).
+        let dest = present.prefix(target_pos[mover as usize] as usize);
+        out.push(Change::Move {
+            path: path.to_vec(),
+            from: start + from,
+            to: start + dest,
+        });
+        let k = live.remove(from);
+        live.insert(dest, k);
+        // Re-check `p` (the move may or may not have settled this slot).
+    }
+    true
+}
+
+/// Fallback settle with exactly one Move per relocated node. Live list =
+/// placed nodes (a prefix of `target`) interleaved with not-yet-placed
+/// originals, all placed ones before `cur`; past `cur` only unplaced originals,
+/// in original order. Non-moved originals keep their relative order in
+/// `target`, so they are reached by advancing `cur`; moved ones are pulled to it.
+fn settle_cursor(
+    bm: &[Node],
+    target: &[u32],
+    is_moved: &[bool],
+    live0: impl Iterator<Item = u32>,
+    start: usize,
+    path: &[usize],
+    out: &mut Vec<Change>,
+) {
+    let n_orig = is_moved.len() - bm.len();
+    let mut live = LiveList::new(live0, is_moved.len());
+    let mut cur = 0;
+    for &want in target {
+        if want as usize >= n_orig {
+            out.push(Change::Insert {
+                path: path.to_vec(),
+                index: start + cur,
+                node: bm[want as usize - n_orig].clone(),
+            });
+            live.insert(cur, want);
+            cur += 1;
+            continue;
+        }
+        let at = live.index_of(want);
+        if !is_moved[want as usize] {
+            debug_assert!(at >= cur, "non-moved node behind the cursor");
+            cur = at + 1;
+            continue;
+        }
+        if at == cur {
+            cur += 1;
+            continue;
+        }
+        live.remove(at);
+        if at < cur {
+            cur -= 1;
+        }
+        out.push(Change::Move {
+            path: path.to_vec(),
+            from: start + at,
+            to: start + cur,
+        });
+        live.insert(cur, want);
+        cur += 1;
+    }
+    debug_assert_eq!(
+        live.to_vec(),
+        target,
+        "diff move simulation diverged from target"
+    );
+}
+
+/// Order-statistic list of key ids for the move simulation, split into
+/// ~√n-sized blocks so `get`/`index_of`/`insert`/`remove` cost O(√n) instead
+/// of O(n).
+struct LiveList {
+    blocks: Vec<Vec<u32>>,
+    /// Key id -> index of the block holding it.
+    block_of: Vec<u32>,
+    cap: usize,
+}
+
+impl LiveList {
+    fn new(keys: impl Iterator<Item = u32>, n_ids: usize) -> Self {
+        let mut l = LiveList {
+            blocks: vec![keys.collect()],
+            block_of: vec![0; n_ids],
+            cap: 16,
+        };
+        l.rebuild();
+        l
+    }
+
+    /// Re-chunk into blocks of `cap` (≈ √len) and refresh `block_of`.
+    fn rebuild(&mut self) {
+        let all = self.to_vec();
+        self.cap = (all.len() as f64).sqrt() as usize + 16;
+        self.blocks = all.chunks(self.cap).map(<[u32]>::to_vec).collect();
+        if self.blocks.is_empty() {
+            self.blocks.push(Vec::new());
+        }
+        for (b, blk) in self.blocks.iter().enumerate() {
+            for &k in blk {
+                self.block_of[k as usize] = b as u32;
+            }
+        }
+    }
+
+    fn to_vec(&self) -> Vec<u32> {
+        self.blocks.concat()
+    }
+
+    /// Block and in-block offset of live index `idx` (`idx == len` maps to the
+    /// end of the last block).
+    fn locate(&self, mut idx: usize) -> (usize, usize) {
+        let last = self.blocks.len() - 1;
+        for (b, blk) in self.blocks.iter().enumerate() {
+            if idx < blk.len() || b == last {
+                return (b, idx);
+            }
+            idx -= blk.len();
+        }
+        unreachable!()
+    }
+
+    fn get(&self, idx: usize) -> Option<u32> {
+        let (b, o) = self.locate(idx);
+        self.blocks[b].get(o).copied()
+    }
+
+    fn index_of(&self, key: u32) -> usize {
+        let b = self.block_of[key as usize] as usize;
+        let before: usize = self.blocks[..b].iter().map(Vec::len).sum();
+        before
+            + self.blocks[b]
+                .iter()
+                .position(|&k| k == key)
+                .expect("key in its block")
+    }
+
+    fn remove(&mut self, idx: usize) -> u32 {
+        let (b, o) = self.locate(idx);
+        self.blocks[b].remove(o)
+    }
+
+    fn insert(&mut self, idx: usize, key: u32) {
+        let (b, o) = self.locate(idx);
+        self.blocks[b].insert(o, key);
+        self.block_of[key as usize] = b as u32;
+        if self.blocks[b].len() > 2 * self.cap {
+            self.rebuild();
+        }
+    }
+}
+
+/// Fenwick (binary indexed) tree of counts over target indices.
+struct Fenwick(Vec<u32>);
+
+impl Fenwick {
+    fn new(n: usize) -> Self {
+        Fenwick(vec![0; n])
+    }
+
+    /// Count one entry at index `i` (0-based tree: `self.0[k]` covers
+    /// `k & (k + 1) ..= k`).
+    fn add(&mut self, mut i: usize) {
+        while i < self.0.len() {
+            self.0[i] += 1;
+            i |= i + 1;
+        }
+    }
+
+    /// Count of entries at indices `< i`.
+    fn prefix(&self, mut i: usize) -> usize {
+        let mut s = 0;
+        while i > 0 {
+            s += self.0[i - 1] as usize;
+            i &= i - 1;
+        }
+        s
+    }
+}
+
+/// Below this many DP cells (`m·n`) the exact table LCS runs (small lists, the
+/// common case); above it Myers' O((m+n)·D) greedy LCS, which is linear for the
+/// typical "few edits in a long list". Both produce a longest common
+/// subsequence; tie-breaking between equally long alignments may differ.
+const DP_CELLS: usize = 1 << 16;
+
+/// Myers gives up past this many edits (its trace is O(D²)); then the table LCS
+/// runs if it fits in [`DP_FALLBACK_CELLS`], else no anchors are kept.
+const MYERS_MAX_D: usize = 4096;
+const DP_FALLBACK_CELLS: usize = 1 << 24;
+
+/// Longest-common-subsequence alignment of two child slices, by equality class
+/// (see [`intern`]).
+fn lcs_align(a: &[u32], b: &[u32]) -> Vec<Step> {
     let (m, n) = (a.len(), b.len());
     if m == 0 {
         return (0..n).map(Step::Ins).collect();
@@ -619,14 +860,32 @@ fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
     if n == 0 {
         return (0..m).map(Step::Del).collect();
     }
-    // dp[i][j] = LCS length of a[i..] vs b[j..].
-    let mut dp = vec![vec![0u32; n + 1]; m + 1];
+    if m.saturating_mul(n) <= DP_CELLS {
+        return lcs_table(a, b);
+    }
+    if let Some(steps) = myers(a, b, MYERS_MAX_D) {
+        return steps;
+    }
+    if m.saturating_mul(n) <= DP_FALLBACK_CELLS {
+        return lcs_table(a, b);
+    }
+    // Pathological (huge and mostly different): no anchors. Still correct:
+    // the gap pairs everything positionally as modify/replace.
+    (0..m).map(Step::Del).chain((0..n).map(Step::Ins)).collect()
+}
+
+/// Exact LCS by dynamic programming, O(m·n) time and space.
+fn lcs_table(a: &[u32], b: &[u32]) -> Vec<Step> {
+    let (m, n) = (a.len(), b.len());
+    // dp[i][j] = LCS length of a[i..] vs b[j..], flattened row-major.
+    let w = n + 1;
+    let mut dp = vec![0u32; (m + 1) * w];
     for i in (0..m).rev() {
         for j in (0..n).rev() {
-            dp[i][j] = if a[i] == b[j] {
-                dp[i + 1][j + 1] + 1
+            dp[i * w + j] = if a[i] == b[j] {
+                dp[(i + 1) * w + j + 1] + 1
             } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+                dp[(i + 1) * w + j].max(dp[i * w + j + 1])
             };
         }
     }
@@ -637,7 +896,7 @@ fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
             steps.push(Step::Match);
             i += 1;
             j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
+        } else if dp[(i + 1) * w + j] >= dp[i * w + j + 1] {
             steps.push(Step::Del(i));
             i += 1;
         } else {
@@ -654,6 +913,230 @@ fn lcs_align(a: &[Node], b: &[Node]) -> Vec<Step> {
         j += 1;
     }
     steps
+}
+
+/// Myers' greedy shortest-edit-script (= LCS) alignment, O((m+n)·D) time and
+/// O(D²) trace space. `None` if more than `max_d` edits are needed.
+fn myers(a: &[u32], b: &[u32], max_d: usize) -> Option<Vec<Step>> {
+    // Any script needs at least |n - m| edits: bail before allocating.
+    if a.len().abs_diff(b.len()) > max_d {
+        return None;
+    }
+    let (n, m) = (a.len() as isize, b.len() as isize);
+    let max_d = max_d.min(a.len() + b.len()) as isize;
+    let off = max_d + 1;
+    // v[k + off] = furthest x on diagonal k = x - y.
+    let mut v = vec![0isize; (2 * off + 1) as usize];
+    // trace[d] = v[-d..=d] before round d.
+    let mut trace: Vec<Vec<isize>> = Vec::new();
+    let mut end_d = None;
+    'outer: for d in 0..=max_d {
+        trace.push(v[(off - d) as usize..=(off + d) as usize].to_vec());
+        let mut k = -d;
+        while k <= d {
+            let down = k == -d || (k != d && v[(off + k - 1) as usize] < v[(off + k + 1) as usize]);
+            let mut x = if down {
+                v[(off + k + 1) as usize]
+            } else {
+                v[(off + k - 1) as usize] + 1
+            };
+            let mut y = x - k;
+            while x < n && y < m && a[x as usize] == b[y as usize] {
+                x += 1;
+                y += 1;
+            }
+            v[(off + k) as usize] = x;
+            if x >= n && y >= m {
+                end_d = Some(d);
+                break 'outer;
+            }
+            k += 2;
+        }
+    }
+    end_d?;
+    // Backtrack from (n, m) through the saved rounds.
+    let mut steps = Vec::with_capacity((n + m) as usize);
+    let (mut x, mut y) = (n, m);
+    for d in (0..trace.len() as isize).rev() {
+        if d == 0 {
+            while x > 0 && y > 0 {
+                steps.push(Step::Match);
+                x -= 1;
+                y -= 1;
+            }
+            break;
+        }
+        let vd = &trace[d as usize];
+        let get = |k: isize| vd[(k + d) as usize];
+        let k = x - y;
+        let prev_k = if k == -d || (k != d && get(k - 1) < get(k + 1)) {
+            k + 1
+        } else {
+            k - 1
+        };
+        let prev_x = get(prev_k);
+        let prev_y = prev_x - prev_k;
+        while x > prev_x && y > prev_y {
+            steps.push(Step::Match);
+            x -= 1;
+            y -= 1;
+        }
+        if x == prev_x {
+            steps.push(Step::Ins((y - 1) as usize));
+        } else {
+            steps.push(Step::Del((x - 1) as usize));
+        }
+        x = prev_x;
+        y = prev_y;
+    }
+    steps.reverse();
+    Some(steps)
+}
+
+/// Map every child of `a` and `b` to an equality-class id: equal ids iff the
+/// nodes are equal (`==`). Hash-bucketed, each node is hashed once and compared
+/// deeply only against its bucket's representatives, so the cost is O(total
+/// size) instead of O(m·n) subtree comparisons.
+fn intern(a: &[Node], b: &[Node]) -> (Vec<u32>, Vec<u32>) {
+    let mut buckets: HashMap<u64, Vec<(u32, &Node)>> = HashMap::with_capacity(a.len() + b.len());
+    let mut next = 0u32;
+    let mut out_a = Vec::with_capacity(a.len());
+    let mut out_b = Vec::with_capacity(b.len());
+    for (side, nodes) in [(0, a), (1, b)] {
+        for n in nodes {
+            let bucket = buckets.entry(node_hash(n)).or_default();
+            let found = bucket.iter().find(|(_, rep)| *rep == n).map(|(i, _)| *i);
+            let i = found.unwrap_or_else(|| {
+                let i = next;
+                next += 1;
+                bucket.push((i, n));
+                i
+            });
+            if side == 0 {
+                out_a.push(i);
+            } else {
+                out_b.push(i);
+            }
+        }
+    }
+    (out_a, out_b)
+}
+
+/// Structural hash consistent with `Node: PartialEq` (maps hash
+/// order-insensitively, like their equality).
+fn node_hash(n: &Node) -> u64 {
+    let mut h = Fx::default();
+    hash_node(n, &mut h);
+    h.0
+}
+
+#[derive(Default)]
+struct Fx(u64);
+
+impl Fx {
+    #[inline]
+    fn add(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    #[inline]
+    fn bytes(&mut self, s: &[u8]) {
+        let (chunks, rest) = s.as_chunks::<8>();
+        for c in chunks {
+            self.add(u64::from_le_bytes(*c));
+        }
+        let mut tail = [0u8; 8];
+        tail[..rest.len()].copy_from_slice(rest);
+        self.add(u64::from_le_bytes(tail) ^ ((s.len() as u64) << 56));
+    }
+    #[inline]
+    fn opt_str(&mut self, s: Option<&str>) {
+        match s {
+            None => self.add(0x9e37),
+            Some(s) => self.bytes(s.as_bytes()),
+        }
+    }
+}
+
+fn hash_node(n: &Node, h: &mut Fx) {
+    h.opt_str(n.node_type.as_deref());
+    hash_opt_map(n.attrs.as_ref(), h);
+    match &n.content {
+        None => h.add(1),
+        Some(c) => {
+            h.add(2 ^ ((c.len() as u64) << 8));
+            for child in c {
+                hash_node(child, h);
+            }
+        }
+    }
+    match &n.marks {
+        None => h.add(3),
+        Some(ms) => {
+            h.add(4 ^ ((ms.len() as u64) << 8));
+            for m in ms {
+                h.bytes(m.mark_type.as_bytes());
+                hash_opt_map(m.attrs.as_ref(), h);
+                hash_map(&m.extra, h);
+            }
+        }
+    }
+    h.opt_str(n.text.as_deref());
+    hash_map(&n.extra, h);
+}
+
+fn hash_opt_map(m: Option<&Map<String, Value>>, h: &mut Fx) {
+    match m {
+        None => h.add(5),
+        Some(m) => hash_map(m, h),
+    }
+}
+
+/// Order-insensitive: sum of independent per-entry hashes.
+fn hash_map(m: &Map<String, Value>, h: &mut Fx) {
+    let mut sum = 0u64;
+    for (k, v) in m {
+        let mut e = Fx::default();
+        e.bytes(k.as_bytes());
+        hash_value(v, &mut e);
+        sum = sum.wrapping_add(e.0);
+    }
+    h.add(6 ^ ((m.len() as u64) << 8));
+    h.add(sum);
+}
+
+fn hash_value(v: &Value, h: &mut Fx) {
+    match v {
+        Value::Null => h.add(10),
+        Value::Bool(b) => h.add(11 + *b as u64),
+        Value::Number(n) => {
+            if let Some(u) = n.as_u64() {
+                h.add(13);
+                h.add(u);
+            } else if let Some(i) = n.as_i64() {
+                h.add(14);
+                h.add(i as u64);
+            } else {
+                // Float: `==` treats 0.0 and -0.0 as equal.
+                let f = n.as_f64().unwrap_or(0.0);
+                h.add(15);
+                h.add(if f == 0.0 { 0 } else { f.to_bits() });
+            }
+        }
+        Value::String(s) => {
+            h.add(16);
+            h.bytes(s.as_bytes());
+        }
+        Value::Array(a) => {
+            h.add(17 ^ ((a.len() as u64) << 8));
+            for x in a {
+                hash_value(x, h);
+            }
+        }
+        Value::Object(m) => {
+            h.add(18);
+            hash_map(m, h);
+        }
+    }
 }
 
 // ---- apply internals ----------------------------------------------------

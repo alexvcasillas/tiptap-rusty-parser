@@ -118,6 +118,18 @@ fn benches(c: &mut Criterion) {
         b.iter(|| black_box(document.root().diff(reordered.root()).len()))
     });
 
+    // Reorder among many value-equal siblings (7 distinct values, 8/9 of 900
+    // reversed): FIFO move pairing crosses duplicates; the settle must stay
+    // one Move per relocated node instead of cascading.
+    let dup_doc = doc((0..900).map(|i| Node::element("paragraph").with_text(format!("{}", i % 7))));
+    let mut dup_reordered = dup_doc.clone();
+    if let Some(kids) = dup_reordered.content.as_mut() {
+        kids[..800].reverse();
+    }
+    c.bench_function("diff_reordered_equal_siblings_900", |b| {
+        b.iter(|| black_box(dup_doc.diff(black_box(&dup_reordered)).len()))
+    });
+
     let reorder_changes = document.root().diff(reordered.root());
     c.bench_function("apply_reordered_children", |b| {
         b.iter_batched(
@@ -302,5 +314,59 @@ fn benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(g, benches);
+/// Studio-sized document: `n` top-level blocks (headings, paragraphs with marks,
+/// nested lists), ~10 nodes per block.
+fn studio_doc(n: usize) -> Node {
+    doc((0..n).map(|i| match i % 5 {
+        0 => Node::element("heading")
+            .with_attr("level", (i % 3 + 1) as u64)
+            .with_child(Node::text(format!("Heading {i}"))),
+        1 | 2 => Node::element("paragraph").with_children([
+            Node::text(format!("para {i} ")),
+            Node::text_with_marks("bold ", [Mark::new("bold")]),
+            Node::text_with_marks("link", [Mark::new("link").attr("href", "https://x.y")]),
+        ]),
+        _ => Node::element("bulletList").with_children((0..2).map(|j| {
+            Node::element("listItem").with_children([
+                Node::element("paragraph").with_child(Node::text(format!("item {i}.{j}"))),
+                Node::element("bulletList").with_child(
+                    Node::element("listItem")
+                        .with_child(Node::element("paragraph").with_child(Node::text("nested"))),
+                ),
+            ])
+        })),
+    }))
+}
+
+/// Large-document diff path (Studio-sized documents).
+fn large(c: &mut Criterion) {
+    let base = studio_doc(10_000);
+
+    // Diff of the 10k doc vs a copy with 50 scattered edits.
+    let mut edited = base.clone();
+    {
+        let kids = edited.content.as_mut().unwrap();
+        for k in 0..50 {
+            let i = k * 197 + 13;
+            match k % 4 {
+                0 => kids.insert(i, Node::element("paragraph").with_child(Node::text("ins"))),
+                1 => {
+                    kids.remove(i);
+                }
+                2 => {
+                    kids[i].set_attr("data-edit", k as u64);
+                }
+                _ => {
+                    let n = kids.remove(i);
+                    kids.insert(i + 40, n);
+                }
+            }
+        }
+    }
+    c.bench_function("diff_10k_blocks_50_scattered_edits", |b| {
+        b.iter(|| black_box(base.diff(black_box(&edited)).len()))
+    });
+}
+
+criterion_group!(g, benches, large);
 criterion_main!(g);
