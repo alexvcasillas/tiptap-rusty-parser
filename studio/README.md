@@ -60,6 +60,9 @@ keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) �
 [Tiptap Document Server](https://tiptap.dev/docs/collaboration/documents/rest-api)
 and opens them as A, as B, or two versions straight into Diff mode
 (title shows the origin, e.g. `☁ my-app / doc-42 @ v3`; Save acts as Save as).
+Replacing a dirty A asks Save / Don't Save / Cancel (the same guard as Open);
+Save on a server-origin A asks for a path first. Debug builds: `TIPTAP_STUDIO_SIM_SERVER_OPEN=doc.json`
+makes each `Server…` click open that file as A through the guard (headless tests).
 Code: `cloud.rs` (state, requests), `cloud/view.rs`, `cloud/api.rs`, `cloud/secret.rs`, `cloud/store.rs`.
 
 Security model:
@@ -78,7 +81,7 @@ Security model:
 - Unknown node and mark types must render and be selectable. Never match exhaustively on type.
 - Perf: no per-frame clones once panels are stable; nothing per frame is O(document). `edit` takes the undo from `Transform::finish_with_inverse` (cost ∝ the edit), undo/redo use `Node::apply_inverting`. Large test docs: `python3 studio/assets/gen_large.py <out-dir>` (1k/10k/50k blocks + edited copies for Diff).
 - `cargo check`, `cargo clippy -p tiptap-rusty-studio -- -D warnings` and `cargo fmt --all` before every commit.
-- Find: ⌘F/ctrl-F focuses the box, ⏎/⇧⏎ and ⌘G/⇧⌘G step matches, Esc clears and returns to the tree. Grammar: `Query` rustdoc in the parser crate.
+- Find: ⌘F/ctrl-F focuses the box, ⏎/⇧⏎ and ⌘G/⇧⌘G step matches, Esc clears and returns to the tree. Grammar: `Query` rustdoc in the parser crate. Diff mode: both trees show matches (B runs the same query against B; headers show `n found`); stepping and the counter cover A, and tree A follows.
 - Keyboard: arrows / Home / End / Esc navigate in the `Document` context (tree, preview); alt-↑/↓ move the node; Diff mode: ↑/↓ step changes, ⏎ Take B.
 - Editing keys (`Document` context): ⏎ empty paragraph after the block, ⌘D duplicate, ⌘C / ⌘X / ⌘V copy / cut / paste nodes as JSON (ctrl on Linux/Windows). `Edit JSON`: ⌘⏎ apply, Esc cancel. Inspector inputs sit outside `Document`, so none of these fire while typing.
 

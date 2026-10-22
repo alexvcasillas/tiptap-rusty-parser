@@ -221,7 +221,8 @@ fn mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
-type Then = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
+/// Continuation run by [`Workspace::guard`] once A may be replaced.
+pub(crate) type Then = Box<dyn FnOnce(&mut Workspace, &mut Window, &mut Context<Workspace>)>;
 
 /// Wire the workspace to its window: start error, recent list, close guard,
 /// disk polling.
@@ -261,8 +262,9 @@ impl Workspace {
     // ---- guard ------------------------------------------------------------------------
 
     /// Run `then` once the current A may be discarded: right away when clean,
-    /// else after Save (saved) or Don't Save; Cancel drops it.
-    fn guard(&mut self, window: &mut Window, cx: &mut Context<Self>, then: Then) {
+    /// else after Save (saved) or Don't Save; Cancel drops it. Also used by
+    /// the Document Server sheet (`cloud.rs`) before it replaces A.
+    pub(crate) fn guard(&mut self, window: &mut Window, cx: &mut Context<Self>, then: Then) {
         if !self.state.read(cx).dirty {
             return then(self, window, cx);
         }

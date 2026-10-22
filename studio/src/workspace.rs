@@ -416,6 +416,7 @@ impl Render for Workspace {
                                 crate::cloud::open(
                                     this.state.clone(),
                                     this.diff.clone(),
+                                    cx.entity().downgrade(),
                                     on_diff,
                                     w,
                                     cx,
