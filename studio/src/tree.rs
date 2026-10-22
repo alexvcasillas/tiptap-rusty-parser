@@ -25,6 +25,9 @@ pub struct Row {
 pub struct TreePanel {
     state: Entity<DocumentState>,
     rows: Rc<Vec<Row>>,
+    focus: FocusHandle,
+    scroll: UniformListScrollHandle,
+    last_selection: Option<Vec<usize>>,
     _subs: Vec<Subscription>,
 }
 
@@ -37,10 +40,17 @@ impl TreePanel {
         let mut this = Self {
             state: state.clone(),
             rows: Rc::new(Vec::new()),
+            focus: cx.focus_handle(),
+            scroll: UniformListScrollHandle::new(),
+            last_selection: None,
             _subs: vec![sub],
         };
         this.rebuild(state.read(cx));
         this
+    }
+
+    pub fn focus_handle(&self) -> FocusHandle {
+        self.focus.clone()
     }
 
     /// Flatten visible nodes. Runs on document/selection change, never per frame.
@@ -49,6 +59,18 @@ impl TreePanel {
         let mut path = Vec::new();
         flatten(state.root(), state, &mut path, &mut rows);
         self.rows = Rc::new(rows);
+        // Keep the selected row in view whenever the selection moves
+        // (keyboard, preview click, structural edit).
+        if state.selection != self.last_selection {
+            self.last_selection = state.selection.clone();
+            if let Some(ix) = state
+                .selection
+                .as_ref()
+                .and_then(|p| self.rows.iter().position(|r| &r.path == p))
+            {
+                self.scroll.scroll_to_item(ix, ScrollStrategy::Nearest);
+            }
+        }
     }
 }
 
@@ -98,9 +120,11 @@ fn flatten(
 }
 
 impl Render for TreePanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let rows = self.rows.clone();
         let state = self.state.clone();
+        let focus = self.focus.clone();
+        let focused = self.focus.contains_focused(window, cx);
         let (selection, footer) = {
             let s = state.read(cx);
             let footer: SharedString = match s.selection.as_deref() {
@@ -122,7 +146,8 @@ impl Render for TreePanel {
         let mono = cx.theme().mono_font_family.clone();
         let count = rows.len();
 
-        div()
+        crate::nav::attach(div().id("tree-pane"), &state)
+            .track_focus(&self.focus)
             .flex()
             .flex_col()
             .w(px(280.))
@@ -132,19 +157,21 @@ impl Render for TreePanel {
             .border_r_1()
             .border_color(Tokens::border())
             .child(
-                pane_header("Document").child(
-                    div()
-                        .flex()
-                        .gap(px(2.))
-                        .child(icon_button("collapse-all", IconName::ChevronDown, {
-                            let state = state.clone();
-                            move |_, _, cx| state.update(cx, |s, cx| s.collapse_all(cx))
-                        }))
-                        .child(icon_button("expand-all", IconName::ChevronRight, {
-                            let state = state.clone();
-                            move |_, _, cx| state.update(cx, |s, cx| s.expand_all(cx))
-                        })),
-                ),
+                pane_header("Document")
+                    .when(focused, |h| h.text_color(Tokens::accent()))
+                    .child(
+                        div()
+                            .flex()
+                            .gap(px(2.))
+                            .child(icon_button("collapse-all", IconName::ChevronDown, {
+                                let state = state.clone();
+                                move |_, _, cx| state.update(cx, |s, cx| s.collapse_all(cx))
+                            }))
+                            .child(icon_button("expand-all", IconName::ChevronRight, {
+                                let state = state.clone();
+                                move |_, _, cx| state.update(cx, |s, cx| s.expand_all(cx))
+                            })),
+                    ),
             )
             .child(
                 uniform_list("tree-rows", count, move |range, _window, _cx| {
@@ -152,10 +179,11 @@ impl Render for TreePanel {
                         .map(|i| {
                             let row = &rows[i];
                             let selected = selection.as_deref() == Some(row.path.as_slice());
-                            render_row(i, row, selected, &mono, &state)
+                            render_row(i, row, selected, &mono, &state, &focus)
                         })
                         .collect()
                 })
+                .track_scroll(&self.scroll)
                 .flex_1()
                 .p(px(6.)),
             )
@@ -179,7 +207,9 @@ fn render_row(
     selected: bool,
     mono: &SharedString,
     state: &Entity<DocumentState>,
+    focus: &FocusHandle,
 ) -> impl IntoElement {
+    let focus = focus.clone();
     let path = row.path.clone();
     let chevron_path = row.path.clone();
     let select_state = state.clone();
@@ -212,7 +242,8 @@ fn render_row(
                 .border_1()
                 .border_color(Tokens::accent())
         })
-        .on_click(move |_, _, cx| {
+        .on_click(move |_, window, cx| {
+            window.focus(&focus, cx);
             select_state.update(cx, |s, cx| s.select(Some(path.clone()), cx));
         })
         .child(

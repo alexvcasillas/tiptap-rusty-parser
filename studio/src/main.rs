@@ -3,6 +3,7 @@
 //! `tiptap-rusty-parser`.
 
 mod inspector;
+mod nav;
 mod preview;
 mod state;
 mod theme;
@@ -25,6 +26,7 @@ fn main() {
             gpui_kit::init(cx);
             theme::apply(cx);
             workspace::bind_keys(cx);
+            nav::bind_keys(cx);
 
             let state = match DocumentState::load(file.as_deref()) {
                 Ok(s) => s,
@@ -45,8 +47,13 @@ fn main() {
                 }),
                 ..Default::default()
             };
-            gpui_kit::open_window(options, cx, |_, cx| cx.new(|cx| Workspace::new(state, cx)))
-                .expect("failed to open window");
+            gpui_kit::open_window(options, cx, |window, cx| {
+                let ws = cx.new(|cx| Workspace::new(state, cx));
+                let focus = ws.read(cx).tree_focus(cx);
+                window.focus(&focus, cx);
+                ws
+            })
+            .expect("failed to open window");
             cx.activate(true);
         });
 }

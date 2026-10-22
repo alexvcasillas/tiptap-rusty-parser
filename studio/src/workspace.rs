@@ -56,6 +56,11 @@ impl Workspace {
         }
     }
 
+    /// Focus target on launch, so arrow keys navigate immediately.
+    pub fn tree_focus(&self, cx: &App) -> FocusHandle {
+        self.tree.read(cx).focus_handle()
+    }
+
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         self.state.update(cx, |s, cx| s.undo(cx));
     }

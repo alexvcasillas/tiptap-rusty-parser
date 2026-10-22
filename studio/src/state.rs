@@ -548,3 +548,83 @@ pub fn short_value(v: &Value) -> String {
         other => other.to_string(),
     }
 }
+
+// ---- keyboard navigation (see nav.rs) -------------------------------------------
+
+impl DocumentState {
+    /// Paths of the rows the tree currently shows, in document order.
+    pub fn visible_paths(&self) -> Vec<Vec<usize>> {
+        fn go(node: &Node, s: &DocumentState, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            out.push(path.clone());
+            if s.is_expanded(path) {
+                for (i, c) in node.children().iter().enumerate() {
+                    path.push(i);
+                    go(c, s, path, out);
+                    path.pop();
+                }
+            }
+        }
+        let mut out = Vec::new();
+        go(self.root(), self, &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// ↑/↓: previous/next visible row. With no selection, starts at the ends.
+    pub fn nav_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        let rows = self.visible_paths();
+        if rows.is_empty() {
+            return;
+        }
+        let next = match self
+            .selection
+            .as_ref()
+            .and_then(|p| rows.iter().position(|r| r == p))
+        {
+            Some(i) => (i as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
+            None if delta < 0 => rows.len() - 1,
+            None => 0,
+        };
+        self.select(Some(rows[next].clone()), cx);
+    }
+
+    /// ←: collapse an expanded node, otherwise move to its parent.
+    pub fn nav_out(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return self.nav_step(1, cx);
+        };
+        let has_children = self.selected().is_some_and(|n| n.child_count() > 0);
+        if has_children && self.is_expanded(&path) {
+            self.expanded.remove(&path);
+            cx.notify();
+        } else if let Some((_, parent)) = path.split_last() {
+            self.select(Some(parent.to_vec()), cx);
+        }
+    }
+
+    /// →: expand a collapsed node, otherwise step into its first child.
+    pub fn nav_in(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return self.nav_step(1, cx);
+        };
+        if !self.selected().is_some_and(|n| n.child_count() > 0) {
+            return;
+        }
+        if !self.is_expanded(&path) {
+            self.expanded.insert(path);
+            cx.notify();
+        } else {
+            let mut child = path;
+            child.push(0);
+            self.select(Some(child), cx);
+        }
+    }
+
+    /// Home/End.
+    pub fn nav_edge(&mut self, last: bool, cx: &mut Context<Self>) {
+        let rows = self.visible_paths();
+        let pick = if last { rows.last() } else { rows.first() };
+        if let Some(p) = pick.cloned() {
+            self.select(Some(p), cx);
+        }
+    }
+}
