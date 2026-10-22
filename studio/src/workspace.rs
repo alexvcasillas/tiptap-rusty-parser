@@ -26,8 +26,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-y", Redo, Some("Studio")),
         KeyBinding::new("backspace", DeleteNode, Some("Studio")),
         KeyBinding::new("delete", DeleteNode, Some("Studio")),
-        KeyBinding::new("alt-up", MoveUp, Some("Studio")),
-        KeyBinding::new("alt-down", MoveDown, Some("Studio")),
+        KeyBinding::new("alt-up", MoveUp, Some(crate::nav::CONTEXT)),
+        KeyBinding::new("alt-down", MoveDown, Some(crate::nav::CONTEXT)),
     ]);
 }
 
