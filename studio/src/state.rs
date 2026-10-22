@@ -746,6 +746,7 @@ impl DocumentState {
             revision: 0,
             undo: Vec::new(),
             redo: Vec::new(),
+            origin: None,
         };
         s.expand_to_depth(1);
         s
@@ -768,6 +769,8 @@ impl DocumentState {
             .unwrap_or_default();
         self.doc = doc;
         self.file = file;
+        // A local open / reload / swap is never a Document Server document.
+        self.origin = None;
         self.undo.clear();
         self.redo.clear();
         self.dirty = false;
