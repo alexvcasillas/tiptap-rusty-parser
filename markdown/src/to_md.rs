@@ -589,6 +589,12 @@ impl<'a> Renderer<'a> {
         self.hb = false;
         self.items(nodes);
         self.close_not_in(&[], true);
+        // trailing whitespace is stripped on re-parse, except non-ASCII (NBSP, ...)
+        let keep = self.ws.trim_end_matches([' ', '\t', '\n', '\r']).len();
+        if keep > 0 {
+            self.ws.truncate(keep);
+            self.flush_ws();
+        }
         self.ws.clear();
         self.hb = false;
     }
@@ -1033,8 +1039,9 @@ fn maybe_punct(c: char) -> bool {
     !c.is_whitespace() && !c.is_alphanumeric()
 }
 
+/// Whitespace for delimiter flanking (Unicode, like CommonMark).
 fn is_ws(c: char) -> bool {
-    matches!(c, ' ' | '\t' | '\n' | '\r')
+    c.is_whitespace()
 }
 
 fn is_inline_kind(n: &Node) -> bool {

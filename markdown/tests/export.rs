@@ -330,3 +330,22 @@ fn nested_bullet_markers_on_one_line_are_not_a_rule() {
         }
     }
 }
+
+#[test]
+fn unicode_whitespace_at_mark_edges() {
+    let json = r#"{"type":"doc","content":[{"type":"paragraph","content":[
+        {"type":"text","text":"a ","marks":[{"type":"italic"}]},
+        {"type":"text","text":" b","marks":[{"type":"bold"}]},
+        {"type":"text","text":"c "}]}]}"#;
+    let (out, v) = reimport(json, &RenderOptions::default());
+    let p = &v["content"][0]["content"];
+    assert_eq!(p[0]["marks"][0]["type"], "italic", "{out:?}");
+    assert_eq!(p[0]["text"], "a", "{out:?}");
+    assert_eq!(p[2]["marks"][0]["type"], "bold", "{out:?}");
+    // significant at the end of a block (only ASCII whitespace is stripped)
+    assert_eq!(
+        p[p.as_array().unwrap().len() - 1]["text"],
+        "c\u{a0}",
+        "{out:?}"
+    );
+}
