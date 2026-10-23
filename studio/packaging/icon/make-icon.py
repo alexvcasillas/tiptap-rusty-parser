@@ -1,53 +1,68 @@
 #!/usr/bin/env python3
-"""Regenerate the placeholder app icon (studio/packaging/icon/icon-1024.png).
+"""Render the app icon from studio/assets/tiptap-logo.svg.
 
-Tree glyph in accent #5B9CF6 on #1B1C1F, on the macOS icon grid (824 px
-rounded square inside a 1024 canvas). Needs Pillow. Run from anywhere:
+White logo on the dark rounded square of the macOS icon grid (824 px inside a
+1024 canvas). Writes icon-1024.png (macOS .icns + Linux) and icon.ico (Windows,
+embedded by studio/build.rs). Needs rsvg-convert (brew install librsvg):
 
     python3 studio/packaging/icon/make-icon.py
-
-The .icns (macOS) is built from this PNG on the runner by
-`studio/packaging/macos/bundle.sh` with `sips` + `iconutil`.
 """
 
+import re
+import struct
+import subprocess
+import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+HERE = Path(__file__).resolve().parent
+LOGO = HERE.parent.parent / "assets" / "tiptap-logo.svg"
+BG = "#1B1C1F"
+EDGE = "#2A2C31"
+LOGO_SIZE = 560  # logo box inside the 1024 canvas
+ICO_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
-SS = 4  # supersampling factor for anti-aliasing
-N = 1024 * SS
-BG = (0x1B, 0x1C, 0x1F, 255)
-EDGE = (0x2A, 0x2C, 0x31, 255)
-ACCENT = (0x5B, 0x9C, 0xF6, 255)
+
+def composed_svg() -> str:
+    paths = re.sub(r'fill="black"', 'fill="white"', LOGO.read_text())
+    paths = re.sub(r"^<svg[^>]*>|</svg>\s*$", "", paths.strip())
+    scale = LOGO_SIZE / 410
+    offset = (1024 - LOGO_SIZE) / 2
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">'
+        f'<rect x="100" y="100" width="824" height="824" rx="185" fill="{EDGE}"/>'
+        f'<rect x="106" y="106" width="812" height="812" rx="180" fill="{BG}"/>'
+        f'<g transform="translate({offset} {offset}) scale({scale})">{paths}</g></svg>'
+    )
 
 
-def s(v: float) -> int:
-    return int(v * SS)
+def render(svg: Path, size: int, out: Path) -> None:
+    subprocess.run(["rsvg-convert", "-w", str(size), "-h", str(size), "-o", str(out), str(svg)], check=True)
+
+
+def write_ico(pngs: list[tuple[int, bytes]], out: Path) -> None:
+    # ICONDIR + one ICONDIRENTRY per PNG-compressed image (Vista+ format).
+    header = struct.pack("<HHH", 0, 1, len(pngs))
+    entries, data, offset = b"", b"", 6 + 16 * len(pngs)
+    for size, png in pngs:
+        dim = 0 if size >= 256 else size
+        entries += struct.pack("<BBBBHHII", dim, dim, 0, 0, 1, 32, len(png), offset)
+        data += png
+        offset += len(png)
+    out.write_bytes(header + entries + data)
 
 
 def main() -> None:
-    img = Image.new("RGBA", (N, N), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-
-    # Rounded square, macOS grid: 100 px inset, ~185 px radius.
-    d.rounded_rectangle((s(100), s(100), s(924), s(924)), radius=s(185), fill=EDGE)
-    d.rounded_rectangle((s(106), s(106), s(918), s(918)), radius=s(180), fill=BG)
-
-    # Node tree: root, two children, three grandchildren (hollow leaves).
-    root = (512, 290, 72)
-    kids = [(330, 540, 60), (694, 540, 60)]
-    leaves = [(330, 770, 48), (600, 770, 48), (788, 770, 48)]
-    edges = [(root, kids[0]), (root, kids[1]), (kids[0], leaves[0]), (kids[1], leaves[1]), (kids[1], leaves[2])]
-    for (ax, ay, _), (bx, by, _) in edges:
-        d.line((s(ax), s(ay), s(bx), s(by)), fill=ACCENT, width=s(30))
-    for x, y, r in [root, *kids]:
-        d.ellipse((s(x - r), s(y - r), s(x + r), s(y + r)), fill=ACCENT)
-    for x, y, r in leaves:
-        d.ellipse((s(x - r), s(y - r), s(x + r), s(y + r)), fill=BG, outline=ACCENT, width=s(22))
-
-    out = Path(__file__).with_name("icon-1024.png")
-    img.resize((1024, 1024), Image.LANCZOS).save(out, optimize=True)
-    print(f"wrote {out} ({out.stat().st_size} bytes)")
+    with tempfile.TemporaryDirectory() as tmp:
+        svg = Path(tmp) / "icon.svg"
+        svg.write_text(composed_svg())
+        render(svg, 1024, HERE / "icon-1024.png")
+        pngs = []
+        for s in ICO_SIZES:
+            p = Path(tmp) / f"{s}.png"
+            render(svg, s, p)
+            pngs.append((s, p.read_bytes()))
+        write_ico(pngs, HERE / "icon.ico")
+    print("wrote icon-1024.png and icon.ico")
 
 
 if __name__ == "__main__":

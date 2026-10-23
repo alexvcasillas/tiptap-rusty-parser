@@ -5,6 +5,7 @@
 // Release builds on Windows are GUI apps: no console window.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod brand;
 mod clipboard;
 mod cloud;
 mod diff;
@@ -80,7 +81,7 @@ fn main() {
                 // Below this the three panes' minimum widths and the toolbar no longer fit.
                 window_min_size: Some(size(px(1280.), px(720.))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("tiptap-studio".into()),
+                    title: Some("Tiptap Studio".into()),
                     ..Default::default()
                 }),
                 ..Default::default()
