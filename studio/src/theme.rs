@@ -53,8 +53,9 @@ impl Tokens {
     pub fn ghost() -> Hsla {
         c(0x4A4D55)
     }
+    /// Tiptap brand purple, the 400 step of the brand scale (readable on dark).
     pub fn accent() -> Hsla {
-        c(0x5B9CF6)
+        c(0x7A52FF)
     }
     pub fn accent_fill() -> Hsla {
         let mut h = Self::accent();
@@ -86,7 +87,12 @@ impl Tokens {
 /// Switch gpui-component to dark and overlay the canvas palette.
 pub fn apply(cx: &mut App) {
     Theme::change(ThemeMode::Dark, None, cx);
-    let t = Theme::global_mut(cx);
+    // `Theme::update` reconciles `colors` into `tokens` (which components such
+    // as Checkbox paint with); `global_mut` edits would leave the stale tokens.
+    Theme::update(cx, overlay);
+}
+
+fn overlay(t: &mut Theme) {
     t.colors.background = Tokens::background();
     t.colors.foreground = Tokens::foreground();
     t.colors.border = Tokens::border();

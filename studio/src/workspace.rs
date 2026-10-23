@@ -21,7 +21,7 @@ use crate::tree::TreePanel;
 
 gpui_kit::actions!(
     studio,
-    [Undo, Redo, DeleteNode, MoveUp, MoveDown, PrintJson, Save, SaveAs]
+    [Undo, Redo, DeleteNode, MoveUp, MoveDown, CopyJson, Save, SaveAs]
 );
 
 pub fn bind_keys(cx: &mut App) {
@@ -61,6 +61,9 @@ pub struct Workspace {
     problems: Entity<ProblemsPanel>,
     source: Entity<crate::source::SourcePanel>,
     focus: FocusHandle,
+    /// Bumped per copy; the "Copied" label shows while the latest timer runs.
+    copy_seq: u32,
+    copied: bool,
     _subs: Vec<Subscription>,
 }
 
@@ -100,6 +103,8 @@ impl Workspace {
             problems,
             source,
             focus: cx.focus_handle(),
+            copy_seq: 0,
+            copied: false,
             _subs: vec![sub, diff_sub, schema_sub],
         }
     }
@@ -159,8 +164,28 @@ impl Workspace {
         }
     }
 
-    fn print_json(&mut self, _: &PrintJson, _: &mut Window, cx: &mut Context<Self>) {
-        println!("{}", self.state.read(cx).to_json_pretty());
+    /// Copy A's pretty JSON; the toolbar button reads "Copied" for two seconds.
+    fn copy_json(&mut self, _: &CopyJson, _: &mut Window, cx: &mut Context<Self>) {
+        let json = self.state.read(cx).to_json_pretty();
+        cx.write_to_clipboard(ClipboardItem::new_string(json));
+        self.copy_seq = self.copy_seq.wrapping_add(1);
+        self.copied = true;
+        cx.notify();
+        let seq = self.copy_seq;
+        let timer = cx
+            .background_executor()
+            .timer(std::time::Duration::from_secs(2));
+        cx.spawn(async move |this, cx| {
+            timer.await;
+            this.update(cx, |this, cx| {
+                if this.copy_seq == seq {
+                    this.copied = false;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Save A in place; the bundled sample has no file, so it asks for one.
@@ -249,7 +274,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::delete_node))
             .on_action(cx.listener(Self::move_up))
             .on_action(cx.listener(Self::move_down))
-            .on_action(cx.listener(Self::print_json))
+            .on_action(cx.listener(Self::copy_json))
             .on_action(cx.listener(Self::save))
             .on_action(cx.listener(Self::save_as))
             .on_action(cx.listener(Self::open_file))
@@ -436,9 +461,28 @@ impl Render for Workspace {
                     )
                     .map(|bar| match mode {
                         Mode::Inspect => bar
-                            .child(tool("json", IconName::Braces, "JSON").on_click(
-                                cx.listener(|this, _, w, cx| this.print_json(&PrintJson, w, cx)),
-                            ))
+                            .child({
+                                let copied = self.copied;
+                                let (icon, label) = if copied {
+                                    (IconName::Check, "Copied")
+                                } else {
+                                    (IconName::Copy, "Copy JSON")
+                                };
+                                let icon = Icon::new(icon).small();
+                                Button::new("copy-json")
+                                    .ghost()
+                                    .small()
+                                    .icon(if copied {
+                                        icon.text_color(Tokens::added())
+                                    } else {
+                                        icon
+                                    })
+                                    .label(label)
+                                    .tooltip("Copy the document JSON")
+                                    .on_click(cx.listener(|this, _, w, cx| {
+                                        this.copy_json(&CopyJson, w, cx)
+                                    }))
+                            })
                             .child({
                                 let on = crate::layout::show_source(cx);
                                 let icon = Icon::new(IconName::FileCode).small();
