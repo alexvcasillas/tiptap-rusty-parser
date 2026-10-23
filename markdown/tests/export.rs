@@ -364,3 +364,19 @@ fn carriage_returns_in_text_are_line_breaks() {
         assert_eq!(v["content"][0]["content"], want, "{t} {out:?}");
     }
 }
+
+#[test]
+fn whitespace_after_hard_break_is_kept() {
+    for tail in [
+        r#"{"type":"text","text":" "},{"type":"text","text":"c","marks":[{"type":"code"}]}"#,
+        r#"{"type":"text","text":" "}"#,
+        r#"{"type":"text","text":"  "},{"type":"hardBreak"},{"type":"text","text":"b"}"#,
+    ] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"a"}},{{"type":"hardBreak"}},{tail}]}}]}}"#
+        );
+        let want = Document::from_json_str(&json).unwrap().to_value().unwrap();
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        assert_eq!(v, want, "{out:?}");
+    }
+}

@@ -169,6 +169,8 @@ struct Renderer<'a> {
     hb: bool,
     /// Marks of the held-back hard break.
     hb_marks: &'a [Mark],
+    /// Whitespace-only text held back after the held-back hard break.
+    ws_after: String,
     /// Delimiter of the open `italic` mark (differs from `emphasis` when the
     /// opener would abut a closing `*`/`_` run and merge with it).
     em_open: char,
@@ -202,6 +204,7 @@ impl<'a> Renderer<'a> {
             ws: String::new(),
             hb: false,
             hb_marks: &[],
+            ws_after: String::new(),
             em_open: '*',
             bold_open: '*',
             closed_at: usize::MAX,
@@ -599,16 +602,25 @@ impl<'a> Renderer<'a> {
     fn inline(&mut self, nodes: &'a [Node]) {
         self.active.clear();
         self.ws.clear();
+        self.ws_after.clear();
         self.hb = false;
         self.items(nodes);
         self.close_not_in(&[], true);
         // trailing whitespace is stripped on re-parse, except non-ASCII (NBSP, ...)
-        let keep = self.ws.trim_end_matches([' ', '\t', '\n', '\r']).len();
-        if keep > 0 {
-            self.ws.truncate(keep);
-            self.flush_ws();
+        let ascii_ws = [' ', '\t', '\n', '\r'];
+        let keep = self.ws_after.trim_end_matches(ascii_ws).len();
+        if self.hb && keep > 0 {
+            self.ws_after.truncate(keep);
+            self.flush_pending();
+        } else {
+            let keep = self.ws.trim_end_matches(ascii_ws).len();
+            if keep > 0 {
+                self.ws.truncate(keep);
+                self.flush_ws();
+            }
         }
         self.ws.clear();
+        self.ws_after.clear();
         self.hb = false;
     }
 
@@ -670,7 +682,9 @@ impl<'a> Renderer<'a> {
                     return;
                 }
             }
-            if !self.hb {
+            if self.hb {
+                self.ws_after.push_str(text);
+            } else {
                 self.ws.push_str(text);
             }
             return;
@@ -769,6 +783,12 @@ impl<'a> Renderer<'a> {
             self.hb = false;
             self.out.push('\\');
             self.newline();
+            if !self.ws_after.is_empty() {
+                let w = std::mem::take(&mut self.ws_after);
+                self.escape_text(&w);
+                self.ws_after = w;
+                self.ws_after.clear();
+            }
         }
     }
 
