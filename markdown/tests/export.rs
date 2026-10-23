@@ -488,3 +488,18 @@ fn lookahead_escapes_hold_across_unknown_marks() {
         "{out:?}"
     );
 }
+
+#[test]
+fn destinations_starting_with_angle_bracket() {
+    for href in ["<y>", "<", "<a b", "a<b>"] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[
+            {{"type":"text","text":"l","marks":[{{"type":"link","attrs":{{"href":"{href}"}}}}]}},
+            {{"type":"image","attrs":{{"src":"{href}","alt":"i"}}}}]}}]}}"#
+        );
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        let p = &v["content"][0]["content"];
+        assert_eq!(p[0]["marks"][0]["attrs"]["href"], href, "{out:?}");
+        assert_eq!(p[1]["attrs"]["src"], href, "{out:?}");
+    }
+}

@@ -1357,8 +1357,12 @@ fn write_dest(out: &mut String, href: &str) {
             _ => {}
         }
     }
-    let angle =
-        href.is_empty() || depth != 0 || !balanced || href.bytes().any(|b| b <= b' ' || b == 0x7f);
+    // a bare destination cannot start with `<` (it would open the `<…>` form)
+    let angle = href.is_empty()
+        || href.starts_with('<')
+        || depth != 0
+        || !balanced
+        || href.bytes().any(|b| b <= b' ' || b == 0x7f);
     if angle {
         out.push('<');
         for c in href.chars() {
