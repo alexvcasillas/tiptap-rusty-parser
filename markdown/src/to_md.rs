@@ -340,7 +340,17 @@ impl<'a> Renderer<'a> {
             }
             "horizontalRule" => {
                 self.begin(sep, st);
-                self.out.push_str("---");
+                // `- ---` / `* * **` read as one thematic break: use a rule
+                // char absent from the markers on this line.
+                let line = &self.out.as_bytes()[self.out.rfind('\n').map_or(0, |i| i + 1)..];
+                let rule = if !line.contains(&b'-') {
+                    "---"
+                } else if !line.contains(&b'*') {
+                    "***"
+                } else {
+                    "___"
+                };
+                self.out.push_str(rule);
                 st.prev = Prev::Other;
             }
             "codeBlock" => {

@@ -145,3 +145,47 @@ fn invalid_option_chars_fall_back() {
     };
     assert_eq!(to_markdown_with(&doc, &opts), "- *a*\n");
 }
+
+fn reimport(json: &str, opts: &RenderOptions) -> (String, serde_json::Value) {
+    let out = to_markdown_with(&Document::from_json_str(json).unwrap(), opts);
+    let back = tiptap_rusty_markdown::from_markdown(&out);
+    (out, back.to_value().unwrap())
+}
+
+#[test]
+fn rule_first_in_bullet_item_stays_in_list() {
+    for (bullet, nested) in [
+        ('-', false),
+        ('*', false),
+        ('+', false),
+        ('-', true),
+        ('*', true),
+    ] {
+        let item = r#"{"type":"listItem","content":[{"type":"horizontalRule"}]}"#;
+        let inner = format!(r#"{{"type":"bulletList","content":[{item}]}}"#);
+        let outer_item = if nested {
+            format!(r#"{{"type":"listItem","content":[{inner}]}}"#)
+        } else {
+            item.to_owned()
+        };
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"bulletList","content":[{outer_item}]}}]}}"#
+        );
+        let opts = RenderOptions {
+            bullet,
+            ..RenderOptions::default()
+        };
+        let (out, v) = reimport(&json, &opts);
+        assert_eq!(
+            v["content"][0]["type"], "bulletList",
+            "{bullet} {nested}: {out:?}"
+        );
+        let item = &v["content"][0]["content"][0];
+        let item = if nested {
+            &item["content"][1]["content"][0]
+        } else {
+            item
+        };
+        assert_eq!(item["content"][1]["type"], "horizontalRule", "{out:?}");
+    }
+}
