@@ -184,8 +184,9 @@ struct Builder {
     html: HtmlPolicy,
     stack: Vec<Frame>,
     marks: Vec<Mark>,
-    /// Per open inline mark tag: whether it pushed onto `marks`.
-    mark_pushed: Vec<bool>,
+    /// Per open inline mark tag: the rank of the mark it pushed onto `marks`
+    /// (`None` if the type was already active).
+    mark_pushed: Vec<Option<u8>>,
     image: Option<PendingImage>,
     image_depth: u32,
 }
@@ -214,6 +215,16 @@ fn one_attr(k: &str, v: Value) -> Option<Map<String, Value>> {
 #[inline]
 fn is_type(n: &Node, ty: &str) -> bool {
     n.node_type.as_deref() == Some(ty)
+}
+
+fn mark_rank(m: &Mark) -> u8 {
+    match m.mark_type.as_str() {
+        "link" => 0,
+        "strike" => 1,
+        "bold" => 2,
+        "italic" => 3,
+        _ => 4,
+    }
 }
 
 /// `existing == stack (+ code)` without allocating.
@@ -350,7 +361,12 @@ impl Builder {
             Event::SoftBreak => self.text(CowStr::Borrowed(" ")),
             Event::HardBreak => {
                 if let Some(ch) = inline_target(&mut self.stack) {
-                    ch.push(element("hardBreak", None, Vec::new()));
+                    let mut br = element("hardBreak", None, Vec::new());
+                    if !self.marks.is_empty() {
+                        // inline nodes carry the surrounding marks, like images
+                        br.marks = Some(self.marks.clone());
+                    }
+                    ch.push(br);
                 }
             }
             Event::Rule => self.push_block(element("horizontalRule", None, Vec::new())),
@@ -463,18 +479,25 @@ impl Builder {
         self.stack.push(Frame::new(kind));
     }
 
+    /// Marks are kept in canonical nesting order (link > strike > bold >
+    /// italic), so equal formatting always yields the same mark list however
+    /// the source nested the delimiters.
     fn push_mark(&mut self, m: Mark) {
         if self.marks.iter().any(|x| x.mark_type == m.mark_type) {
-            self.mark_pushed.push(false);
+            self.mark_pushed.push(None);
         } else {
-            self.marks.push(m);
-            self.mark_pushed.push(true);
+            let r = mark_rank(&m);
+            let at = self.marks.partition_point(|x| mark_rank(x) <= r);
+            self.marks.insert(at, m);
+            self.mark_pushed.push(Some(r));
         }
     }
 
     fn pop_mark(&mut self) {
-        if self.mark_pushed.pop() == Some(true) {
-            self.marks.pop();
+        if let Some(Some(r)) = self.mark_pushed.pop() {
+            if let Some(at) = self.marks.iter().position(|x| mark_rank(x) == r) {
+                self.marks.remove(at);
+            }
         }
     }
 
@@ -619,8 +642,13 @@ impl Builder {
                 {
                     return;
                 }
-                let first_in_item = parent.kind == Kind::Item && parent.children.is_empty();
-                if !first_in_item && is_hoistable_images(&children) {
+                // Cells stay `cell > paragraph > image` (pipe tables need it).
+                let keep_para = match parent.kind {
+                    Kind::Item => parent.children.is_empty(),
+                    Kind::Cell { .. } => true,
+                    _ => false,
+                };
+                if !keep_para && is_hoistable_images(&children) {
                     parent
                         .children
                         .extend(children.into_iter().filter(|c| is_type(c, "image")));
@@ -658,9 +686,18 @@ impl Builder {
                     let len = text.trim_end_matches(['\n', '\r']).len();
                     text.truncate(len);
                     if !text.is_empty() {
-                        parent
-                            .children
-                            .push(element("paragraph", None, vec![Node::text(text)]));
+                        // Source line breaks become hard breaks: a raw `\n`
+                        // in a text node would not survive an export.
+                        let mut nodes = Vec::new();
+                        for (i, line) in text.split('\n').enumerate() {
+                            if i > 0 {
+                                nodes.push(element("hardBreak", None, Vec::new()));
+                            }
+                            if !line.is_empty() {
+                                nodes.push(Node::text(line));
+                            }
+                        }
+                        parent.children.push(element("paragraph", None, nodes));
                     }
                 }
             }

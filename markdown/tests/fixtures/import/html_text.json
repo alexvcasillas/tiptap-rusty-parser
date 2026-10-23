@@ -6,7 +6,21 @@
       "content": [
         {
           "type": "text",
-          "text": "<div>\nblock <b>html</b>\n</div>"
+          "text": "<div>"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "block <b>html</b>"
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "</div>"
         }
       ]
     },

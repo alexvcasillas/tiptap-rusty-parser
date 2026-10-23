@@ -34,10 +34,10 @@
           "type": "text",
           "marks": [
             {
-              "type": "bold"
+              "type": "strike"
             },
             {
-              "type": "strike"
+              "type": "bold"
             }
           ],
           "text": "both"
