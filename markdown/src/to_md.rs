@@ -638,8 +638,12 @@ impl<'a> Renderer<'a> {
                 self.flush_ws();
             }
         }
-        // breaks at the end of the run would leave a literal `\\`
-        self.take_hb_run();
+        // breaks at the end of the run would leave a literal `\\` (and the
+        // whitespace before them would dangle)
+        if self.take_hb_run().is_some() {
+            let keep = self.out.trim_end_matches([' ', '\t']).len().max(self.cs);
+            self.out.truncate(keep);
+        }
         self.ws.clear();
         self.ws_after.clear();
         self.hb = false;
@@ -1251,7 +1255,16 @@ fn is_hoistable_images(nodes: &[Node]) -> bool {
     let mut any = false;
     for c in nodes {
         match c.node_type.as_deref() {
-            Some("image") if c.marks.as_ref().is_none_or(|m| m.is_empty()) => any = true,
+            // marks the export does not render (code on an image, unknown)
+            // do not come back
+            Some("image")
+                if c.marks.as_ref().is_none_or(|m| {
+                    m.iter()
+                        .all(|m| m.mark_type == "code" || mark_rank(m).is_none())
+                }) =>
+            {
+                any = true
+            }
             Some("hardBreak") => {}
             Some("text") if c.text.as_deref().is_none_or(|t| t.trim().is_empty()) => {}
             _ => return false,
@@ -1327,7 +1340,9 @@ fn is_tight(items: &[Node]) -> bool {
         } else {
             return false;
         };
+        // paragraphs without content render nothing
         kids.iter()
+            .filter(|k| !(k.node_type.as_deref() == Some("paragraph") && k.children().is_empty()))
             .enumerate()
             .all(|(i, k)| is_list(k) || (i == 0 && k.node_type.as_deref() == Some("paragraph")))
     })

@@ -607,3 +607,17 @@ fn lookahead_escapes_before_newlines_match_split_nodes() {
         }
     }
 }
+
+#[test]
+fn render_nothing_edge_cases_are_stable() {
+    for content in [
+        // image whose only mark is not rendered, after a break
+        r#"[{"type":"paragraph","content":[{"type":"hardBreak"},{"type":"image","attrs":{"src":"s","alt":"a"},"marks":[{"type":"code"}]}]}]"#,
+        // empty paragraphs do not make a list loose
+        r#"[{"type":"orderedList","content":[{"type":"listItem","content":[]},{"type":"listItem","content":[{"type":"paragraph"},{"type":"paragraph"}]}]}]"#,
+        // whitespace before trailing breaks
+        r#"[{"type":"paragraph","content":[{"type":"text","text":"a  ","marks":[{"type":"italic"}]},{"type":"hardBreak"},{"type":"hardBreak"}]}]"#,
+    ] {
+        assert_idempotent(&format!(r#"{{"type":"doc","content":{content}}}"#));
+    }
+}
