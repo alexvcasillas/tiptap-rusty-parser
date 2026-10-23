@@ -161,6 +161,11 @@ struct Renderer<'a> {
     ws: String,
     /// Hard break held back (dropped at the end of a run).
     hb: bool,
+    /// Delimiter of the open `italic` mark (differs from `emphasis` when the
+    /// opener would abut a closing `*`/`_` run and merge with it).
+    em_open: char,
+    /// `out.len()` right after the last emphasis closer.
+    closed_at: usize,
 }
 
 const CODE_RANK: u8 = 9;
@@ -184,6 +189,8 @@ impl<'a> Renderer<'a> {
             code_buf: String::new(),
             ws: String::new(),
             hb: false,
+            em_open: '*',
+            closed_at: usize::MAX,
         }
     }
 
@@ -596,7 +603,14 @@ impl<'a> Renderer<'a> {
         let marks = n.marks.as_deref().unwrap_or(&[]);
         self.close_not_in(marks, false);
         match self.mode {
-            Mode::Normal => self.hb = true,
+            Mode::Normal => {
+                if self.hb {
+                    // consecutive breaks: emit the earlier one now
+                    self.out.push('\\');
+                    self.newline();
+                }
+                self.hb = true;
+            }
             Mode::Flat => self.ws.push(' '),
             Mode::Cell => {
                 self.flush_pending();
@@ -702,7 +716,16 @@ impl<'a> Renderer<'a> {
                 self.out.push('[');
             }
             "bold" => self.out.push_str("**"),
-            "italic" => self.out.push(self.emphasis),
+            "italic" => {
+                // `**a*b****c*`: a closer run directly followed by an opener
+                // of the same char merges into one run; switch delimiter.
+                let mut c = self.emphasis;
+                if self.out.len() == self.closed_at && self.out.ends_with(c) {
+                    c = if c == '*' { '_' } else { '*' };
+                }
+                self.em_open = c;
+                self.out.push(c);
+            }
             "strike" => self.out.push_str("~~"),
             "underline" => self.out.push_str("<u>"),
             "subscript" => self.out.push_str("<sub>"),
@@ -722,8 +745,14 @@ impl<'a> Renderer<'a> {
                 }
                 self.out.push(')');
             }
-            "bold" => self.out.push_str("**"),
-            "italic" => self.out.push(self.emphasis),
+            "bold" => {
+                self.out.push_str("**");
+                self.closed_at = self.out.len();
+            }
+            "italic" => {
+                self.out.push(self.em_open);
+                self.closed_at = self.out.len();
+            }
             "strike" => self.out.push_str("~~"),
             "underline" => self.out.push_str("</u>"),
             "subscript" => self.out.push_str("</sub>"),
@@ -827,6 +856,8 @@ impl<'a> Renderer<'a> {
                     self.out.push_str(&s[last..i]);
                     last = i + 1;
                     if self.mode == Mode::Normal {
+                        // a bare newline would reimport as a space
+                        self.out.push('\\');
                         self.newline();
                         ls = true;
                     } else {

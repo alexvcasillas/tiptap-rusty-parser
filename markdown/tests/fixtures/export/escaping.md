@@ -48,10 +48,10 @@ snake_case and foo_bar_baz
 
 Hello! world!
 
-a
+a\
 b
 
-a
+a\
 \# b
 
 <3 \<b>x\</b> \<!-- c -->
