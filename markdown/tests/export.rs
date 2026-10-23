@@ -552,3 +552,19 @@ fn leading_newline_in_heading() {
     assert_eq!(md(h), "## **\\<**\n");
     assert_idempotent(h);
 }
+
+#[test]
+fn image_only_paragraphs_export_like_they_import() {
+    let img = |s: &str| format!(r#"{{"type":"image","attrs":{{"src":"{s}","alt":""}}}}"#);
+    for content in [
+        format!(r#"{},{{"type":"hardBreak"}},{}"#, img("a"), img("b")),
+        format!(r#"{{"type":"hardBreak"}},{}"#, img("a")),
+        format!(r#"{},{{"type":"text","text":" "}},{}"#, img("a"), img("b")),
+    ] {
+        let p = format!(r#"{{"type":"paragraph","content":[{content}]}}"#);
+        assert_idempotent(&format!(r#"{{"type":"doc","content":[{p}]}}"#));
+        assert_idempotent(&format!(
+            r#"{{"type":"doc","content":[{{"type":"bulletList","content":[{{"type":"listItem","content":[{p},{p}]}}]}}]}}"#
+        ));
+    }
+}

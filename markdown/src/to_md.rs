@@ -134,6 +134,8 @@ struct St {
     /// Task item: a first block other than a paragraph must start on the
     /// next line (`- [x] - a` would be text).
     task_line: bool,
+    /// Inside a list item (its first paragraph keeps lone images inline).
+    item: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -306,6 +308,17 @@ impl<'a> Renderer<'a> {
     /// An inline run as a paragraph; leaves no trace when it renders to nothing.
     fn paragraph(&mut self, nodes: &'a [Node], sep: Sep, st: &mut St) {
         if nodes.is_empty() {
+            return;
+        }
+        // The importer turns a paragraph of only images (and breaks /
+        // whitespace) into block images, except as an item's first block:
+        // write them as such so a re-export is stable.
+        if nodes.len() > 1 && !(st.item && st.prev == Prev::None) && is_hoistable_images(nodes) {
+            for n in nodes {
+                if n.node_type.as_deref() == Some("image") {
+                    self.paragraph(std::slice::from_ref(n), sep, st);
+                }
+            }
             return;
         }
         let (len, cs) = (self.out.len(), self.cs);
@@ -558,6 +571,7 @@ impl<'a> Renderer<'a> {
             self.prefix.push_str(&SPACES[..width % SPACES.len()]);
             let mut inner = St {
                 task_line: item.node_type.as_deref() == Some("taskItem"),
+                item: true,
                 ..St::default()
             };
             self.blocks(kids, sep, &mut inner);
@@ -1203,6 +1217,21 @@ fn maybe_punct(c: char) -> bool {
 /// Whitespace for delimiter flanking (Unicode, like CommonMark).
 fn is_ws(c: char) -> bool {
     c.is_whitespace()
+}
+
+/// Unmarked images, hard breaks and whitespace only, with at least one image
+/// (mirrors the importer's hoisting rule).
+fn is_hoistable_images(nodes: &[Node]) -> bool {
+    let mut any = false;
+    for c in nodes {
+        match c.node_type.as_deref() {
+            Some("image") if c.marks.as_ref().is_none_or(|m| m.is_empty()) => any = true,
+            Some("hardBreak") => {}
+            Some("text") if c.text.as_deref().is_none_or(|t| t.trim().is_empty()) => {}
+            _ => return false,
+        }
+    }
+    any
 }
 
 fn is_inline_kind(n: &Node) -> bool {
