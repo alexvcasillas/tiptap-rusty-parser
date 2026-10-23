@@ -178,6 +178,11 @@ struct Renderer<'a> {
     /// Span (start, end, cs before) of the last run of emitted hard breaks;
     /// `out.len() == end` means nothing followed it yet.
     hb_run: (usize, usize, usize),
+    /// First byte known to follow the current text run (0 = unknown;
+    /// whitespace / newline only).
+    next_hint: u8,
+    /// `next_hint` for the piece being escaped.
+    hint: u8,
     /// Last `write_opens`: (out start, out end, first `active` index).
     /// (`restore`: the char before them, if it was entity-encoded.)
     opened: (usize, usize, usize, Option<char>),
@@ -217,6 +222,8 @@ impl<'a> Renderer<'a> {
             ws_after: String::new(),
             hb_run: (0, usize::MAX, 0),
             opened: (0, usize::MAX, 0, None),
+            next_hint: 0,
+            hint: 0,
             em_open: '*',
             bold_open: '*',
             closed_at: usize::MAX,
@@ -672,6 +679,17 @@ impl<'a> Renderer<'a> {
                             || (flat && m.node_type.as_deref() == Some("hardBreak"))
                     } && m.marks.as_deref().unwrap_or(&[]) == marks;
                     let j = i + nodes[i..].iter().take_while(|m| same(m)).count();
+                    // what follows the run, for end-of-piece lookahead
+                    self.next_hint = match nodes.get(j) {
+                        Some(m) if m.node_type.as_deref() == Some("hardBreak") => b'\n',
+                        Some(m) if m.node_type.as_deref() == Some("text") => m
+                            .text
+                            .as_deref()
+                            .and_then(|t| t.chars().next())
+                            .filter(|c| c.is_whitespace())
+                            .map_or(0, |c| if is_nl(c as u8) { b'\n' } else { b' ' }),
+                        _ => 0,
+                    };
                     if j == i {
                         self.text_item(n.text.as_deref().unwrap_or(""), marks);
                     } else {
@@ -755,7 +773,13 @@ impl<'a> Renderer<'a> {
             return;
         }
         self.open_after_pending(marks, true, lead, core.chars().next().unwrap_or(' '));
+        self.hint = if core.len() < body.len() {
+            b' '
+        } else {
+            self.next_hint
+        };
         self.escape_text(core);
+        self.hint = 0;
         self.ws.push_str(&body[core.len()..]);
     }
 
@@ -840,6 +864,12 @@ impl<'a> Renderer<'a> {
         }
         self.flush_hb();
         if !lead.is_empty() {
+            // leading whitespace stays inside a link (only delimiters need
+            // it outside)
+            if self.active.get(mid).is_some_and(|m| m.mark_type == "link") {
+                self.write_opens(mid, mid + 1, ' ');
+                mid += 1;
+            }
             self.escape_text(lead);
         }
         self.write_opens(mid, self.active.len(), next);
@@ -882,6 +912,10 @@ impl<'a> Renderer<'a> {
             if !self.ws_after.is_empty() {
                 let w = std::mem::take(&mut self.ws_after);
                 self.escape_text(&w);
+                if !w.contains(|c: char| !matches!(c, ' ' | '\t' | '\n' | '\r')) {
+                    // plain whitespace: dropped with the run if nothing follows
+                    self.hb_run.1 = self.out.len();
+                }
                 self.ws_after = w;
                 self.ws_after.clear();
             }
@@ -1131,6 +1165,8 @@ impl<'a> Renderer<'a> {
         let mut lead = ls || self.out.len() == self.bol;
         // a newline is a break (ends the node) only in normal text
         let nl_end = self.mode == Mode::Normal;
+        let hint = self.hint;
+        let end = (hint != 0).then_some(&hint);
         let (mut last, mut i) = (0, 0);
         if self.out.len() == self.closed_at {
             // The delimiter run just closed must stay right-flanking (and for
@@ -1174,13 +1210,14 @@ impl<'a> Renderer<'a> {
                 // come from a node with marks that render no delimiter); a
                 // newline ends the piece too (it re-imports as a break, which
                 // splits the text node).
-                b'<' => b.get(i + 1).is_none_or(|x| {
+                b'<' => b.get(i + 1).or(end).is_none_or(|x| {
                     x.is_ascii_alphabetic()
                         || matches!(x, b'/' | b'!' | b'?')
                         || (nl_end && is_nl(*x))
                 }),
                 b'&' => {
-                    b.get(i + 1).is_none_or(|x| nl_end && is_nl(*x)) || entity_like(&b[i + 1..])
+                    b.get(i + 1).or(end).is_none_or(|x| nl_end && is_nl(*x))
+                        || entity_like(&b[i + 1..])
                 }
                 b'|' => self.mode == Mode::Cell,
                 b'#' if ls => {
@@ -1392,9 +1429,11 @@ fn renders_empty(p: &Node) -> bool {
     p.node_type.as_deref() == Some("paragraph")
         && p.children().iter().all(|c| {
             // whitespace in a link or code span is written
+            let text = c.node_type.as_deref() == Some("text");
             let kept = c.marks.as_deref().is_some_and(|m| {
                 m.iter().any(|m| {
-                    m.mark_type == "code" || (m.mark_type == "link" && mark_rank(m).is_some())
+                    (text && m.mark_type == "code")
+                        || (m.mark_type == "link" && mark_rank(m).is_some())
                 })
             });
             !kept

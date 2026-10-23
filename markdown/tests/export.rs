@@ -675,3 +675,27 @@ fn leading_marked_break_runs_are_stable() {
         {"type":"paragraph","content":[{"type":"text","text":"x"}]}]}]}]}"#,
     );
 }
+
+#[test]
+fn whitespace_neighbours_are_stable() {
+    let link = r#"{"type":"link","attrs":{"href":"u"}}"#;
+    for content in [
+        // leading whitespace of link text stays inside the link
+        format!(r#"[{{"type":"text","text":" ","marks":[{{"type":"strike"}},{link}]}},{{"type":"text","text":"x","marks":[{link}]}}]"#),
+        format!(r#"[{{"type":"text","text":"a"}},{{"type":"text","text":" b","marks":[{link}]}}]"#),
+        // a break that carries code renders nothing
+        r#"[{"type":"hardBreak","marks":[{"type":"code"}]}]"#.to_owned(),
+        // whitespace between dropped breaks
+        r#"[{"type":"hardBreak","marks":[{"type":"italic"}]},{"type":"text","text":"  "},{"type":"hardBreak","marks":[{"type":"bold"}]}]"#.to_owned(),
+        // `<` / `&` before whitespace from a differently marked node
+        r#"[{"type":"text","text":"'<"},{"type":"text","text":" ","marks":[{"type":"bold"}]},{"type":"text","text":"x"}]"#.to_owned(),
+    ] {
+        for wrap in ["paragraph", "heading"] {
+            let attrs = if wrap == "heading" { r#","attrs":{"level":2}"# } else { "" };
+            let block = format!(r#"{{"type":"{wrap}"{attrs},"content":{content}}}"#);
+            assert_idempotent(&format!(
+                r#"{{"type":"doc","content":[{{"type":"orderedList","content":[{{"type":"listItem","content":[{{"type":"paragraph","content":[{{"type":"text","text":"a"}}]}},{block}]}},{{"type":"listItem"}}]}}]}}"#
+            ));
+        }
+    }
+}
