@@ -510,3 +510,38 @@ fn code_language_with_spaces_exports_first_word() {
     assert_eq!(md(json), "```rust\nx\n```\n");
     assert_idempotent(json);
 }
+
+#[test]
+fn trailing_and_mark_closing_hard_break_runs() {
+    let hb = |m: &str| format!(r#"{{"type":"hardBreak","marks":[{m}]}}"#);
+    let bold = r#"{"type":"bold"}"#;
+    let cases = [
+        (
+            format!(r#"{{"type":"text","text":"a"}},{},{}"#, hb(""), hb("")),
+            "a\n",
+        ),
+        (format!("{},{}", hb(""), hb("")), ""),
+        (
+            format!(
+                r#"{{"type":"text","text":"a","marks":[{bold}]}},{},{}"#,
+                hb(bold),
+                hb(bold)
+            ),
+            "**a**\n",
+        ),
+        (
+            format!(
+                r#"{{"type":"text","text":"a","marks":[{bold}]}},{},{},{{"type":"text","text":"b"}}"#,
+                hb(bold),
+                hb(bold)
+            ),
+            "**a**\\\n\\\nb\n",
+        ),
+    ];
+    for (content, want) in cases {
+        let json =
+            format!(r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{content}]}}]}}"#);
+        assert_eq!(md(&json), want, "{json}");
+        assert_idempotent(&json);
+    }
+}

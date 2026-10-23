@@ -171,6 +171,9 @@ struct Renderer<'a> {
     hb_marks: &'a [Mark],
     /// Whitespace-only text held back after the held-back hard break.
     ws_after: String,
+    /// Span (start, end, cs before) of the last run of emitted hard breaks;
+    /// `out.len() == end` means nothing followed it yet.
+    hb_run: (usize, usize, usize),
     /// Delimiter of the open `italic` mark (differs from `emphasis` when the
     /// opener would abut a closing `*`/`_` run and merge with it).
     em_open: char,
@@ -205,6 +208,7 @@ impl<'a> Renderer<'a> {
             hb: false,
             hb_marks: &[],
             ws_after: String::new(),
+            hb_run: (0, usize::MAX, 0),
             em_open: '*',
             bold_open: '*',
             closed_at: usize::MAX,
@@ -620,6 +624,8 @@ impl<'a> Renderer<'a> {
                 self.flush_ws();
             }
         }
+        // breaks at the end of the run would leave a literal `\\`
+        self.take_hb_run();
         self.ws.clear();
         self.ws_after.clear();
         self.hb = false;
@@ -826,8 +832,13 @@ impl<'a> Renderer<'a> {
     fn flush_hb(&mut self) {
         if self.hb {
             self.hb = false;
+            if self.out.len() != self.hb_run.1 {
+                self.hb_run.0 = self.out.len();
+                self.hb_run.2 = self.cs;
+            }
             self.out.push('\\');
             self.newline();
+            self.hb_run.1 = self.out.len();
             if !self.ws_after.is_empty() {
                 let w = std::mem::take(&mut self.ws_after);
                 self.escape_text(&w);
@@ -838,6 +849,17 @@ impl<'a> Renderer<'a> {
     }
 
     // ---- marks ----------------------------------------------------------
+
+    /// Remove a run of hard breaks nothing followed yet; returns it.
+    fn take_hb_run(&mut self) -> Option<String> {
+        if self.out.len() != self.hb_run.1 {
+            return None;
+        }
+        let tail = self.out.split_off(self.hb_run.0);
+        self.cs = self.hb_run.2;
+        self.hb_run.1 = usize::MAX;
+        Some(tail)
+    }
 
     /// Close open marks (innermost first) from the first one `marks` lacks.
     fn close_not_in(&mut self, marks: &[Mark], text: bool) {
@@ -850,6 +872,13 @@ impl<'a> Renderer<'a> {
                 break;
             }
         }
+        // a closer at a line start (right after a break) would not close:
+        // close before the breaks
+        let breaks = if self.active.len() > i {
+            self.take_hb_run()
+        } else {
+            None
+        };
         while self.active.len() > i {
             if let Some(m) = self.active.pop() {
                 if m.mark_type == "link" {
@@ -862,6 +891,12 @@ impl<'a> Renderer<'a> {
                 }
                 self.close_mark(m);
             }
+        }
+        if let Some(b) = breaks {
+            self.hb_run.0 = self.out.len();
+            self.out.push_str(&b);
+            self.cs = self.out.len();
+            self.hb_run.1 = self.out.len();
         }
     }
 
