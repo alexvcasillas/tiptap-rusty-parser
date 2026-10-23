@@ -678,8 +678,7 @@ impl Workspace {
                 .child(
                     div()
                         .mb(px(8.))
-                        .text_color(Tokens::secondary())
-                        .child(crate::brand::logo(44.)),
+                        .child(crate::brand::logo(44., Tokens::secondary())),
                 )
                 .child(
                     div()

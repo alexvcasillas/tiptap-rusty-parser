@@ -300,8 +300,8 @@ impl Render for Workspace {
                             .text_size(px(12.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(Tokens::secondary())
-                            .child(crate::brand::logo(15.))
-                            .child("tiptap-studio"),
+                            .child(crate::brand::logo(15., Tokens::secondary()))
+                            .child("Tiptap Studio"),
                     )
                     .child(
                         div()
