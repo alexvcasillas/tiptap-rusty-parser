@@ -242,7 +242,7 @@ fn element(ty: &str, attrs: Option<Map<String, Value>>, children: Vec<Node>) -> 
 
 #[inline]
 fn one_attr(k: &str, v: Value) -> Option<Map<String, Value>> {
-    let mut m = Map::new();
+    let mut m = Map::with_capacity(1);
     m.insert(k.to_owned(), v);
     Some(m)
 }
@@ -510,7 +510,7 @@ impl Builder {
         let Some(img) = self.image.take() else {
             return;
         };
-        let mut attrs = Map::new();
+        let mut attrs = Map::with_capacity(3);
         attrs.insert("src".to_owned(), Value::String(img.src));
         attrs.insert("alt".to_owned(), Value::String(img.alt));
         if !img.title.is_empty() {
