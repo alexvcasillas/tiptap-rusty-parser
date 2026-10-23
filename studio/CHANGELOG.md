@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/alexvcasillas/tiptap-studio/compare/studio-v0.2.0...studio-v0.2.1) - 2026-10-23
+
+### Other
+
+- move the parser crate into parser/ and make the root a virtual workspace ([#61](https://github.com/alexvcasillas/tiptap-studio/pull/61))
+- point repository links at the renamed alexvcasillas/tiptap-studio ([#59](https://github.com/alexvcasillas/tiptap-studio/pull/59))
+
 ## [0.2.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/studio-v0.1.2...studio-v0.2.0) - 2026-10-23
 
 ### Added
