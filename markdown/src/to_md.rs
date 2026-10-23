@@ -485,7 +485,7 @@ impl<'a> Renderer<'a> {
             }
         });
         // the importer keeps the first info-string word only
-        let lang = match n.attr("language") {
+        let lang = match attr(n, "language") {
             Some(Value::String(l)) => l.split_whitespace().next().unwrap_or(""),
             _ => "",
         };
@@ -570,7 +570,7 @@ impl<'a> Renderer<'a> {
             let width = self.out.len() - before;
             let marker_end = self.out.len();
             if item.node_type.as_deref() == Some("taskItem") {
-                let checked = item.attr("checked").and_then(Value::as_bool) == Some(true);
+                let checked = attr(item, "checked").and_then(Value::as_bool) == Some(true);
                 self.out.push_str(if checked { "[x] " } else { "[ ] " });
             }
             self.cs = self.out.len();
@@ -748,9 +748,15 @@ impl<'a> Renderer<'a> {
             );
             return;
         }
-        let body = text.trim_start_matches(is_ws);
-        let lead = &text[..text.len() - body.len()];
-        let core = body.trim_end_matches(is_ws);
+        let b = text.as_bytes();
+        let plain = |x: u8| x.is_ascii_graphic();
+        let (lead, body, core) = if plain(b[0]) && plain(b[b.len() - 1]) {
+            ("", text, text) // fast path: no edge whitespace
+        } else {
+            let body = text.trim_start_matches(is_ws);
+            let lead = &text[..text.len() - body.len()];
+            (lead, body, body.trim_end_matches(is_ws))
+        };
         self.close_not_in(marks, true);
         if core.is_empty() {
             // `[ ](u)` is still a link: open it around the whitespace
@@ -817,7 +823,7 @@ impl<'a> Renderer<'a> {
         self.close_not_in(marks, false);
         self.open_after_pending(marks, false, "", '!');
         self.out.push_str("![");
-        if let Some(alt) = n.attr("alt").and_then(Value::as_str) {
+        if let Some(alt) = attr(n, "alt").and_then(Value::as_str) {
             let prev = self.mode;
             if prev == Mode::Normal {
                 self.mode = Mode::Flat;
@@ -828,9 +834,9 @@ impl<'a> Renderer<'a> {
         self.out.push_str("](");
         write_dest(
             &mut self.out,
-            n.attr("src").and_then(Value::as_str).unwrap_or(""),
+            attr(n, "src").and_then(Value::as_str).unwrap_or(""),
         );
-        if let Some(t) = n.attr("title").and_then(Value::as_str) {
+        if let Some(t) = attr(n, "title").and_then(Value::as_str) {
             write_title(&mut self.out, t);
         }
         self.out.push(')');
@@ -840,6 +846,9 @@ impl<'a> Renderer<'a> {
     /// `marks` (`next` = first char after them). A held-back hard break that
     /// carries every newly opened mark goes inside them (`**\\\nb**`).
     fn open_after_pending(&mut self, marks: &'a [Mark], text: bool, lead: &str, next: char) {
+        if marks.is_empty() && !self.hb && self.ws.is_empty() && lead.is_empty() {
+            return;
+        }
         self.flush_ws();
         let from = self.collect_opens(marks, text);
         let mut mid = from;
@@ -1536,17 +1545,26 @@ fn pipe_table_ok(table: &Node) -> bool {
 }
 
 fn attr_u64(n: &Node, key: &str) -> Option<u64> {
-    match n.attr(key)? {
+    match attr(n, key)? {
         Value::Number(x) => x.as_u64().or_else(|| x.as_f64().map(|f| f.max(0.0) as u64)),
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
 }
 
+/// Attr lookup by a scan: attrs maps are tiny, hashing the key costs more.
+fn attr<'n>(n: &'n Node, key: &str) -> Option<&'n Value> {
+    n.attrs
+        .as_ref()?
+        .iter()
+        .find_map(|(k, v)| (k == key).then_some(v))
+}
+
 fn mark_attr<'m>(m: &'m Mark, key: &str) -> Option<&'m str> {
     m.attrs
         .as_ref()?
-        .get(key)?
+        .iter()
+        .find_map(|(k, v)| (k == key).then_some(v))?
         .as_str()
         .filter(|s| !s.is_empty())
 }
@@ -1556,7 +1574,11 @@ fn mark_rank(m: &Mark) -> Option<u8> {
     Some(match m.mark_type.as_str() {
         "link" => {
             // `[a]()` is a link too: only a missing / non-string href is not
-            m.attrs.as_ref()?.get("href")?.as_str()?;
+            m.attrs
+                .as_ref()?
+                .iter()
+                .find_map(|(k, v)| (k == "href").then_some(v))?
+                .as_str()?;
             0
         }
         "underline" => 1,
