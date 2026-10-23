@@ -1,0 +1,76 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "callout",
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "inside <callout>"
+      }
+     ]
+    },
+    {
+     "type": "bulletList",
+     "content": [
+      {
+       "type": "listItem",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "li"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "hi "
+    },
+    {
+     "type": "mention",
+     "attrs": {
+      "id": "1"
+     }
+    },
+    {
+     "type": "text",
+     "text": " end"
+    }
+   ]
+  },
+  {
+   "type": "blockquote",
+   "content": [
+    {
+     "type": "callout",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "q"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,126 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "use "
+    },
+    {
+     "type": "text",
+     "text": "a`b",
+     "marks": [
+      {
+       "type": "code"
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " and "
+    },
+    {
+     "type": "text",
+     "text": "``",
+     "marks": [
+      {
+       "type": "code"
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " and "
+    },
+    {
+     "type": "text",
+     "text": " x ",
+     "marks": [
+      {
+       "type": "code"
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " and "
+    },
+    {
+     "type": "text",
+     "text": "`",
+     "marks": [
+      {
+       "type": "code"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "a``b `c` d",
+     "marks": [
+      {
+       "type": "code"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "**not bold**",
+     "marks": [
+      {
+       "type": "code"
+      },
+      {
+       "type": "bold"
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " "
+    },
+    {
+     "type": "text",
+     "text": "[x](y)",
+     "marks": [
+      {
+       "type": "code"
+      },
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://c.test"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "a\nb",
+     "marks": [
+      {
+       "type": "code"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

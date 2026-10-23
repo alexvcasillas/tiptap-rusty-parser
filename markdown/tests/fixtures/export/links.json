@@ -1,0 +1,185 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "see "
+    },
+    {
+     "type": "text",
+     "text": "site",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test/a"
+       }
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " and "
+    },
+    {
+     "type": "text",
+     "text": "titled",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test",
+        "title": "Hi \"there\""
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "sp",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test/a b"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "par",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test/a(b)"
+       }
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " "
+    },
+    {
+     "type": "text",
+     "text": "unbal",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test/a)b"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "bold link",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test"
+       }
+      },
+      {
+       "type": "bold"
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " "
+    },
+    {
+     "type": "text",
+     "text": "em",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test"
+       }
+      },
+      {
+       "type": "italic"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "empty href",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": ""
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "no href",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {}
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "!"
+    },
+    {
+     "type": "text",
+     "text": "bang",
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://x.test"
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

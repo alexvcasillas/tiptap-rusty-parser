@@ -1,0 +1,118 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text"
+    },
+    {
+     "type": "text",
+     "text": ""
+    },
+    {
+     "type": "text",
+     "text": "ok"
+    }
+   ]
+  },
+  {
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "typeless wrapper"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "heading",
+   "attrs": {
+    "level": "2"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "str level"
+    }
+   ]
+  },
+  {
+   "type": "orderedList",
+   "attrs": {
+    "start": "3"
+   },
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "bare item"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "listItem",
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "stray item"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "text",
+   "text": "bare text in doc"
+  },
+  {
+   "type": "image",
+   "attrs": {
+    "src": "x.png"
+   }
+  },
+  {
+   "type": "bulletList"
+  },
+  {
+   "type": "blockquote",
+   "content": [
+    {
+     "type": "text",
+     "text": "direct text"
+    }
+   ]
+  },
+  {
+   "type": "heading",
+   "attrs": {
+    "level": 2
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "foo #"
+    },
+    {
+     "type": "hardBreak"
+    },
+    {
+     "type": "text",
+     "text": "b"
+    }
+   ]
+  }
+ ]
+}

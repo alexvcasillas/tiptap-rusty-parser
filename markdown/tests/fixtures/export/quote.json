@@ -1,0 +1,92 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "blockquote",
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "one"
+      }
+     ]
+    },
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "two"
+      }
+     ]
+    },
+    {
+     "type": "blockquote",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "nested"
+        }
+       ]
+      },
+      {
+       "type": "blockquote",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "deep"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "codeBlock",
+     "attrs": {
+      "language": "py"
+     },
+     "content": [
+      {
+       "type": "text",
+       "text": "x = 1\n\ny = 2"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "blockquote",
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "a"
+      },
+      {
+       "type": "hardBreak"
+      },
+      {
+       "type": "text",
+       "text": "b"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "blockquote"
+  }
+ ]
+}

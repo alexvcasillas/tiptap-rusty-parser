@@ -1,0 +1,104 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "bulletList",
+   "content": [
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "a"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "b"
+        }
+       ]
+      },
+      {
+       "type": "bulletList",
+       "content": [
+        {
+         "type": "listItem",
+         "content": [
+          {
+           "type": "paragraph",
+           "content": [
+            {
+             "type": "text",
+             "text": "b1"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "type": "listItem",
+         "content": [
+          {
+           "type": "paragraph",
+           "content": [
+            {
+             "type": "text",
+             "text": "b2"
+            }
+           ]
+          },
+          {
+           "type": "orderedList",
+           "content": [
+            {
+             "type": "listItem",
+             "content": [
+              {
+               "type": "paragraph",
+               "content": [
+                {
+                 "type": "text",
+                 "text": "deep"
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "c"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

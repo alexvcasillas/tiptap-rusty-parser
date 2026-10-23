@@ -1,0 +1,71 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "codeBlock",
+   "content": [
+    {
+     "type": "text",
+     "text": "plain"
+    }
+   ]
+  },
+  {
+   "type": "codeBlock",
+   "attrs": {
+    "language": "rust"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "fn main() {}\n"
+    }
+   ]
+  },
+  {
+   "type": "codeBlock"
+  },
+  {
+   "type": "codeBlock",
+   "attrs": {
+    "language": "md"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "has ``` inside\nand ` single"
+    }
+   ]
+  },
+  {
+   "type": "codeBlock",
+   "content": [
+    {
+     "type": "text",
+     "text": "````four````"
+    }
+   ]
+  },
+  {
+   "type": "codeBlock",
+   "attrs": {
+    "language": "x`y"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "a"
+    },
+    {
+     "type": "text",
+     "text": "b",
+     "marks": [
+      {
+       "type": "bold"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
