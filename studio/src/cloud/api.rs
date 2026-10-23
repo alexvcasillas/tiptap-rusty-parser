@@ -56,8 +56,13 @@ pub fn base_url(app_id: &str, override_url: &str) -> Result<String, String> {
             return Ok(o.to_string());
         }
         if let Some(rest) = o.strip_prefix("http://") {
-            let host = rest.split(['/', ':']).next().unwrap_or("");
-            if host == "localhost" || host == "127.0.0.1" {
+            let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+            let (host, port) = authority
+                .rsplit_once(':')
+                .map_or((authority, None), |(h, p)| (h, Some(p)));
+            let numeric_port =
+                port.is_none_or(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+            if (host == "localhost" || host == "127.0.0.1") && numeric_port {
                 return Ok(o.to_string());
             }
         }
@@ -241,16 +246,85 @@ pub fn parse_versions(v: &Value) -> Result<Vec<VersionEntry>, ApiError> {
         })
         .collect();
     let num = |e: &VersionEntry| e.id.parse::<i64>().ok();
-    if out.iter().all(|e| e.date.is_some()) {
-        // ISO-8601 and epoch numbers both sort correctly as (len, text).
-        out.sort_by(|a, b| {
-            let (a, b) = (a.date.as_deref().unwrap(), b.date.as_deref().unwrap());
-            (b.len(), b).cmp(&(a.len(), a))
-        });
-    } else {
-        out.sort_by_key(|e| std::cmp::Reverse(num(e)));
+    let instants: Option<Vec<f64>> = out
+        .iter()
+        .map(|e| e.date.as_deref().and_then(instant))
+        .collect();
+    match instants {
+        Some(t) => {
+            let mut idx: Vec<usize> = (0..out.len()).collect();
+            idx.sort_by(|&a, &b| t[b].total_cmp(&t[a]));
+            out = idx.into_iter().map(|i| out[i].clone()).collect();
+        }
+        None => out.sort_by_key(|e| std::cmp::Reverse(num(e))),
     }
     Ok(out)
+}
+
+/// Seconds since the epoch from an epoch number (seconds or milliseconds) or
+/// an ISO-8601 date / date-time with optional fraction and `Z` / `±HH[:MM]`.
+fn instant(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if let Ok(n) = s.parse::<f64>() {
+        return Some(if n.abs() > 1e11 { n / 1000. } else { n });
+    }
+    let b = s.as_bytes();
+    let digits = |r: std::ops::Range<usize>| -> Option<i64> {
+        let part = s.get(r)?;
+        (!part.is_empty() && part.bytes().all(|c| c.is_ascii_digit()))
+            .then(|| part.parse().ok())
+            .flatten()
+    };
+    let (y, m, d) = (digits(0..4)?, digits(5..7)?, digits(8..10)?);
+    if b.get(4) != Some(&b'-')
+        || b.get(7) != Some(&b'-')
+        || !(1..=12).contains(&m)
+        || !(1..=31).contains(&d)
+    {
+        return None;
+    }
+    // Days from civil (Howard Hinnant), then clock and offset.
+    let (y2, m2) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    let era = y2.div_euclid(400);
+    let yoe = y2 - era * 400;
+    let doy = (153 * m2 + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let mut secs = days as f64 * 86_400.;
+    let mut rest = &s[10..];
+    if let Some(r) = rest.strip_prefix(['T', 't', ' ']) {
+        if r.len() < 5 || r.as_bytes()[2] != b':' {
+            return None;
+        }
+        let hh: f64 = r[0..2].parse().ok()?;
+        let mm: f64 = r[3..5].parse().ok()?;
+        secs += hh * 3600. + mm * 60.;
+        rest = &r[5..];
+        if let Some(r) = rest.strip_prefix(':') {
+            let end = r
+                .find(|c: char| !c.is_ascii_digit() && c != '.')
+                .unwrap_or(r.len());
+            secs += r[..end].parse::<f64>().ok()?;
+            rest = &r[end..];
+        }
+    }
+    match rest {
+        "" | "Z" | "z" => Some(secs),
+        off => {
+            let sign = match off.as_bytes()[0] {
+                b'+' => 1.,
+                b'-' => -1.,
+                _ => return None,
+            };
+            let o = off[1..].replace(':', "");
+            if o.len() != 4 && o.len() != 2 {
+                return None;
+            }
+            let oh: f64 = o[0..2].parse().ok()?;
+            let om: f64 = o.get(2..4).map_or(Some(0.), |m| m.parse().ok())?;
+            Some(secs - sign * (oh * 3600. + om * 60.))
+        }
+    }
 }
 
 /// The body is the doc itself (`{"type":"doc",…}`) or keyed by fragment name
@@ -321,6 +395,10 @@ mod tests {
         assert!(base_url("x", "http://localhost").is_ok());
         assert!(base_url("x", "http://example.com").is_err());
         assert!(base_url("x", "http://localhost.evil.com").is_err());
+        assert!(base_url("x", "http://localhost:80@outside.example").is_err());
+        assert!(base_url("x", "http://user@localhost").is_err());
+        assert!(base_url("x", "http://localhost:abc").is_err());
+        assert!(base_url("x", "http://localhost:8080/x?y#z").is_ok());
         assert!(base_url("x", "https://docs.example.com").is_ok());
         assert!(base_url("x", "ftp://a").is_err());
     }
@@ -354,6 +432,30 @@ mod tests {
         assert_eq!(v[0].name.as_deref(), Some("final"));
         let v = parse_versions(&json!({"versions": [{"id": "2"}, {"id": "10"}]})).unwrap();
         assert_eq!(v[0].id, "10");
+        // Mixed precision and offsets sort by instant, not text length.
+        let v = parse_versions(&json!([
+            {"id": "a", "date": "2026-01-01T00:00:00.000Z"},
+            {"id": "b", "date": "2026-10-01T00:00:00Z"},
+            {"id": "c", "date": "2026-10-01T01:30:00+02:00"},
+            {"id": "d", "date": "2026-09-30"},
+        ]))
+        .unwrap();
+        assert_eq!(
+            v.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
+            ["b", "c", "d", "a"]
+        );
+    }
+
+    #[test]
+    fn parses_instants() {
+        assert_eq!(instant("1970-01-02"), Some(86_400.));
+        assert_eq!(instant("1970-01-01T01:00:00+01:00"), Some(0.));
+        assert_eq!(instant("1970-01-01T00:00:00.5Z"), Some(0.5));
+        assert_eq!(instant("2000-03-01T00:00:00Z"), Some(951_868_800.));
+        assert_eq!(instant("1700000000000"), Some(1_700_000_000.));
+        assert_eq!(instant("1700000000"), Some(1_700_000_000.));
+        assert_eq!(instant("yesterday"), None);
+        assert_eq!(instant("2026-13-01"), None);
     }
 
     #[test]

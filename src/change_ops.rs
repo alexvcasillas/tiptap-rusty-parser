@@ -174,7 +174,7 @@ pub fn map_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
                     }
                 }
             }
-            Change::Move { path: p, from, to } => {
+            Change::Move { path: p, from, to } if from != to => {
                 if let Some(d) = affected_level(&q, p) {
                     let k = q[d];
                     if *from == k {
@@ -227,7 +227,23 @@ pub fn unmap_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
 /// node: an earlier insert at the same slot leaves it in place instead of
 /// dropping it.
 fn unmap(path: &[usize], changes: &[Change], slot: bool) -> Option<Vec<usize>> {
+    unmap_text(path, changes, slot, None).map(|(p, _)| p)
+}
+
+/// Scalar span `(from, len_del)` inside a text node.
+type TextSpan = (usize, usize);
+
+/// [`unmap`] that also carries a scalar span `(from, len_del)` of the text node
+/// at `path` back through earlier splices of that node. `None` when the span
+/// touches text an earlier change inserted or the node's text was replaced.
+fn unmap_text(
+    path: &[usize],
+    changes: &[Change],
+    slot: bool,
+    text: Option<TextSpan>,
+) -> Option<(Vec<usize>, Option<TextSpan>)> {
     let mut q = path.to_vec();
+    let mut text = text;
     let last = q.len().wrapping_sub(1);
     for change in changes.iter().rev() {
         match change {
@@ -247,7 +263,7 @@ fn unmap(path: &[usize], changes: &[Change], slot: bool) -> Option<Vec<usize>> {
                     }
                 }
             }
-            Change::Move { path: p, from, to } => {
+            Change::Move { path: p, from, to } if from != to => {
                 if let Some(d) = affected_level(&q, p) {
                     let k = q[d];
                     if *to == k && !(slot && d == last) {
@@ -267,10 +283,29 @@ fn unmap(path: &[usize], changes: &[Change], slot: bool) -> Option<Vec<usize>> {
             Change::Replace { path: p, .. } if p.len() < q.len() && q[..p.len()] == *p => {
                 return None;
             }
+            Change::SpliceText {
+                path: p,
+                from: pf,
+                len_del: pdel,
+                insert,
+            } if text.is_some() && *p == q => {
+                let (from, len_del) = text.unwrap();
+                let ins = insert.chars().count();
+                if from >= pf + ins {
+                    text = Some((from - ins + pdel, len_del));
+                } else if from + len_del > *pf {
+                    return None; // overlaps text the earlier splice inserted
+                }
+            }
+            Change::SetText { path: p, .. } | Change::Replace { path: p, .. }
+                if text.is_some() && *p == q =>
+            {
+                return None;
+            }
             _ => {}
         }
     }
-    Some(q)
+    Some((q, text))
 }
 
 /// Re-express `change`, taken from the middle of a change list right after
@@ -325,9 +360,18 @@ pub fn rebase_change(change: &Change, prior: &[Change]) -> Option<Change> {
         | Change::SetMarks { path, .. }
         | Change::SetExtra { path, .. }
         | Change::RemoveExtra { path, .. }
-        | Change::Replace { path, .. }
-        | Change::SpliceText { path, .. } => {
+        | Change::Replace { path, .. } => {
             *path = unmap(path, prior, false)?;
+        }
+        Change::SpliceText {
+            path,
+            from,
+            len_del,
+            ..
+        } => {
+            let (p, span) = unmap_text(path, prior, false, Some((*from, *len_del)))?;
+            *path = p;
+            (*from, *len_del) = span?;
         }
     }
     Some(out)

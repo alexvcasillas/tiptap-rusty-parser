@@ -177,7 +177,10 @@ cmd_notarize() {
     die "notarization failed (status: ${status:-unknown}, exit $rc)"
   fi
   [ "$upload" = "$target" ] || rm -f "$upload"
-  staple "$target"
+  case "$target" in
+    *.zip) log "zip archives cannot be stapled; ticket is online only" ;;
+    *) staple "$target" ;;
+  esac
 }
 
 # Staple with retries: the ticket lookup (CloudKit) drops connections now and then,

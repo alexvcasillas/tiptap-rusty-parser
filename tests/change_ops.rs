@@ -504,3 +504,61 @@ fn rebase_change_shifts_paths_and_slots() {
     };
     assert_eq!(rebase_change(&inside, &prior), None);
 }
+
+#[test]
+fn rebase_change_ignores_noop_moves() {
+    let prior = vec![Change::Move {
+        path: vec![],
+        from: 0,
+        to: 0,
+    }];
+    let ins = Change::Insert {
+        path: vec![],
+        index: 0,
+        node: p("m"),
+    };
+    assert_eq!(rebase_change(&ins, &prior), Some(ins.clone()));
+    assert_eq!(unmap_path(&[1], &prior), Some(vec![1]));
+}
+
+#[test]
+fn rebase_change_remaps_splice_offsets() {
+    let splice = |from, len_del, insert: &str| Change::SpliceText {
+        path: vec![0, 0],
+        from,
+        len_del,
+        insert: insert.into(),
+    };
+    // base "abc"; prior inserted "X" at 0 → "Xabc"; later deletes "b" (offset 2).
+    let prior = vec![splice(0, 0, "X")];
+    assert_eq!(
+        rebase_change(&splice(2, 1, ""), &prior),
+        Some(splice(1, 1, ""))
+    );
+    let mut t = doc([p("abc")]);
+    apply(&mut t, &[rebase_change(&splice(2, 1, ""), &prior).unwrap()]).unwrap();
+    assert_eq!(t, doc([p("ac")]));
+    // Before the earlier insertion: unchanged.
+    assert_eq!(
+        rebase_change(&splice(0, 0, "y"), &prior),
+        Some(splice(0, 0, "y"))
+    );
+    // Touching the inserted text, or a whole-text rewrite: no base target.
+    assert_eq!(rebase_change(&splice(0, 2, ""), &prior), None);
+    let set = vec![Change::SetText {
+        path: vec![0, 0],
+        text: Some("zzz".into()),
+    }];
+    assert_eq!(rebase_change(&splice(1, 1, ""), &set), None);
+    // Other nodes are untouched.
+    let other = vec![Change::SpliceText {
+        path: vec![1, 0],
+        from: 0,
+        len_del: 0,
+        insert: "X".into(),
+    }];
+    assert_eq!(
+        rebase_change(&splice(2, 1, ""), &other),
+        Some(splice(2, 1, ""))
+    );
+}

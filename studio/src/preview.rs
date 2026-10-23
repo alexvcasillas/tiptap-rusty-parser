@@ -184,6 +184,10 @@ fn is_textblock(node: &Node) -> bool {
 fn block(node: &Node, path: &mut Vec<usize>, ctx: &Ctx) -> AnyElement {
     let ty = node_type(node);
     let body: AnyElement = match ty {
+        // text leaf outside a textblock (custom containers, top-level text)
+        _ if node.text.is_some() => div()
+            .child(SharedString::from(node.text.clone().unwrap_or_default()))
+            .into_any_element(),
         "heading" => {
             let level = node.attr("level").and_then(|v| v.as_u64()).unwrap_or(1);
             let size = match level {
@@ -450,13 +454,15 @@ fn inline(node: &Node, path: &mut Vec<usize>, ctx: &Ctx) -> StyledText {
     let mut highlights: Vec<(std::ops::Range<usize>, HighlightStyle)> = Vec::new();
     for (i, c) in node.children().iter().enumerate() {
         let start = text.len();
+        let hard_break = c.text.is_none() && node_type(c) == "hardBreak";
         match c.text.as_deref() {
             Some(t) => text.push_str(t),
+            None if hard_break => text.push('\n'),
             None => text.push_str(&format!("⟨{}⟩", node_type(c))),
         }
         let range = start..text.len();
         let mut style = HighlightStyle::default();
-        let mut styled = c.text.is_none();
+        let mut styled = c.text.is_none() && !hard_break;
         if styled {
             style.color = Some(Tokens::unknown());
         }
