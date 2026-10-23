@@ -1,0 +1,111 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://a.example"
+              }
+            }
+          ],
+          "text": "plain"
+        },
+        {
+          "type": "text",
+          "text": " "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://b.example",
+                "title": "The Title"
+              }
+            }
+          ],
+          "text": "titled"
+        },
+        {
+          "type": "text",
+          "text": " "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://auto.example"
+              }
+            }
+          ],
+          "text": "https://auto.example"
+        },
+        {
+          "type": "text",
+          "text": " "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "mailto:me@mail.example"
+              }
+            }
+          ],
+          "text": "me@mail.example"
+        },
+        {
+          "type": "text",
+          "text": " https://bare.example"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "u"
+              }
+            },
+            {
+              "type": "bold"
+            }
+          ],
+          "text": "bold link"
+        },
+        {
+          "type": "text",
+          "text": " "
+        },
+        {
+          "type": "text",
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://ref.example"
+              }
+            }
+          ],
+          "text": "ref"
+        }
+      ]
+    }
+  ]
+}
