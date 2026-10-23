@@ -13,6 +13,7 @@
 # `{{ package }}-v{{ version }}`, which is what happened to v0.5.0.
 [[package]]
 name = "tiptap-rusty-parser"
+changelog_path = "parser/CHANGELOG.md"
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 

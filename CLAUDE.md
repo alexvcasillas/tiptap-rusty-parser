@@ -10,7 +10,8 @@
 - Sacrifice grammar for concision.
 
 ## Project
-tiptap-rusty-parser: Rust crate. Parse/walk/query/mutate Tiptap JSONContent (ProseMirror) docs.
+Repo tiptap-studio, virtual workspace: `parser/` (crate tiptap-rusty-parser), `bindings/wasm/` (npm), `studio/` (desktop app).
+tiptap-rusty-parser: Rust crate in `parser/`. Parse/walk/query/mutate Tiptap JSONContent (ProseMirror) docs.
 - Schema-agnostic: accept any node/mark types, preserve unknown fields, faithful roundtrip.
 - Query: predicate closures (find/find_all/walk).
 - Mutation: in-place mutable tree (&mut).

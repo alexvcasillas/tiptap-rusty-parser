@@ -11,7 +11,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-tiptap-rusty-parser = { path = "../.." }
+tiptap-rusty-parser = { path = "../../parser" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = "1"
