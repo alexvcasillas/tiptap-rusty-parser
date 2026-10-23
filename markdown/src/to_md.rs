@@ -644,6 +644,17 @@ impl<'a> Renderer<'a> {
         let core = body.trim_end_matches(is_ws);
         self.close_not_in(marks, true);
         if core.is_empty() {
+            // `[ ](u)` is still a link: open it around the whitespace
+            let link = marks
+                .iter()
+                .find(|m| m.mark_type == "link" && mark_rank(m).is_some());
+            if let Some(link) = link {
+                if !self.active.iter().any(|a| a.mark_type == "link") {
+                    self.open_after_pending(std::slice::from_ref(link), true, "", '[');
+                    self.escape_text(text);
+                    return;
+                }
+            }
             if !self.hb {
                 self.ws.push_str(text);
             }

@@ -200,8 +200,15 @@ fn regression_snippets_roundtrip() {
 }
 
 #[test]
-fn empty_link_destination_roundtrips() {
-    for md in ["[a]()", "[> ]()", "x [a](<> \"t\")"] {
+fn empty_link_destination_or_text_roundtrips() {
+    for md in [
+        "[a]()",
+        "[> ]()",
+        "x [a](<> \"t\")",
+        "[ ](2) `",
+        "[\t](0)`c`",
+        "a [ ](u)",
+    ] {
         let d1 = from_markdown_with(md, &ParseOptions::default());
         let out = to_markdown_with(&d1, &RenderOptions::default());
         let d2 = from_markdown_with(&out, &ParseOptions::default());
