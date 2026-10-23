@@ -59,7 +59,7 @@ get a minimal, character-level change set you can present as suggestions, then
 apply or reject:
 
 ```js
-import { TiptapDoc } from "tiptap-rusty-parser";
+import { TiptapDoc } from "@tiptap-studio/rusty-parser";
 
 const current  = TiptapDoc.fromJSON(editor.getJSON());
 const proposed = TiptapDoc.fromJSON(aiProposedJSON);
