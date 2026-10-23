@@ -1083,6 +1083,13 @@ impl<'a> Renderer<'a> {
         }
         while i < b.len() {
             let c = b[i];
+            if lead && self.mode != Mode::Normal && (c == b'\n' || c == b'\r') {
+                // would be a stripped space here
+                self.out.push_str(&s[last..i]);
+                last = i + 1;
+                i += 1;
+                continue;
+            }
             if lead && (c == b' ' || c == b'\t') {
                 self.out.push_str(&s[last..i]);
                 self.out.push_str(if c == b' ' { "&#32;" } else { "&#9;" });

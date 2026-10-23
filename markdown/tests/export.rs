@@ -545,3 +545,10 @@ fn trailing_and_mark_closing_hard_break_runs() {
         assert_idempotent(&json);
     }
 }
+
+#[test]
+fn leading_newline_in_heading() {
+    let h = r#"{"type":"doc","content":[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"\n<","marks":[{"type":"bold"}]}]}]}"#;
+    assert_eq!(md(h), "## **\\<**\n");
+    assert_idempotent(h);
+}
