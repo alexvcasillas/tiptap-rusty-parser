@@ -651,3 +651,27 @@ fn newline_breaks_and_empty_rendering_blocks_are_stable() {
         assert_idempotent(&format!(r#"{{"type":"doc","content":{content}}}"#));
     }
 }
+
+#[test]
+fn leading_marked_break_runs_are_stable() {
+    let b = r#"{"type":"hardBreak","marks":[{"type":"bold"}]}"#;
+    let bt = |t: &str| format!(r#"{{"type":"text","text":"{t}","marks":[{{"type":"bold"}}]}}"#);
+    for content in [
+        format!("[{b},{}]", bt("\\n9")),
+        format!("[{b},{b},{}]", bt("x")),
+        format!("[{b},{b}]"),
+        format!(r#"[{{"type":"text","text":"a"}},{b},{b}]"#),
+        // whitespace before a dropped break run
+        r#"[{"type":"text","text":" "},{"type":"hardBreak"},{"type":"hardBreak","marks":[{"type":"bold"}]}]"#.to_owned(),
+    ] {
+        let json = format!(r#"{{"type":"doc","content":[{{"type":"paragraph","content":{content}}}]}}"#);
+        assert_idempotent(&json);
+        assert!(!md(&json).contains("****"), "{}", md(&json));
+    }
+    // a whitespace-only code span is content
+    assert_idempotent(
+        r#"{"type":"doc","content":[{"type":"orderedList","content":[{"type":"listItem","content":[
+        {"type":"paragraph","content":[{"type":"text","text":"\t","marks":[{"type":"code"}]}]},
+        {"type":"paragraph","content":[{"type":"text","text":"x"}]}]}]}]}"#,
+    );
+}

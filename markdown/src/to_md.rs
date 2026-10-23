@@ -178,6 +178,9 @@ struct Renderer<'a> {
     /// Span (start, end, cs before) of the last run of emitted hard breaks;
     /// `out.len() == end` means nothing followed it yet.
     hb_run: (usize, usize, usize),
+    /// Last `write_opens`: (out start, out end, first `active` index).
+    /// (`restore`: the char before them, if it was entity-encoded.)
+    opened: (usize, usize, usize, Option<char>),
     /// Delimiter of the open `italic` mark (differs from `emphasis` when the
     /// opener would abut a closing `*`/`_` run and merge with it).
     em_open: char,
@@ -213,6 +216,7 @@ impl<'a> Renderer<'a> {
             hb_marks: &[],
             ws_after: String::new(),
             hb_run: (0, usize::MAX, 0),
+            opened: (0, usize::MAX, 0, None),
             em_open: '*',
             bold_open: '*',
             closed_at: usize::MAX,
@@ -762,8 +766,12 @@ impl<'a> Renderer<'a> {
             Mode::Normal => {
                 if self.hb {
                     // consecutive breaks: emit the earlier one (and the
-                    // whitespace before it) now
-                    self.flush_pending();
+                    // whitespace before it) now, inside the marks both carry
+                    if self.hb_marks == marks {
+                        self.open_after_pending(marks, false, "", '\\');
+                    } else {
+                        self.flush_pending();
+                    }
                 }
                 // a break inside link text opens the link (no flanking rules)
                 let link = marks
@@ -838,8 +846,13 @@ impl<'a> Renderer<'a> {
     }
 
     fn flush_pending(&mut self) {
+        let start = self.out.len();
         self.flush_ws();
         self.flush_hb();
+        if self.hb_run.1 == self.out.len() && self.hb_run.0 > start {
+            // whitespace right before a break run is dropped with it
+            self.hb_run.0 = start;
+        }
     }
 
     fn flush_ws(&mut self) {
@@ -910,6 +923,15 @@ impl<'a> Renderer<'a> {
         } else {
             None
         };
+        // marks whose only content was those breaks: drop their openers
+        let (os, oe, of, restore) = self.opened;
+        if breaks.is_some() && self.out.len() == oe && of >= i && of < self.active.len() {
+            self.out.truncate(os);
+            if let Some(p) = restore {
+                self.out.push(p);
+            }
+            self.active.truncate(of);
+        }
         while self.active.len() > i {
             if let Some(m) = self.active.pop() {
                 if m.mark_type == "link" {
@@ -932,6 +954,7 @@ impl<'a> Renderer<'a> {
         }
         if let Some(b) = breaks {
             self.hb_run.0 = self.out.len();
+
             self.out.push_str(&b);
             self.cs = self.out.len();
             self.hb_run.1 = self.out.len();
@@ -967,6 +990,7 @@ impl<'a> Renderer<'a> {
             let m = self.active[i];
             self.open_mark(m);
         }
+        self.opened = (start, self.out.len(), from, None);
         // The leading delimiter run must be left-flanking (and for `_` not
         // also right-flanking): a word char before it breaks that when the
         // run is followed by punctuation, or always for `_`. Encode that char.
@@ -980,8 +1004,10 @@ impl<'a> Renderer<'a> {
             if maybe_word(p) && (maybe_punct(n) || c == b'_') {
                 let mut e = String::with_capacity(12);
                 let _ = write!(e, "&#{};", p as u32);
-                self.out.replace_range(start - p.len_utf8()..start, &e);
+                let at = start - p.len_utf8();
+                self.out.replace_range(at..start, &e);
                 self.closed_at = usize::MAX;
+                self.opened = (at, self.out.len(), from, Some(p));
             }
         }
     }
@@ -1365,11 +1391,13 @@ fn is_tight(items: &[Node]) -> bool {
 fn renders_empty(p: &Node) -> bool {
     p.node_type.as_deref() == Some("paragraph")
         && p.children().iter().all(|c| {
-            let link = c.marks.as_deref().is_some_and(|m| {
-                m.iter()
-                    .any(|m| m.mark_type == "link" && mark_rank(m).is_some())
+            // whitespace in a link or code span is written
+            let kept = c.marks.as_deref().is_some_and(|m| {
+                m.iter().any(|m| {
+                    m.mark_type == "code" || (m.mark_type == "link" && mark_rank(m).is_some())
+                })
             });
-            !link
+            !kept
                 && match c.node_type.as_deref() {
                     Some("hardBreak") => true,
                     Some("text") => c
