@@ -625,9 +625,31 @@ impl<'a> Renderer<'a> {
     }
 
     fn items(&mut self, nodes: &'a [Node]) {
-        for n in nodes {
+        let mut i = 0;
+        while i < nodes.len() {
+            let n = &nodes[i];
+            i += 1;
             match n.node_type.as_deref() {
-                Some("text") => self.text_item(n),
+                Some("text") => {
+                    // Adjacent texts with equal marks re-import as one node:
+                    // escape them as one (line-start / `<` / `&` lookahead).
+                    let marks = n.marks.as_deref().unwrap_or(&[]);
+                    let same = |m: &Node| {
+                        m.node_type.as_deref() == Some("text")
+                            && m.marks.as_deref().unwrap_or(&[]) == marks
+                    };
+                    let j = i + nodes[i..].iter().take_while(|m| same(m)).count();
+                    if j == i {
+                        self.text_item(n.text.as_deref().unwrap_or(""), marks);
+                    } else {
+                        let mut s = String::from(n.text.as_deref().unwrap_or(""));
+                        for m in &nodes[i..j] {
+                            s.push_str(m.text.as_deref().unwrap_or(""));
+                        }
+                        self.text_item(&s, marks);
+                        i = j;
+                    }
+                }
                 Some("hardBreak") => self.hard_break(n),
                 Some("image") => self.image(n),
                 None => self.items(n.children()),
@@ -651,12 +673,10 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn text_item(&mut self, n: &'a Node) {
-        let text = match n.text.as_deref() {
-            Some(t) if !t.is_empty() => t,
-            _ => return,
-        };
-        let marks = n.marks.as_deref().unwrap_or(&[]);
+    fn text_item(&mut self, text: &str, marks: &'a [Mark]) {
+        if text.is_empty() {
+            return;
+        }
         if marks.iter().any(|m| m.mark_type == "code") {
             self.close_not_in(marks, true);
             // code is innermost: a mark opening now must not land inside it
@@ -1041,11 +1061,12 @@ impl<'a> Renderer<'a> {
                     let w = |x: Option<&u8>| x.is_some_and(|x| x.is_ascii_alphanumeric());
                     !(i > 0 && w(b.get(i - 1)) && w(b.get(i + 1)))
                 }
-                b'<' => matches!(
-                    b.get(i + 1),
-                    Some(x) if x.is_ascii_alphabetic() || matches!(x, b'/' | b'!' | b'?')
-                ),
-                b'&' => entity_like(&b[i + 1..]),
+                // at the end of the piece the next char is unknown (it may
+                // come from a node with marks that render no delimiter)
+                b'<' => b
+                    .get(i + 1)
+                    .is_none_or(|x| x.is_ascii_alphabetic() || matches!(x, b'/' | b'!' | b'?')),
+                b'&' => i + 1 == b.len() || entity_like(&b[i + 1..]),
                 b'|' => self.mode == Mode::Cell,
                 b'#' if ls => {
                     let mut j = i;

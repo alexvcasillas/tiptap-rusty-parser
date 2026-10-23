@@ -435,3 +435,56 @@ fn whitespace_in_link_text_at_block_end() {
         }
     }
 }
+
+#[test]
+fn adjacent_text_nodes_with_equal_marks_escape_as_one() {
+    let t = |s: &str| format!(r#"{{"type":"text","text":"{s}"}}"#);
+    for pair in [
+        ["-", "9"],
+        ["+", "} "],
+        ["(<", "!"],
+        ["<", "x-"],
+        ["1", ". a"],
+        ["#", " h"],
+        ["&", "amp;"],
+        ["a", "_b"],
+    ] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{},{}]}}]}}"#,
+            t(pair[0]),
+            t(pair[1])
+        );
+        assert_idempotent(&json);
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        assert_eq!(
+            v["content"][0]["content"][0]["text"],
+            format!("{}{}", pair[0], pair[1]).trim_end(),
+            "{out:?}"
+        );
+    }
+}
+
+#[test]
+fn lookahead_escapes_hold_across_unknown_marks() {
+    let json = r#"{"type":"doc","content":[{"type":"paragraph","content":[
+        {"type":"text","text":"&"},
+        {"type":"text","text":"amp; <","marks":[{"type":"highlight"}]},
+        {"type":"text","text":"b>"}]}]}"#;
+    let (out, v) = reimport(json, &RenderOptions::default());
+    assert_eq!(
+        v["content"][0]["content"][0]["text"], "&amp; <b>",
+        "{out:?}"
+    );
+    let back = tiptap_rusty_markdown::from_markdown_with(
+        &out,
+        &tiptap_rusty_markdown::ParseOptions {
+            html: tiptap_rusty_markdown::HtmlPolicy::Drop,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        back.to_value().unwrap()["content"][0]["content"][0]["text"],
+        "&amp; <b>",
+        "{out:?}"
+    );
+}
