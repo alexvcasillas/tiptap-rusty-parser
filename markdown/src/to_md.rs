@@ -129,8 +129,10 @@ enum Prev {
 #[derive(Default)]
 struct St {
     prev: Prev,
-    /// Whether the previous sibling list used the alternate marker.
+    /// Whether the previous sibling ordered list used the alternate delimiter.
     alt: bool,
+    /// Marker of the previous sibling bullet list.
+    bullet: char,
     /// Task item: a first block other than a paragraph must start on the
     /// next line (`- [x] - a` would be text).
     task_line: bool,
@@ -406,9 +408,14 @@ impl<'a> Renderer<'a> {
                     return;
                 }
                 self.begin(list_sep(n, false, sep), st);
-                let alt = st.prev == Prev::Bullet && !st.alt;
-                self.list(n, false, alt);
-                (st.prev, st.alt) = (Prev::Bullet, alt);
+                // differ from an adjacent bullet list's marker (or they merge)
+                let avoid = if st.prev == Prev::Bullet {
+                    st.bullet
+                } else {
+                    '\0'
+                };
+                st.bullet = self.list(n, false, false, avoid);
+                st.prev = Prev::Bullet;
             }
             "orderedList" => {
                 if n.children().is_empty() {
@@ -416,7 +423,7 @@ impl<'a> Renderer<'a> {
                 }
                 self.begin(list_sep(n, true, sep), st);
                 let alt = st.prev == Prev::Ordered && !st.alt;
-                self.list(n, true, alt);
+                self.list(n, true, alt, '\0');
                 (st.prev, st.alt) = (Prev::Ordered, alt);
             }
             "table" => {
@@ -511,7 +518,8 @@ impl<'a> Renderer<'a> {
 
     // ---- lists ----------------------------------------------------------
 
-    fn list(&mut self, n: &'a Node, ordered: bool, alt: bool) {
+    /// Returns the bullet char used (bullet lists).
+    fn list(&mut self, n: &'a Node, ordered: bool, alt: bool, avoid: char) -> char {
         let items = n.children();
         let sep = if is_tight(items) {
             Sep::Tight
@@ -519,25 +527,18 @@ impl<'a> Renderer<'a> {
             Sep::Blank
         };
         let mut num = attr_u64(n, "start").unwrap_or(1);
-        let bullet = if alt {
-            if self.bullet == '-' {
-                '*'
-            } else {
-                '-'
-            }
-        } else {
-            self.bullet
-        };
-        // `- - -` (nested lists opened on one line) reads as a thematic break
+        let other = if self.bullet == '-' { '*' } else { '-' };
+        // not `avoid`, and `- - -` (nested lists opened on one line) would
+        // read as a thematic break
         let bullet = if ordered {
-            bullet
+            self.bullet
         } else {
             let line = &self.out.as_bytes()[self.out.rfind('\n').map_or(0, |i| i + 1)..];
             let count = |c: char| line.iter().filter(|&&b| b == c as u8).count();
-            [bullet, '-', '*', '+']
+            [self.bullet, other, '-', '*', '+']
                 .into_iter()
-                .find(|&c| count(c) < 2)
-                .unwrap_or(bullet)
+                .find(|&c| c != avoid && count(c) < 2)
+                .unwrap_or(other)
         };
         let delim = if alt { ')' } else { '.' };
         for (i, item) in items.iter().enumerate() {
@@ -580,6 +581,7 @@ impl<'a> Renderer<'a> {
                 self.out.pop(); // empty item: `-` without trailing space
             }
         }
+        bullet
     }
 
     // ---- tables ---------------------------------------------------------

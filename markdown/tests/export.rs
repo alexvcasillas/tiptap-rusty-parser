@@ -621,3 +621,16 @@ fn render_nothing_edge_cases_are_stable() {
         assert_idempotent(&format!(r#"{{"type":"doc","content":{content}}}"#));
     }
 }
+
+#[test]
+fn adjacent_bullet_lists_never_share_a_marker() {
+    let empty = r#"{"type":"bulletList","content":[{"type":"listItem"}]}"#;
+    let json = format!(
+        r#"{{"type":"doc","content":[{{"type":"bulletList","content":[{{"type":"listItem","content":[
+        {{"type":"bulletList","content":[{{"type":"listItem","content":[{empty},{empty}]}}]}}]}}]}}]}}"#
+    );
+    assert_idempotent(&json);
+    let (out, v) = reimport(&json, &RenderOptions::default());
+    let inner = &v["content"][0]["content"][0]["content"][1]["content"][0]["content"];
+    assert_eq!(inner.as_array().map(|a| a.len()), Some(3), "{out:?} {v}");
+}
