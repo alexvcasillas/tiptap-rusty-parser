@@ -6,7 +6,7 @@
       { "type": "text", "text": "A very fast, " },
       { "type": "text", "marks": [ { "type": "bold" } ], "text": "schema-agnostic" },
       { "type": "text", "text": " parser for Tiptap and ProseMirror JSON. Query it, mutate it in place, and " },
-      { "type": "text", "marks": [ { "type": "link", "attrs": { "href": "https://github.com/alexvcasillas/tiptap-rusty-parser", "target": "_blank" } } ], "text": "roundtrip it" },
+      { "type": "text", "marks": [ { "type": "link", "attrs": { "href": "https://github.com/alexvcasillas/tiptap-studio", "target": "_blank" } } ], "text": "roundtrip it" },
       { "type": "text", "text": " without losing a field." }
     ] },
     { "type": "paragraph", "content": [ { "type": "text", "text": "Now with a diff engine." } ] },
