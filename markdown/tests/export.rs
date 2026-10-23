@@ -549,7 +549,7 @@ fn trailing_and_mark_closing_hard_break_runs() {
 #[test]
 fn leading_newline_in_heading() {
     let h = r#"{"type":"doc","content":[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"\n<","marks":[{"type":"bold"}]}]}]}"#;
-    assert_eq!(md(h), "## **\\<**\n");
+    assert_eq!(md(h), "## **<**\n");
     assert_idempotent(h);
 }
 
@@ -697,5 +697,16 @@ fn whitespace_neighbours_are_stable() {
                 r#"{{"type":"doc","content":[{{"type":"orderedList","content":[{{"type":"listItem","content":[{{"type":"paragraph","content":[{{"type":"text","text":"a"}}]}},{block}]}},{{"type":"listItem"}}]}}]}}"#
             ));
         }
+    }
+}
+
+#[test]
+fn angle_and_ampersand_at_block_end_need_no_escape() {
+    for t in ["< ", "a&\\t", "x<\\n"] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{t}","marks":[{{"type":"bold"}}]}}]}}]}}"#
+        );
+        assert_idempotent(&json);
+        assert!(!md(&json).contains('\\'), "{}", md(&json));
     }
 }

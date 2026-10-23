@@ -636,7 +636,7 @@ impl<'a> Renderer<'a> {
         self.ws.clear();
         self.ws_after.clear();
         self.hb = false;
-        self.items(nodes);
+        self.items(nodes, true);
         self.close_not_in(&[], true);
         // trailing whitespace is stripped on re-parse, except non-ASCII (NBSP, ...)
         let ascii_ws = [' ', '\t', '\n', '\r'];
@@ -662,7 +662,8 @@ impl<'a> Renderer<'a> {
         self.hb = false;
     }
 
-    fn items(&mut self, nodes: &'a [Node]) {
+    /// `last`: nothing follows `nodes` in the run.
+    fn items(&mut self, nodes: &'a [Node], last: bool) {
         let mut i = 0;
         while i < nodes.len() {
             let n = &nodes[i];
@@ -688,6 +689,7 @@ impl<'a> Renderer<'a> {
                             .and_then(|t| t.chars().next())
                             .filter(|c| c.is_whitespace())
                             .map_or(0, |c| if is_nl(c as u8) { b'\n' } else { b' ' }),
+                        None if last => b' ',
                         _ => 0,
                     };
                     if j == i {
@@ -703,11 +705,11 @@ impl<'a> Renderer<'a> {
                 }
                 Some("hardBreak") => self.hard_break(n),
                 Some("image") => self.image(n),
-                None => self.items(n.children()),
-                Some(ty) if is_known_container(ty) => self.items(n.children()),
+                None => self.items(n.children(), false),
+                Some(ty) if is_known_container(ty) => self.items(n.children(), false),
                 Some(_) => match self.opts.unknown_node {
                     UnknownNodePolicy::Skip => {}
-                    UnknownNodePolicy::Transparent => self.items(n.children()),
+                    UnknownNodePolicy::Transparent => self.items(n.children(), false),
                     UnknownNodePolicy::Html => {
                         self.close_not_in(&[], false);
                         self.flush_pending();
