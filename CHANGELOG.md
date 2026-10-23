@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/tiptap-rusty-parser-v0.4.4...tiptap-rusty-parser-v0.5.0) - 2026-10-23
+
+### Added
+
+- *(source-map)* map node paths to JSON byte spans and back
+- *(studio)* read-only Tiptap Document Server browser with keychain-only tokens, open as A/B and diff versions
+- *(studio)* dropping a schema file loads it as the schema instead of opening it as A or B
+- *(studio)* schema validation with StarterKit schema, tree/inspector markers, Problems drawer and F8 stepping
+- *(schema)* locate offending child and mark in Violation, report unknown children once
+- *(studio)* open files sent by the OS (Finder, open -a, Dock drop) at launch and through the unsaved guard
+- *(studio)* resizable, collapsible panes (cmd-1/cmd-2) with layout and window bounds persisted to layout.json
+- *(studio)* diff change list in document order, sync scroll, Swap A/B, take B for subtree
+- *(studio)* find box with query language, live matches, counter, next/prev, tree and preview highlights
+- *(query)* small query language compiled to a zero-alloc node predicate (Query::parse, matches, find_paths)
+- *(studio)* insert node chooser, enter/duplicate/copy/cut/paste keys and raw JSON edit
+- *(studio)* open A via dialog, drop and recent files, unsaved-changes guard, parse errors as UI state, reload on change
+- *(studio)* diff as merge tool, Dismiss hides a change, Save and Save as write the merged A
+- *(studio)* Keep A resolves a change, survives edits, toggles back, and Apply all skips kept changes
+- *(studio)* diff mode with change list, tinted A/B trees, before/after inspector and undoable Take B
+- *(change-ops)* rebase_change to cherry-pick a mid-list diff Change onto its base
+- *(change-ops)* unmap_path, inverse of map_path for live-index change paths
+- *(transform)* apply_change to cherry-pick a diff Change into a transaction
+- *(studio)* typed attr editors, add attr, text editing, editable mark attrs, add mark with attrs
+- *(studio)* arrow-key document navigation and zero-padding preview frames with aligned list markers
+- *(studio)* wrap-in chooser, split, join next, alt-arrow moves, disabled structure actions
+- *(studio)* GPUI desktop inspector scaffold on gpui-kit 0.8
+
+### Fixed
+
+- address review findings (rebase no-op moves and splice offsets, loopback URL check, version date order, text leaves and hard breaks in preview, skip stapling zips)
+- *(studio)* toolbar fits at 1280 px: shrinkable find box, short schema label, icon toggle for Only matches, window min size
+- *(studio)* from_doc and replace_doc know the Document Server origin field
+- *(studio)* ignore a saved window position that no connected display shows
+- *(studio)* scope alt-arrow node moves to the Document context so they never fire while typing
+
+### Other
+
+- detect the studio version from its git tags so release-plz bumps it ([#52](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/52))
+- release-plz versions and tags the studio; release PR merge publishes crate, npm and desktop builds
+- Revert "build(studio): sign and notarize macOS releases locally via release.sh; CI builds only Windows/Linux"
+- *(studio)* sign and notarize macOS releases locally via release.sh; CI builds only Windows/Linux
+- bump Cargo.lock to tiptap-rusty-parser 0.4.4
+- Merge remote-tracking branch 'origin/main' into feat/gpui-studio
+- *(diff)* skip Myers when the length gap already exceeds its edit budget
+- *(diff)* use as_chunks in Fx hasher for clippy 1.99
+- *(diff)* linear move settle for reordered equal siblings, one Move per relocated node
+- *(bench)* wrap+undo bench on one tree, no per-iteration clone/drop
+- *(diff)* Myers LCS over interned child ids for long lists, O(n) move pairing
+- *(transform)* record inverse incrementally (finish_with_inverse, apply_inverting, rollback); scope structural diffs to the touched subtree
+- commit Cargo.lock and build releases with --locked
+- *(studio)* document the Document Server browser and its security model
+- *(diff)* regression tests for absent vs empty content/attrs/marks through transform, invert and apply
+- *(studio)* Swap replaces A through DocumentState::replace_doc
+- *(studio)* windows_subsystem attribute replaces Windows linker flags in release workflow
+- *(studio)* release, secrets, verification and unsigned-build guide
+- *(studio)* release workflow for macOS universal, Windows and Linux, replaces studio-mac.yml
+- *(studio)* macOS .app bundle, dmg, signing and notarization scripts, Linux tarball, placeholder icon
+- *(studio)* tick phase 2 roadmap and document key bindings
+- *(studio)* macOS build workflow with downloadable artifact
+- studio rules in CLAUDE.md
+
 ## [0.4.4](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.4.3...v0.4.4) - 2026-10-22
 
 ### Other
