@@ -1,0 +1,101 @@
+# tiptap-studio
+
+Native desktop inspector, structural editor and differ for Tiptap/ProseMirror
+JSON documents. Built on [GPUI](https://gpui.rs) through
+[gpui-kit](https://gpui-kit.com) 0.8. Every document operation is delegated to
+`tiptap-rusty-parser`; this crate is UI only and doubles as a live test bed for
+the parser. If the UI needs something the crate cannot do, that is a crate
+feature, not an app workaround.
+
+```sh
+cargo run -p tiptap-rusty-studio                 # bundled sample document
+cargo run -p tiptap-rusty-studio -- path/to.json # open a file
+cargo run -p tiptap-rusty-studio -- a.json b.json # A + B for Diff mode
+cargo run -p tiptap-rusty-studio -- a.json --schema s.json # validate against a schema (--schema starter-kit = bundled)
+```
+
+Not published. Not part of the parser's CI matrix (needs native windowing libs).
+
+Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [packaging/README.md](packaging/README.md).
+
+## Layout
+
+```
+title bar   tiptap-studio · [Inspect | Diff] · file name · node stats
+toolbar     Open · Save · Save as… · Undo · Redo · Server… · JSON · Source · Schema
+panes       tree (280) · preview (fluid) · inspector (320), drag a divider to resize, double-click it to reset
+view        ⌘1 / ctrl-1 toggle tree (Diff: changes) · ⌘2 / ctrl-2 toggle inspector · ⌘3 / ctrl-3 preview ↔ JSON source; widths, collapsed panes and window bounds persist per mode in <config>/tiptap-studio/layout.json
+
+Diff mode
+title bar   a.json → b.json · +n −n ~n · total changes
+toolbar     … · Open B… · Swap · Apply all to A · Only changed · Sync scroll
+panes       changes (300) · tree A (fluid) · tree B (fluid) · before/after (300)
+keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) · ctrl/cmd-z undo
+```
+
+## Modules
+
+| File | Purpose |
+| --- | --- |
+| `main.rs` | boots `gpui_kit::application()`, applies the theme, opens one `Workspace` window |
+| `state.rs` | `DocumentState` entity: parser `Document` + selection path + expanded set + undo/redo. `edit()` runs a `Transform`, keeps the `Change` log, stores `invert()` for undo. Row summaries and type helpers |
+| `tree.rs` | `TreePanel`: flattens visible paths only when structure/expansion/find change (not on selection), labels on-screen rows at render, `uniform_list`; chevron toggles, click selects |
+| `preview.rs` | `PreviewPanel`: read-only render, virtualized (`list()` + `ListState`, one item per top-level block, heights remeasured per revision); click a block to select it; unknown types render as a dashed amber block |
+| `profile.rs` | `TIPTAP_STUDIO_PROFILE=1`: stderr timings (load/parse, tree flatten, preview items, find/diff recompute, edit+invert, interaction → frame) |
+| `source.rs` | `SourcePanel`: read-only pretty JSON of A in place of the preview (toolbar `Source`, ⌘3 / ctrl-3, persisted as `source` in `layout.json`). `uniform_list` by line with line numbers and token colors; text + `SourceMap` rebuilt once per revision, only while shown. Selection highlights its line span and scrolls to it; clicking a line selects the deepest node there. Also the numbered excerpt with a caret in the parse-error view |
+| `inspector.rs` | `InspectorPanel`: identity, attrs (value + remove), mark chips, structure actions (Insert ▾ before/after/inside with presets), JSON peek + `Edit JSON` (replace node) |
+| `clipboard.rs` | parse a paste payload: one node, an array of nodes, or a `doc` (its content) |
+| `diff.rs` | `DiffState` (doc B, `Document::diff` change list, per-path tints, recomputed on observe) and `DiffPanel` (change list, tinted trees A/B, before/after inspector). Take B = `rebase_change` + `Transform::apply_change` via `DocumentState::edit` |
+| `find.rs` | `FindState` (parser `Query`, matches recomputed per document revision) and `FindBar` (toolbar input, error popover, `n / N` counter, prev/next, Only matches). Tree rows get a 2px accent bar, preview blocks a light accent fill |
+| `layout.rs` | `Layout` entity (global): per-mode side widths, A/B split, collapsed flags, window bounds; `inspect_row` / `diff_row` lay out panes with `resize_handle` dividers; `layout.json` saved 500 ms after the last change and on quit |
+| `schema_panel.rs` | `SchemaState` (loaded `Schema`, violations by path, re-validated on revision/schema change), toolbar Schema menu (Open… / StarterKit / Reload / Unload), inspector SCHEMA section, Problems drawer under the preview, F8 / ⇧F8 |
+| `workspace.rs` | title bar, Inspect/Diff `Mode`, toolbar, actions and key bindings, pane layout |
+| `theme.rs` | visual tokens from the design canvas, applied over the gpui-component dark theme |
+| `assets/sample.json` | demo document with headings, marks, link, list, quote, a custom `callout`, rule, code block |
+| `assets/tiptap-starter-kit.schema.json` | Tiptap StarterKit v3 as a schema (content expressions, allowed attrs) |
+| `assets/sample-v2.json` | edited copy of the sample, for Diff mode |
+
+## Document Server
+
+`Server…` in the toolbar opens a sheet that lists documents and versions on a
+[Tiptap Document Server](https://tiptap.dev/docs/collaboration/documents/rest-api)
+and opens them as A, as B, or two versions straight into Diff mode
+(title shows the origin, e.g. `☁ my-app / doc-42 @ v3`; Save acts as Save as).
+Replacing a dirty A asks Save / Don't Save / Cancel (the same guard as Open);
+Save on a server-origin A asks for a path first. Debug builds: `TIPTAP_STUDIO_SIM_SERVER_OPEN=doc.json`
+makes each `Server…` click open that file as A through the guard (headless tests).
+Code: `cloud.rs` (state, requests), `cloud/view.rs`, `cloud/api.rs`, `cloud/secret.rs`, `cloud/store.rs`.
+
+Security model:
+
+- Bring your own token; nothing is bundled. A profile is a label, an app id (or an `https://` base URL; plain `http://` only for localhost) and a token.
+- Tokens live only in the OS keychain (`keyring`: macOS Keychain, Windows Credential Manager, Secret Service; service `dev.tiptap.studio`, account = profile id). `servers.json` in the config dir holds metadata only. No keychain → the token is kept in memory for the session and the UI says "Not saved".
+- Tokens never reach a file, env var, log, panic, `Debug` output or the clipboard: `Secret` redacts and zeroizes, the input is masked, and the token field is never pre-filled. `Forget token` deletes the keychain item.
+- Read-only by construction: `cloud/api.rs` exposes only `GET`, follows no redirects, and uses 10 s connect / 30 s read timeouts on a background thread.
+- JWTs (`Documents:Api:All`) are decoded, not verified, to show `aud`, permissions and expiry, with an amber warning when `exp` is missing or more than 24 h away. A legacy API secret gets a red warning and is stored only after ticking "Save to keychain anyway". Prefer short-lived JWTs signed on your server.
+
+## Rules
+
+- Depend only on `gpui-kit`. Never add `gpui` directly; it pins the `gpui-pre` snapshot.
+- All mutations go through `DocumentState::edit`. Panels never hold `&mut Node`.
+- Selection is an index path `Vec<usize>` (root = `[]`), the same addressing `Node::node_at` and every `Change` use. Dropped when it stops resolving.
+- Unknown node and mark types must render and be selectable. Never match exhaustively on type.
+- Perf: no per-frame clones once panels are stable; nothing per frame is O(document). `edit` takes the undo from `Transform::finish_with_inverse` (cost ∝ the edit), undo/redo use `Node::apply_inverting`. Large test docs: `python3 studio/assets/gen_large.py <out-dir>` (1k/10k/50k blocks + edited copies for Diff).
+- `cargo check`, `cargo clippy -p tiptap-rusty-studio -- -D warnings` and `cargo fmt --all` before every commit.
+- Find: ⌘F/ctrl-F focuses the box, ⏎/⇧⏎ and ⌘G/⇧⌘G step matches, Esc clears and returns to the tree. Grammar: `Query` rustdoc in the parser crate. Diff mode: both trees show matches (B runs the same query against B; headers show `n found`); stepping and the counter cover A, and tree A follows.
+- Keyboard: arrows / Home / End / Esc navigate in the `Document` context (tree, preview); alt-↑/↓ move the node; Diff mode: ↑/↓ step changes, ⏎ Take B.
+- Editing keys (`Document` context): ⏎ empty paragraph after the block, ⌘D duplicate, ⌘C / ⌘X / ⌘V copy / cut / paste nodes as JSON (ctrl on Linux/Windows). `Edit JSON`: ⌘⏎ apply, Esc cancel. Inspector inputs sit outside `Document`, so none of these fire while typing.
+
+## Roadmap
+
+- [x] Typed attribute editors (string → input, number → stepper, bool → switch, object/array → JSON textarea)
+- [x] Add attribute; add mark with attrs (link `href`)
+- [x] Wrap in…, split, join
+- [x] Diff mode: second document, `Document::diff` change list, tinted rows in both trees, before/after inspector
+- [x] Diff as a merge tool: Dismiss (⌫) leaves A's side and hides the change, Apply all skips dismissed, Save / Save as… writes the merged A (`<a>-merged.json` suggested)
+- [x] Diff: document-ordered change list, sync scroll, Swap A/B, take all B in a subtree
+- [x] Save (⌘S), Save as… (⇧⌘S)
+- [x] Open dialog for A, recent files, drag and drop, reload on change, open from Finder
+- [x] Resizable, collapsible panes with persisted layout (`layout.rs`)
+- [x] Schema validation: load JSON schema or bundled StarterKit, violations in tree / inspector / Problems drawer, F8 stepping
+- [ ] WASM build as a web playground

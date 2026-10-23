@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Tiptap Studio
+GenericName=Tiptap JSON inspector
+Comment=Inspect, edit and diff Tiptap/ProseMirror JSON documents
+Exec=tiptap-studio %f
+Icon=tiptap-studio
+Terminal=false
+Categories=Development;Utility;
+MimeType=application/json;

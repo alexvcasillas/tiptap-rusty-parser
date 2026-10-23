@@ -6,7 +6,9 @@
 //! [`ContentExpr`] parsed from a content-expression string. Expressions compile
 //! to an NFA and are matched against a node's child-type sequence; a name in an
 //! expression matches a child whose `type` equals it **or** whose
-//! [`NodeSpec::group`](crate::NodeSpec) contains it.
+//! [`NodeSpec::group`](crate::NodeSpec) contains it. A child whose type is
+//! missing or not in the schema matches any name: it is already reported as
+//! its own violation, so it never also invalidates its parent's content.
 //!
 //! Supported grammar (the full ProseMirror content-expression language):
 //! ```text
@@ -401,36 +403,46 @@ impl Nfa {
         }
     }
 
-    fn matches(&self, children: &[Node], schema: &Schema) -> bool {
+    /// `Ok` if `children` match; `Err(Some(i))` if child `i` is the first one
+    /// no live state can consume; `Err(None)` if every child was consumed but
+    /// the expression wants more.
+    fn check(&self, children: &[Node], schema: &Schema) -> Result<(), Option<usize>> {
         let n = self.states.len();
         let mut current = vec![false; n];
+        let mut next = vec![false; n];
         let mut stack = vec![self.start];
         current[self.start] = true;
         self.eps_closure(&mut current, &mut stack);
 
-        for child in children {
-            let Some(ct) = child.node_type.as_deref() else {
-                return false; // an untyped child can't satisfy a named slot
-            };
-            let mut next = vec![false; n];
-            let mut nstack = Vec::new();
+        for (i, child) in children.iter().enumerate() {
+            // Untyped / unknown children are wildcards: they are reported as
+            // their own violation, not as their parent's.
+            let ct = child
+                .node_type
+                .as_deref()
+                .filter(|t| schema.nodes.contains_key(*t));
+            next.fill(false);
             for (s, &active) in current.iter().enumerate() {
                 if active {
                     for (label, dst) in &self.states[s].edges {
-                        if !next[*dst] && label_matches(label, ct, schema) {
+                        if !next[*dst] && ct.is_none_or(|ct| label_matches(label, ct, schema)) {
                             next[*dst] = true;
-                            nstack.push(*dst);
+                            stack.push(*dst);
                         }
                     }
                 }
             }
-            self.eps_closure(&mut next, &mut nstack);
+            self.eps_closure(&mut next, &mut stack);
             if !next.iter().any(|&b| b) {
-                return false; // dead — no state survives this child
+                return Err(Some(i)); // dead — no state survives this child
             }
-            current = next;
+            std::mem::swap(&mut current, &mut next);
         }
-        current[self.accept]
+        if current[self.accept] {
+            Ok(())
+        } else {
+            Err(None)
+        }
     }
 }
 
@@ -470,8 +482,10 @@ impl ContentExpr {
     }
 
     /// Whether `children`'s type sequence satisfies this expression.
-    pub(crate) fn matches(&self, children: &[Node], schema: &Schema) -> bool {
-        self.nfa.matches(children, schema)
+    /// `Err(Some(i))`: child `i` is the first that cannot be matched;
+    /// `Err(None)`: every child matched but more are required.
+    pub(crate) fn check(&self, children: &[Node], schema: &Schema) -> Result<(), Option<usize>> {
+        self.nfa.check(children, schema)
     }
 }
 

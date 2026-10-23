@@ -206,6 +206,15 @@ impl Node {
     }
 }
 
+/// Diff `a` → `b` where both sit at `prefix` in a larger tree: change paths
+/// are absolute (prefixed). Lets transactions diff only the touched subtree.
+pub(crate) fn diff_at(a: &Node, b: &Node, prefix: &[usize]) -> Vec<Change> {
+    let mut out = Vec::new();
+    let mut path = prefix.to_vec();
+    diff_node(a, b, &mut path, &mut out, &DiffOptions::default());
+    out
+}
+
 /// Structural diff between two nodes. Free-function form of [`Node::diff`].
 pub fn diff(a: &Node, b: &Node) -> Vec<Change> {
     a.diff(b)

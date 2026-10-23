@@ -169,3 +169,99 @@ fn json_schema_matches_builder() {
     assert_eq!(bad.validate(&from_json), bad.validate(&schema()));
     assert!(!bad.is_valid(&from_json)); // heading missing required level
 }
+
+#[test]
+fn violation_locates_child_and_mark() {
+    let schema = Schema::new()
+        .node("doc", NodeSpec::new().content_match("block+"))
+        .node(
+            "paragraph",
+            NodeSpec::new().group("block").content_match("inline*"),
+        )
+        .node(
+            "heading",
+            NodeSpec::new()
+                .group("block")
+                .content_match("inline*")
+                .attrs(["level"]),
+        )
+        .node("text", NodeSpec::new().group("inline"))
+        .mark("bold", MarkSpec::new())
+        .mark("link", MarkSpec::new().attrs(["href"]));
+    let d = doc(r#"{"type":"doc","content":[
+      {"type":"paragraph","content":[
+        {"type":"text","text":"a"},
+        {"type":"heading","attrs":{"level":1}}
+      ]},
+      {"type":"heading","attrs":{"level":1,"color":"red"},"content":[
+        {"type":"text","text":"b","marks":[{"type":"bold"},{"type":"glow"},{"type":"link","attrs":{"href":"u","x":1}}]}
+      ]}
+    ]}"#);
+    let v = d.validate(&schema);
+    // heading inside paragraph: first unmatched child is index 1
+    let ic = v
+        .iter()
+        .find(|x| matches!(x.kind, ViolationKind::InvalidContent { .. }))
+        .unwrap();
+    assert_eq!((ic.path.as_slice(), ic.child), (&[0][..], Some(1)));
+    // node attr: no mark index
+    let ua = v
+        .iter()
+        .find(|x| {
+            x.kind
+                == ViolationKind::UnknownAttr {
+                    key: "color".into(),
+                }
+        })
+        .unwrap();
+    assert_eq!((ua.path.as_slice(), ua.mark), (&[1][..], None));
+    // unknown mark and mark attr carry their mark index
+    let um = v
+        .iter()
+        .find(|x| x.kind == ViolationKind::UnknownMark("glow".into()))
+        .unwrap();
+    assert_eq!((um.path.as_slice(), um.mark), (&[1, 0][..], Some(1)));
+    let ma = v
+        .iter()
+        .find(|x| x.kind == ViolationKind::UnknownAttr { key: "x".into() })
+        .unwrap();
+    assert_eq!(ma.mark, Some(2));
+    assert_eq!(v.len(), 4, "{v:?}");
+}
+
+#[test]
+fn invalid_content_at_end_has_no_child() {
+    let schema = Schema::new()
+        .node("doc", NodeSpec::new().content_match("paragraph+"))
+        .node("paragraph", NodeSpec::new());
+    let v = doc(r#"{"type":"doc"}"#).validate(&schema);
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].child, None);
+}
+
+#[test]
+fn unknown_child_reported_once() {
+    // expression form: the unknown child is a wildcard, parent stays valid
+    let expr_schema = Schema::new()
+        .node("doc", NodeSpec::new().content_match("block"))
+        .node("paragraph", NodeSpec::new().group("block"));
+    let v = doc(r#"{"type":"doc","content":[{"type":"widget"}]}"#).validate(&expr_schema);
+    assert_eq!(v.len(), 1, "{v:?}");
+    assert_eq!(v[0].kind, ViolationKind::UnknownNodeType("widget".into()));
+    // cardinality still counts it: `block` allows one child, not two
+    let v = doc(r#"{"type":"doc","content":[{"type":"widget"},{"type":"widget"}]}"#)
+        .validate(&expr_schema);
+    assert_eq!(v.len(), 3, "{v:?}");
+    assert_eq!(v[0].child, Some(1));
+
+    // array form: no DisallowedChild for an unknown child
+    let v = doc(r#"{"type":"doc","content":[{"type":"widget"}]}"#).validate(&schema());
+    assert_eq!(v.len(), 1, "{v:?}");
+}
+
+#[test]
+fn violation_json_omits_empty_locators() {
+    let v = doc(r#"{"type":"doc","content":[{"type":"widget"}]}"#).validate(&schema());
+    let json = serde_json::to_string(&v[0]).unwrap();
+    assert!(!json.contains("child") && !json.contains("mark"), "{json}");
+}

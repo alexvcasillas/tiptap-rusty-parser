@@ -78,3 +78,32 @@ jobs:
 
       - name: Test (node)
         run: wasm-pack test --node bindings/wasm
+
+  studio:
+    name: studio clippy + test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev libx11-xcb-dev \
+            libwayland-dev libvulkan-dev libfontconfig-dev libfreetype-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: studio
+
+      - name: Clippy
+        run: cargo clippy -p tiptap-rusty-studio --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test -p tiptap-rusty-studio

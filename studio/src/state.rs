@@ -1,0 +1,1258 @@
+//! Shared document entity: parser `Document` + selection + expansion + undo/redo.
+//!
+//! Every mutation goes through [`DocumentState::edit`], which runs a `Transform`,
+//! keeps its `Change` log and stores the inverse for undo. Panels never touch
+//! `&mut Node` directly.
+
+use std::cell::Cell;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use gpui_kit::*;
+use serde_json::Value;
+use tiptap_rusty_parser::{Change, Document, Mark, Node, Transform};
+
+const SAMPLE: &str = include_str!("../assets/sample.json");
+
+/// Core Tiptap/ProseMirror node types the preview knows how to draw.
+/// Anything else renders as an "unknown" block and is still selectable.
+pub const KNOWN_TYPES: &[&str] = &[
+    "doc",
+    "paragraph",
+    "text",
+    "heading",
+    "bulletList",
+    "orderedList",
+    "listItem",
+    "blockquote",
+    "codeBlock",
+    "horizontalRule",
+    "hardBreak",
+    "image",
+    "table",
+    "tableRow",
+    "tableCell",
+    "tableHeader",
+    "taskList",
+    "taskItem",
+];
+
+pub const BUILTIN_MARKS: &[&str] = &["bold", "italic", "underline", "strike", "code", "link"];
+
+/// Expanded tree paths plus a version that changes on every real mutation, so
+/// observers can tell an expansion change from a selection-only notify.
+/// Versions come from a global counter: a replaced set never reuses one.
+pub struct Expanded {
+    set: HashSet<Vec<usize>>,
+    version: u64,
+}
+
+fn next_version() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+impl Default for Expanded {
+    fn default() -> Self {
+        Self {
+            set: HashSet::new(),
+            version: next_version(),
+        }
+    }
+}
+
+impl std::ops::Deref for Expanded {
+    type Target = HashSet<Vec<usize>>;
+    fn deref(&self) -> &Self::Target {
+        &self.set
+    }
+}
+
+impl FromIterator<Vec<usize>> for Expanded {
+    fn from_iter<I: IntoIterator<Item = Vec<usize>>>(iter: I) -> Self {
+        Self {
+            set: iter.into_iter().collect(),
+            version: next_version(),
+        }
+    }
+}
+
+impl IntoIterator for Expanded {
+    type Item = Vec<usize>;
+    type IntoIter = std::collections::hash_set::IntoIter<Vec<usize>>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.set.into_iter()
+    }
+}
+
+impl Expanded {
+    pub fn version(&self) -> u64 {
+        self.version
+    }
+
+    pub fn insert(&mut self, path: Vec<usize>) -> bool {
+        let new = self.set.insert(path);
+        if new {
+            self.version = next_version();
+        }
+        new
+    }
+
+    pub fn remove(&mut self, path: &[usize]) -> bool {
+        let had = self.set.remove(path);
+        if had {
+            self.version = next_version();
+        }
+        had
+    }
+
+    pub fn clear(&mut self) {
+        self.set.clear();
+        self.version = next_version();
+    }
+}
+
+/// (node count, text node count, unknown-type count)
+pub type Stats = (usize, usize, usize);
+
+pub struct DocumentState {
+    pub doc: Document,
+    pub file: Option<PathBuf>,
+    /// Display name for a document that has no local file (e.g. opened from a
+    /// Document Server: `☁ app / doc @ v3`). Shown instead of the file name.
+    pub origin: Option<SharedString>,
+    pub selection: Option<Vec<usize>>,
+    pub expanded: Expanded,
+    pub dirty: bool,
+    pub last_change: Option<SharedString>,
+    /// Bumped on every document mutation; observers skip selection-only notifies.
+    pub revision: u64,
+    undo: Vec<Vec<Change>>,
+    redo: Vec<Vec<Change>>,
+    /// `stats()` per revision: the title bar asks every frame.
+    stats_cache: Cell<Option<(u64, Stats)>>,
+    /// Bumped only by edits that can change paths (insert/remove/replace/
+    /// move); the tree's flattened rows depend on this, not on `revision`.
+    pub structure_rev: u64,
+    /// Text nodes under the selection, per (revision, selection): inspector.
+    text_count_cache: std::cell::RefCell<Option<(u64, Vec<usize>, usize)>>,
+}
+
+impl DocumentState {
+    pub fn load(path: Option<&Path>) -> anyhow::Result<Self> {
+        let doc = match path {
+            Some(p) => Document::from_json_str(&std::fs::read_to_string(p)?)?,
+            None => Document::from_json_str(SAMPLE)?,
+        };
+        let mut s = Self {
+            doc,
+            file: path.map(Path::to_path_buf),
+            origin: None,
+            selection: None,
+            expanded: Expanded::default(),
+            dirty: false,
+            last_change: None,
+            revision: 0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            stats_cache: Cell::new(None),
+            structure_rev: 0,
+            text_count_cache: Default::default(),
+        };
+        s.expand_to_depth(1);
+        Ok(s)
+    }
+
+    /// Replace A with an in-memory document (no local file, so Save acts as
+    /// Save as). Clears selection and undo history; observers see a new revision.
+    pub fn load_document(&mut self, doc: Document, origin: SharedString, cx: &mut Context<Self>) {
+        self.doc = doc;
+        self.file = None;
+        self.origin = Some(origin);
+        self.selection = None;
+        self.expanded.clear();
+        self.expand_to_depth(1);
+        self.dirty = false;
+        self.last_change = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.revision += 1;
+        // Whole new tree: every structure-keyed cache (tree rows, stats) re-derives.
+        self.structure_rev += 1;
+        cx.notify();
+    }
+
+    pub fn root(&self) -> &Node {
+        self.doc.root()
+    }
+
+    pub fn file_name(&self) -> SharedString {
+        if let (None, Some(o)) = (&self.file, &self.origin) {
+            return o.clone();
+        }
+        self.file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string().into())
+            .unwrap_or_else(|| "assets/sample.json".into())
+    }
+
+    pub fn selected(&self) -> Option<&Node> {
+        self.selection
+            .as_deref()
+            .and_then(|p| self.root().node_at(p))
+    }
+
+    /// (node count, text node count, unknown-type count). Walks the document
+    /// once per revision; cached otherwise.
+    pub fn stats(&self) -> (usize, usize, usize) {
+        if let Some((rev, stats)) = self.stats_cache.get() {
+            if rev == self.revision {
+                return stats;
+            }
+        }
+        let _p = crate::profile::span("stats walk");
+        let (mut n, mut t, mut u) = (0, 0, 0);
+        self.root().walk(&mut |node| {
+            n += 1;
+            match node.node_type.as_deref() {
+                Some("text") => t += 1,
+                Some(ty) if !KNOWN_TYPES.contains(&ty) => u += 1,
+                _ => {}
+            }
+        });
+        self.stats_cache.set(Some((self.revision, (n, t, u))));
+        (n, t, u)
+    }
+
+    pub fn can_undo(&self) -> bool {
+        !self.undo.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo.is_empty()
+    }
+
+    pub fn undo_depth(&self) -> (usize, usize) {
+        (self.undo.len(), self.redo.len())
+    }
+
+    // ---- selection / expansion -------------------------------------------------
+
+    pub fn select(&mut self, path: Option<Vec<usize>>, cx: &mut Context<Self>) {
+        crate::profile::mark("select");
+        if self.selection != path {
+            if let Some(p) = &path {
+                for d in 0..p.len() {
+                    self.expanded.insert(p[..d].to_vec());
+                }
+            }
+            self.selection = path;
+            cx.notify();
+        }
+    }
+
+    pub fn toggle_expanded(&mut self, path: Vec<usize>, cx: &mut Context<Self>) {
+        if !self.expanded.remove(&path) {
+            self.expanded.insert(path);
+        }
+        cx.notify();
+    }
+
+    pub fn is_expanded(&self, path: &[usize]) -> bool {
+        self.expanded.contains(path)
+    }
+
+    pub fn expand_to_depth(&mut self, depth: usize) {
+        fn go(node: &Node, path: &mut Vec<usize>, depth: usize, out: &mut Expanded) {
+            if path.len() > depth {
+                return;
+            }
+            out.insert(path.clone());
+            for (i, c) in node.children().iter().enumerate() {
+                path.push(i);
+                go(c, path, depth, out);
+                path.pop();
+            }
+        }
+        let mut set = std::mem::take(&mut self.expanded);
+        go(self.root(), &mut Vec::new(), depth, &mut set);
+        self.expanded = set;
+    }
+
+    pub fn expand_all(&mut self, cx: &mut Context<Self>) {
+        self.expand_to_depth(usize::MAX);
+        cx.notify();
+    }
+
+    pub fn collapse_all(&mut self, cx: &mut Context<Self>) {
+        self.expanded.clear();
+        self.expanded.insert(Vec::new());
+        cx.notify();
+    }
+
+    // ---- mutation ---------------------------------------------------------------
+
+    /// Run one transaction. The `Transform` records the inverse as it applies
+    /// (cost ∝ the edit, no root clone); on error it rolls back.
+    pub fn edit<E: std::fmt::Display>(
+        &mut self,
+        label: impl Into<SharedString>,
+        f: impl FnOnce(&mut Transform<'_>) -> Result<(), E>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        crate::profile::mark("edit");
+        let _p = crate::profile::span("edit+invert");
+        let mut t = self.doc.root_mut().transform();
+        if let Err(e) = f(&mut t) {
+            eprintln!("edit failed: {e}");
+            t.rollback();
+            return false;
+        }
+        let (changes, inverse) = t.finish_with_inverse();
+        if changes.is_empty() {
+            return false;
+        }
+        self.undo.push(inverse);
+        self.redo.clear();
+        self.note_changes(&changes);
+        self.remap_expanded(&changes);
+        self.after_edit(label.into(), cx);
+        true
+    }
+
+    pub fn undo(&mut self, cx: &mut Context<Self>) {
+        let Some(inverse) = self.undo.pop() else {
+            return;
+        };
+        crate::profile::mark("undo");
+        let _p = crate::profile::span("undo apply+invert");
+        // Remap reads only the list; apply consumes it (atomic on error).
+        self.note_changes(&inverse);
+        self.remap_expanded(&inverse);
+        match self.doc.root_mut().apply_inverting(inverse) {
+            Ok(redo) => self.redo.push(redo),
+            Err(e) => eprintln!("undo failed: {e}"),
+        }
+        self.after_edit("undo".into(), cx);
+    }
+
+    pub fn redo(&mut self, cx: &mut Context<Self>) {
+        let Some(changes) = self.redo.pop() else {
+            return;
+        };
+        crate::profile::mark("redo");
+        let _p = crate::profile::span("redo apply+invert");
+        self.note_changes(&changes);
+        self.remap_expanded(&changes);
+        match self.doc.root_mut().apply_inverting(changes) {
+            Ok(inverse) => self.undo.push(inverse),
+            Err(e) => eprintln!("redo failed: {e}"),
+        }
+        self.after_edit("redo".into(), cx);
+    }
+
+    /// Before `after_edit` bumps the revision: changes that keep every path
+    /// and node type (attrs, text, marks, extra) keep the flattened tree and
+    /// the stats valid, so carry them to the next revision.
+    fn note_changes(&mut self, changes: &[Change]) {
+        let structural = changes.iter().any(|c| {
+            matches!(
+                c,
+                Change::Insert { .. }
+                    | Change::Remove { .. }
+                    | Change::Replace { .. }
+                    | Change::Move { .. }
+            )
+        });
+        if structural {
+            self.structure_rev += 1;
+        } else if let Some((rev, stats)) = self.stats_cache.get() {
+            if rev == self.revision {
+                self.stats_cache.set(Some((rev + 1, stats)));
+            }
+        }
+    }
+
+    /// Text nodes in the selected subtree (the inspector's content line);
+    /// walks once per (revision, selection).
+    pub fn selected_text_count(&self) -> usize {
+        let Some(path) = self.selection.as_deref() else {
+            return 0;
+        };
+        if let Some((rev, p, n)) = &*self.text_count_cache.borrow() {
+            if *rev == self.revision && p == path {
+                return *n;
+            }
+        }
+        let mut n = 0;
+        if let Some(node) = self.root().node_at(path) {
+            node.walk(&mut |c| n += usize::from(c.text.is_some()));
+        }
+        *self.text_count_cache.borrow_mut() = Some((self.revision, path.to_vec(), n));
+        n
+    }
+
+    fn after_edit(&mut self, label: SharedString, cx: &mut Context<Self>) {
+        self.dirty = true;
+        self.revision += 1;
+        self.last_change = Some(label);
+        if let Some(p) = &self.selection {
+            if self.root().node_at(p).is_none() {
+                self.selection = None;
+            }
+        }
+        cx.notify();
+    }
+
+    // ---- convenience edits used by panels ---------------------------------------
+
+    pub fn set_attr(&mut self, path: Vec<usize>, key: &str, value: Value, cx: &mut Context<Self>) {
+        let label = format!("SetAttr {} .{key}", fmt_path(&path));
+        let key = key.to_string();
+        self.edit(label, |t| t.set_attr(path, key, value).map(|_| ()), cx);
+    }
+
+    pub fn set_text(&mut self, path: Vec<usize>, text: String, cx: &mut Context<Self>) {
+        let label = format!("SetText {}", fmt_path(&path));
+        self.edit(label, |t| t.set_text(path, Some(text)).map(|_| ()), cx);
+    }
+
+    /// Set one attr on the first mark of `mark_type`; rebuilds the mark list.
+    pub fn set_mark_attr(
+        &mut self,
+        path: Vec<usize>,
+        mark_type: &str,
+        key: &str,
+        value: Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(node) = self.root().node_at(&path) else {
+            return;
+        };
+        let mut marks = node.marks.clone().unwrap_or_default();
+        let Some(mark) = marks.iter_mut().find(|m| m.mark_type == mark_type) else {
+            return;
+        };
+        mark.attrs
+            .get_or_insert_with(Default::default)
+            .insert(key.to_string(), value);
+        let label = format!("SetMarkAttr {} {mark_type}.{key}", fmt_path(&path));
+        self.edit(label, |t| t.set_marks(path, Some(marks)).map(|_| ()), cx);
+    }
+
+    /// Append `mark` (replacing an existing mark of the same type).
+    pub fn add_mark(&mut self, path: Vec<usize>, mark: Mark, cx: &mut Context<Self>) {
+        let Some(node) = self.root().node_at(&path) else {
+            return;
+        };
+        let mut marks = node.marks.clone().unwrap_or_default();
+        marks.retain(|m| m.mark_type != mark.mark_type);
+        let label = format!("AddMark {} {}", fmt_path(&path), mark.mark_type);
+        marks.push(mark);
+        self.edit(label, |t| t.set_marks(path, Some(marks)).map(|_| ()), cx);
+    }
+
+    pub fn remove_attr(&mut self, path: Vec<usize>, key: &str, cx: &mut Context<Self>) {
+        let label = format!("RemoveAttr {} .{key}", fmt_path(&path));
+        let key = key.to_string();
+        self.edit(label, |t| t.remove_attr(path, key).map(|_| ()), cx);
+    }
+
+    pub fn toggle_mark(&mut self, path: Vec<usize>, mark_type: &str, cx: &mut Context<Self>) {
+        let Some(node) = self.root().node_at(&path) else {
+            return;
+        };
+        let mut marks = node.marks.clone().unwrap_or_default();
+        let label = if let Some(i) = marks.iter().position(|m| m.mark_type == mark_type) {
+            marks.remove(i);
+            format!("RemoveMark {} {mark_type}", fmt_path(&path))
+        } else {
+            marks.push(Mark::new(mark_type));
+            format!("AddMark {} {mark_type}", fmt_path(&path))
+        };
+        let marks = if marks.is_empty() { None } else { Some(marks) };
+        self.edit(label, |t| t.set_marks(path, marks).map(|_| ()), cx);
+    }
+
+    pub fn delete_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return;
+        };
+        let Some((&index, parent)) = path.split_last() else {
+            return;
+        };
+        let parent = parent.to_vec();
+        let label = format!("Remove {}", fmt_path(&path));
+        if self.edit(label, |t| t.remove(parent.clone(), index).map(|_| ()), cx) {
+            self.selection = Some(parent);
+        }
+    }
+
+    /// Whether `move_selected(delta)` would land inside the parent.
+    pub fn can_move(&self, delta: isize) -> bool {
+        let Some(path) = self.selection.as_deref() else {
+            return false;
+        };
+        let Some((&from, parent)) = path.split_last() else {
+            return false;
+        };
+        let count = self
+            .root()
+            .node_at(parent)
+            .map(Node::child_count)
+            .unwrap_or(0);
+        let to = from as isize + delta;
+        to >= 0 && (to as usize) < count
+    }
+
+    pub fn move_selected(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if !self.can_move(delta) {
+            return;
+        }
+        let Some(path) = self.selection.clone() else {
+            return;
+        };
+        let Some((&from, parent)) = path.split_last() else {
+            return;
+        };
+        let parent = parent.to_vec();
+        let to = (from as isize + delta) as usize;
+        let label = format!("Move {} → {to}", fmt_path(&path));
+        if self.edit(
+            label,
+            |t| t.move_child(parent.clone(), from, to).map(|_| ()),
+            cx,
+        ) {
+            let mut p = parent;
+            p.push(to);
+            self.selection = Some(p);
+        }
+    }
+
+    /// `Node::lift` needs a grandparent.
+    pub fn can_lift(&self) -> bool {
+        self.selection.as_ref().is_some_and(|p| p.len() >= 2)
+    }
+
+    pub fn lift_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return;
+        };
+        let n = path.len();
+        if n < 2 {
+            return;
+        }
+        let label = format!("Lift {}", fmt_path(&path));
+        if self.edit(label, |t| t.lift(path.clone()).map(|_| ()), cx) {
+            // Lands in the grandparent after the parent's left remainder, if any.
+            let mut p = path[..n - 2].to_vec();
+            p.push(path[n - 2] + usize::from(path[n - 1] > 0));
+            self.selection = Some(p);
+        }
+    }
+
+    /// Wrapping the root would insert an empty wrapper; refuse it.
+    pub fn can_wrap(&self) -> bool {
+        self.selection.as_ref().is_some_and(|p| !p.is_empty())
+    }
+
+    /// Wrap the selection in `wrappers`, innermost first (`["listItem", "bulletList"]`),
+    /// as one undo step. Selection moves to the outermost wrapper.
+    pub fn wrap_selected(&mut self, wrappers: &[&str], cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return;
+        };
+        if path.is_empty() || wrappers.is_empty() {
+            return;
+        }
+        let shown: Vec<&str> = wrappers.iter().rev().copied().collect();
+        let label = format!("Wrap {} in {}", fmt_path(&path), shown.join(" › "));
+        let types: Vec<String> = wrappers.iter().map(|w| w.to_string()).collect();
+        let ok = self.edit(
+            label,
+            |t| {
+                for ty in types {
+                    t.wrap(path.clone(), ty, None)?;
+                }
+                Ok::<(), tiptap_rusty_parser::BlockError>(())
+            },
+            cx,
+        );
+        if ok {
+            // Reveal the wrapped node through every new level.
+            let mut p = path.clone();
+            for _ in 0..wrappers.len() {
+                self.expanded.insert(p.clone());
+                p.push(0);
+            }
+            self.selection = Some(path);
+        }
+    }
+
+    /// `(block, at)` for `Transform::split_block`: a block with ≥2 children splits
+    /// at its midpoint; a leaf splits its parent before itself. `None` when the
+    /// split would only produce an empty block (root, single child, first leaf).
+    pub fn split_target(&self) -> Option<(Vec<usize>, usize)> {
+        let path = self.selection.as_deref()?;
+        let node = self.root().node_at(path)?;
+        match node.content.as_deref() {
+            Some(c) if c.len() >= 2 && !path.is_empty() => Some((path.to_vec(), c.len() / 2)),
+            Some(_) => None,
+            None => match path.split_last() {
+                Some((&i, parent)) if i > 0 && !parent.is_empty() => Some((parent.to_vec(), i)),
+                _ => None,
+            },
+        }
+    }
+
+    pub fn split_selected(&mut self, cx: &mut Context<Self>) {
+        let Some((block, at)) = self.split_target() else {
+            return;
+        };
+        let label = format!("Split {} at {at}", fmt_path(&block));
+        if self.edit(
+            label,
+            |t| t.split_block(block.clone(), at, 0).map(|_| ()),
+            cx,
+        ) {
+            self.selection = Some(block);
+        }
+    }
+
+    /// `(parent, index)` for `Transform::join_blocks` merging the next sibling into
+    /// the selection. `None` without a next sibling, or when either side is a leaf
+    /// (the crate would silently drop the leaf's payload).
+    pub fn join_target(&self) -> Option<(Vec<usize>, usize)> {
+        let path = self.selection.as_deref()?;
+        let (&i, parent) = path.split_last()?;
+        let parent_node = self.root().node_at(parent)?;
+        let kids = parent_node.children();
+        let (left, right) = (kids.get(i)?, kids.get(i + 1)?);
+        (left.content.is_some() && right.content.is_some()).then(|| (parent.to_vec(), i + 1))
+    }
+
+    pub fn join_selected(&mut self, cx: &mut Context<Self>) {
+        let Some((parent, index)) = self.join_target() else {
+            return;
+        };
+        let mut left = parent.clone();
+        left.push(index - 1);
+        let mut right = parent.clone();
+        right.push(index);
+        let label = format!("Join {}+{}", fmt_path(&left), fmt_path(&right));
+        if self.edit(
+            label,
+            |t| t.join_blocks(parent.clone(), index).map(|_| ()),
+            cx,
+        ) {
+            self.selection = Some(left);
+        }
+    }
+
+    pub fn to_json_pretty(&self) -> String {
+        self.doc.to_string_pretty().unwrap_or_default()
+    }
+}
+
+pub fn fmt_path(path: &[usize]) -> String {
+    let inner: Vec<String> = path.iter().map(usize::to_string).collect();
+    format!("[{}]", inner.join(","))
+}
+
+pub fn node_type(node: &Node) -> &str {
+    node.node_type.as_deref().unwrap_or("?")
+}
+
+pub fn is_unknown(node: &Node) -> bool {
+    !KNOWN_TYPES.contains(&node_type(node))
+}
+
+/// Concatenated text of all descendant text nodes, truncated for labels.
+pub fn text_preview(node: &Node, max: usize) -> String {
+    let mut s = String::new();
+    node.walk(&mut |n| {
+        if let Some(t) = n.text.as_deref() {
+            if s.chars().count() < max {
+                s.push_str(t);
+            }
+        }
+    });
+    if s.chars().count() > max {
+        let cut: String = s.chars().take(max).collect();
+        format!("{cut}…")
+    } else {
+        s
+    }
+}
+
+/// Short row summary: `level=1 · "Title"`, `3 items`, `language=rust`.
+pub fn node_summary(node: &Node) -> String {
+    let ty = node_type(node);
+    match ty {
+        "text" => {
+            let marks = node
+                .marks
+                .as_ref()
+                .map(|m| {
+                    m.iter()
+                        .map(|m| m.mark_type.as_str())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            let t = text_preview(node, 32);
+            if marks.is_empty() {
+                format!("\"{t}\"")
+            } else {
+                format!("{marks} \"{t}\"")
+            }
+        }
+        "heading" => format!(
+            "level={} · \"{}\"",
+            attr_str(node, "level"),
+            text_preview(node, 24)
+        ),
+        "paragraph" => format!("\"{}\"", text_preview(node, 32)),
+        "bulletList" | "orderedList" | "taskList" => format!("{} items", node.child_count()),
+        "codeBlock" => format!("language={}", attr_str(node, "language")),
+        "horizontalRule" | "hardBreak" => String::new(),
+        _ => {
+            let first = node.attrs.as_ref().and_then(|a| a.iter().next());
+            let mut s = match first {
+                Some((k, v)) => format!("{k}={}", short_value(v)),
+                None => String::new(),
+            };
+            let n = node.child_count();
+            if n > 0 {
+                if !s.is_empty() {
+                    s.push_str(" · ");
+                }
+                s.push_str(&format!("{n} child{}", if n == 1 { "" } else { "ren" }));
+            }
+            if is_unknown(node) {
+                if !s.is_empty() {
+                    s.push_str(" · ");
+                }
+                s.push_str("unknown");
+            }
+            s
+        }
+    }
+}
+
+fn attr_str(node: &Node, key: &str) -> String {
+    node.attr(key)
+        .map(short_value)
+        .unwrap_or_else(|| "∅".into())
+}
+
+pub fn short_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => format!("\"{s}\""),
+        Value::Object(_) => "{ … }".into(),
+        Value::Array(a) => format!("[{}]", a.len()),
+        other => other.to_string(),
+    }
+}
+
+// ---- keyboard navigation (see nav.rs) -------------------------------------------
+
+impl DocumentState {
+    /// Paths of the rows the tree currently shows, in document order.
+    pub fn visible_paths(&self) -> Vec<Vec<usize>> {
+        fn go(node: &Node, s: &DocumentState, path: &mut Vec<usize>, out: &mut Vec<Vec<usize>>) {
+            out.push(path.clone());
+            if s.is_expanded(path) {
+                for (i, c) in node.children().iter().enumerate() {
+                    path.push(i);
+                    go(c, s, path, out);
+                    path.pop();
+                }
+            }
+        }
+        let mut out = Vec::new();
+        go(self.root(), self, &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// Whether `path` is a tree row now: resolves and every ancestor is expanded.
+    fn is_visible(&self, path: &[usize]) -> bool {
+        self.root().node_at(path).is_some() && (0..path.len()).all(|d| self.is_expanded(&path[..d]))
+    }
+
+    /// Row after visible `path` (document order), without flattening: O(depth).
+    fn next_visible(&self, path: &[usize]) -> Option<Vec<usize>> {
+        let root = self.root();
+        if root.node_at(path)?.child_count() > 0 && self.is_expanded(path) {
+            let mut p = path.to_vec();
+            p.push(0);
+            return Some(p);
+        }
+        let mut p = path.to_vec();
+        while let Some(last) = p.pop() {
+            if last + 1 < root.node_at(&p)?.child_count() {
+                p.push(last + 1);
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// Deepest last visible row under visible `path` (itself if collapsed).
+    fn last_visible_under(&self, mut p: Vec<usize>) -> Vec<usize> {
+        while let Some(n) = self.root().node_at(&p) {
+            if n.child_count() == 0 || !self.is_expanded(&p) {
+                break;
+            }
+            p.push(n.child_count() - 1);
+        }
+        p
+    }
+
+    /// Row before visible `path`: O(depth).
+    fn prev_visible(&self, path: &[usize]) -> Option<Vec<usize>> {
+        let (&last, parent) = path.split_last()?;
+        if last == 0 {
+            return Some(parent.to_vec());
+        }
+        let mut p = parent.to_vec();
+        p.push(last - 1);
+        Some(self.last_visible_under(p))
+    }
+
+    /// ↑/↓: previous/next visible row. With no selection, starts at the ends.
+    /// Walks the tree from the selection (O(depth · |delta|)), no flatten.
+    pub fn nav_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        crate::profile::mark("select");
+        if let Some(sel) = self.selection.clone().filter(|p| self.is_visible(p)) {
+            let mut cur = sel;
+            for _ in 0..delta.unsigned_abs() {
+                let next = if delta < 0 {
+                    self.prev_visible(&cur)
+                } else {
+                    self.next_visible(&cur)
+                };
+                match next {
+                    Some(n) => cur = n,
+                    None => break, // clamp at the ends
+                }
+            }
+            return self.select(Some(cur), cx);
+        }
+        let rows = self.visible_paths();
+        if rows.is_empty() {
+            return;
+        }
+        let next = match self
+            .selection
+            .as_ref()
+            .and_then(|p| rows.iter().position(|r| r == p))
+        {
+            Some(i) => (i as isize + delta).clamp(0, rows.len() as isize - 1) as usize,
+            None if delta < 0 => rows.len() - 1,
+            None => 0,
+        };
+        self.select(Some(rows[next].clone()), cx);
+    }
+
+    /// ←: collapse an expanded node, otherwise move to its parent.
+    pub fn nav_out(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return self.nav_step(1, cx);
+        };
+        let has_children = self.selected().is_some_and(|n| n.child_count() > 0);
+        if has_children && self.is_expanded(&path) {
+            self.expanded.remove(&path);
+            cx.notify();
+        } else if let Some((_, parent)) = path.split_last() {
+            self.select(Some(parent.to_vec()), cx);
+        }
+    }
+
+    /// →: expand a collapsed node, otherwise step into its first child.
+    pub fn nav_in(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return self.nav_step(1, cx);
+        };
+        if !self.selected().is_some_and(|n| n.child_count() > 0) {
+            return;
+        }
+        if !self.is_expanded(&path) {
+            self.expanded.insert(path);
+            cx.notify();
+        } else {
+            let mut child = path;
+            child.push(0);
+            self.select(Some(child), cx);
+        }
+    }
+
+    /// Home/End: the root row, or the deepest last visible row.
+    pub fn nav_edge(&mut self, last: bool, cx: &mut Context<Self>) {
+        let p = if last {
+            self.last_visible_under(Vec::new())
+        } else {
+            Vec::new()
+        };
+        self.select(Some(p), cx);
+    }
+}
+
+// ---- saving ----------------------------------------------------------------------
+
+impl DocumentState {
+    /// Write the document (pretty JSON, key order preserved) to `path`; on
+    /// success it becomes the current file and the dirty flag clears.
+    pub fn save_to(&mut self, path: &Path, cx: &mut Context<Self>) {
+        let result = self
+            .doc
+            .to_string_pretty()
+            .map_err(anyhow::Error::from)
+            .and_then(|mut json| {
+                json.push('\n');
+                std::fs::write(path, json).map_err(anyhow::Error::from)
+            });
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        match result {
+            Ok(()) => {
+                self.file = Some(path.to_path_buf());
+                self.dirty = false;
+                self.last_change = Some(format!("Saved {name}").into());
+            }
+            Err(e) => {
+                eprintln!("tiptap-studio: save {}: {e}", path.display());
+                self.last_change = Some(format!("Save failed: {e}").into());
+            }
+        }
+        cx.notify();
+    }
+}
+
+// ---- file loading (files.rs) ------------------------------------------------------
+
+impl DocumentState {
+    /// Wrap an already parsed document; `files.rs` owns reading and error reporting.
+    pub fn from_doc(doc: Document, file: Option<PathBuf>) -> Self {
+        let mut s = Self {
+            doc,
+            file,
+            selection: None,
+            expanded: Expanded::default(),
+            dirty: false,
+            last_change: None,
+            revision: 0,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            origin: None,
+            stats_cache: Cell::new(None),
+            structure_rev: 0,
+            text_count_cache: Default::default(),
+        };
+        s.expand_to_depth(1);
+        s
+    }
+
+    /// Swap in a freshly loaded document and clear undo/redo. `keep_view`
+    /// (reload) keeps expansion and a selection that still resolves; otherwise
+    /// (open) both reset. The revision bump makes every observer re-derive.
+    pub fn replace_doc(
+        &mut self,
+        doc: Document,
+        file: Option<PathBuf>,
+        keep_view: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let name = file
+            .as_ref()
+            .and_then(|p| p.file_name())
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        self.doc = doc;
+        self.file = file;
+        // A local open / reload / swap is never a Document Server document.
+        self.origin = None;
+        self.undo.clear();
+        self.redo.clear();
+        self.dirty = false;
+        self.revision += 1;
+        self.structure_rev += 1;
+        if keep_view {
+            if let Some(p) = &self.selection {
+                if self.doc.root().node_at(p).is_none() {
+                    self.selection = None;
+                }
+            }
+            self.last_change = Some(format!("Reloaded {name}").into());
+        } else {
+            self.selection = None;
+            self.expanded.clear();
+            self.expand_to_depth(1);
+            self.last_change = Some(format!("Opened {name}").into());
+        }
+        cx.notify();
+    }
+}
+
+// ---- node creation, clipboard, raw JSON (see clipboard.rs, inspector Insert ▾) ---
+
+/// Where `Insert ▾` puts a new node relative to the selection.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InsertWhere {
+    Before,
+    After,
+    Inside,
+}
+
+impl InsertWhere {
+    pub const ALL: [InsertWhere; 3] =
+        [InsertWhere::Before, InsertWhere::After, InsertWhere::Inside];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            InsertWhere::Before => "before",
+            InsertWhere::After => "after",
+            InsertWhere::Inside => "inside",
+        }
+    }
+}
+
+/// Types that hold inline content even when empty. UI heuristic, not a schema.
+const TEXTBLOCKS: &[&str] = &["paragraph", "heading", "codeBlock"];
+
+/// Holds inline content: a known textblock type, or any node with a text child.
+pub fn is_textblock(node: &Node) -> bool {
+    TEXTBLOCKS.contains(&node_type(node))
+        || node
+            .children()
+            .iter()
+            .any(|c| c.node_type.as_deref() == Some("text"))
+}
+
+impl DocumentState {
+    /// `(parent, index)` an insert `at` the selection lands on. Root has no
+    /// siblings; a text node has no children.
+    pub fn insert_target(&self, at: InsertWhere) -> Option<(Vec<usize>, usize)> {
+        let path = self.selection.as_deref()?;
+        let node = self.root().node_at(path)?;
+        match at {
+            InsertWhere::Inside => {
+                (node_type(node) != "text").then(|| (path.to_vec(), node.child_count()))
+            }
+            InsertWhere::Before | InsertWhere::After => {
+                let (&i, parent) = path.split_last()?;
+                Some((parent.to_vec(), i + usize::from(at == InsertWhere::After)))
+            }
+        }
+    }
+
+    /// Whether the parent an insert `at` lands in takes inline content.
+    pub fn insert_in_textblock(&self, at: InsertWhere) -> bool {
+        self.insert_target(at)
+            .and_then(|(p, _)| self.root().node_at(&p))
+            .is_some_and(is_textblock)
+    }
+
+    /// Insert `nodes` under `parent` from `index` on, as one undo step; the
+    /// first new node is selected and revealed.
+    pub fn insert_nodes(
+        &mut self,
+        parent: Vec<usize>,
+        index: usize,
+        nodes: Vec<Node>,
+        label: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if nodes.is_empty() {
+            return false;
+        }
+        let at = parent.clone();
+        let ok = self.edit(
+            label,
+            move |t| {
+                for (k, node) in nodes.into_iter().enumerate() {
+                    t.insert(at.clone(), index + k, node)?;
+                }
+                Ok::<(), tiptap_rusty_parser::ApplyError>(())
+            },
+            cx,
+        );
+        if ok {
+            let mut p = parent;
+            p.push(index);
+            self.reveal(p);
+        }
+        ok
+    }
+
+    /// Insert one node `at` the selection. Label: `Insert [2] paragraph`.
+    pub fn insert_at(&mut self, at: InsertWhere, node: Node, cx: &mut Context<Self>) {
+        let Some((parent, index)) = self.insert_target(at) else {
+            return;
+        };
+        let label = format!("Insert {} {}", child_path(&parent, index), node_type(&node));
+        self.insert_nodes(parent, index, vec![node], label, cx);
+    }
+
+    /// The selection, or its nearest ancestor that is not inside a textblock
+    /// (text, hardBreak → their paragraph).
+    pub fn block_anchor(&self) -> Option<Vec<usize>> {
+        let mut path = self.selection.clone()?;
+        while let Some((_, parent)) = path.split_last() {
+            if !self.root().node_at(parent).is_some_and(is_textblock) {
+                break;
+            }
+            path.pop();
+        }
+        Some(path)
+    }
+
+    /// ⏎: empty paragraph after the selected block (end of the doc for the
+    /// root or no selection). ProseMirror forbids empty text, so no content.
+    pub fn insert_paragraph_after(&mut self, cx: &mut Context<Self>) {
+        let anchor = self.block_anchor().unwrap_or_default();
+        let (parent, index) = match anchor.split_last() {
+            Some((&i, parent)) => (parent.to_vec(), i + 1),
+            None => (Vec::new(), self.root().child_count()),
+        };
+        let label = format!("Insert {} paragraph", child_path(&parent, index));
+        let node = Node::element("paragraph");
+        self.insert_nodes(parent, index, vec![node], label, cx);
+    }
+
+    /// ⌘D: deep clone inserted after the selection, then selected.
+    pub fn duplicate_selected(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.selection.clone() else {
+            return;
+        };
+        let Some((&i, parent)) = path.split_last() else {
+            return;
+        };
+        let Some(node) = self.root().node_at(&path).cloned() else {
+            return;
+        };
+        let label = format!("Duplicate {}", fmt_path(&path));
+        self.insert_nodes(parent.to_vec(), i + 1, vec![node], label, cx);
+    }
+
+    /// ⌘C payload: the selected node as pretty JSON.
+    pub fn copy_selected(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let path = self.selection.clone()?;
+        let node = self.root().node_at(&path)?;
+        let json = serde_json::to_string_pretty(node).ok()?;
+        let msg = format!("Copied {} {}", fmt_path(&path), node_type(node));
+        self.note(msg, cx);
+        Some(json)
+    }
+
+    /// ⌘X: copy, then remove as one undo step. The selection moves to the
+    /// node that took its place, else the previous sibling, else the parent.
+    pub fn cut_selected(&mut self, cx: &mut Context<Self>) -> Option<String> {
+        let path = self.selection.clone()?;
+        let (&i, parent) = path.split_last()?;
+        let json = serde_json::to_string_pretty(self.root().node_at(&path)?).ok()?;
+        let parent = parent.to_vec();
+        let label = format!("Cut {}", fmt_path(&path));
+        if !self.edit(label, |t| t.remove(parent.clone(), i).map(|_| ()), cx) {
+            return None;
+        }
+        let left = self.root().node_at(&parent).map_or(0, Node::child_count);
+        let mut p = parent;
+        if left > 0 {
+            p.push(i.min(left - 1));
+        }
+        self.selection = Some(p);
+        Some(json)
+    }
+
+    /// ⌘V: insert the clipboard nodes after the selection (inside, at the end,
+    /// for the root or no selection). Invalid payloads only set `last_change`.
+    pub fn paste(&mut self, text: Option<&str>, cx: &mut Context<Self>) {
+        let nodes = match text.map(crate::clipboard::parse_fragment) {
+            Some(Ok(nodes)) => nodes,
+            Some(Err(e)) => return self.note(format!("Paste: {e}"), cx),
+            None => return self.note("Paste: clipboard empty".into(), cx),
+        };
+        let path = self.selection.clone().unwrap_or_default();
+        let (parent, index, place) = match path.split_last() {
+            Some((&i, parent)) => (parent.to_vec(), i + 1, format!("after {}", fmt_path(&path))),
+            None => (Vec::new(), self.root().child_count(), "into doc".into()),
+        };
+        let what = match nodes.as_slice() {
+            [one] => node_type(one).to_string(),
+            many => format!("{} nodes", many.len()),
+        };
+        let label = format!("Paste {what} {place}");
+        self.insert_nodes(parent, index, nodes, label, cx);
+    }
+
+    /// Replace the node at `path` with `json` as one undo step. `Err` carries
+    /// the serde message for the editor.
+    pub fn replace_from_json(
+        &mut self,
+        path: Vec<usize>,
+        json: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        let node: Node = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let Some(current) = self.root().node_at(&path) else {
+            return Err("the node no longer exists".into());
+        };
+        if *current == node {
+            return Ok(());
+        }
+        let label = format!("Replace {} from JSON", fmt_path(&path));
+        if self.edit(label, |t| t.replace(path.clone(), node).map(|_| ()), cx) {
+            self.selection = Some(path);
+            Ok(())
+        } else {
+            Err("replace failed".into())
+        }
+    }
+
+    /// Footer message without a document change.
+    fn note(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.last_change = Some(msg.into());
+        cx.notify();
+    }
+
+    /// Select `path` and expand all its ancestors.
+    fn reveal(&mut self, path: Vec<usize>) {
+        for d in 0..path.len() {
+            self.expanded.insert(path[..d].to_vec());
+        }
+        self.selection = Some(path);
+    }
+
+    /// Keep expansion on the same nodes across structural changes. Replaced
+    /// subtrees keep their paths (a JSON edit should not collapse the node).
+    fn remap_expanded(&mut self, changes: &[Change]) {
+        let structural = |c: &&Change| {
+            matches!(
+                c,
+                Change::Insert { .. } | Change::Remove { .. } | Change::Move { .. }
+            )
+        };
+        if !changes.iter().any(|c| structural(&c)) {
+            return;
+        }
+        self.expanded = std::mem::take(&mut self.expanded)
+            .into_iter()
+            .filter_map(|p| {
+                changes.iter().filter(structural).try_fold(p, |p, c| {
+                    tiptap_rusty_parser::map_path(&p, std::slice::from_ref(c))
+                })
+            })
+            .collect();
+    }
+}
+
+fn child_path(parent: &[usize], index: usize) -> String {
+    let mut p = parent.to_vec();
+    p.push(index);
+    fmt_path(&p)
+}

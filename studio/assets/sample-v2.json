@@ -1,0 +1,29 @@
+{
+  "type": "doc",
+  "content": [
+    { "type": "heading", "attrs": { "level": 2 }, "content": [ { "type": "text", "text": "tiptap-rusty-parser" } ] },
+    { "type": "paragraph", "content": [
+      { "type": "text", "text": "A very fast, " },
+      { "type": "text", "marks": [ { "type": "bold" } ], "text": "schema-agnostic" },
+      { "type": "text", "text": " parser for Tiptap and ProseMirror JSON. Query it, mutate it in place, and " },
+      { "type": "text", "marks": [ { "type": "link", "attrs": { "href": "https://github.com/alexvcasillas/tiptap-rusty-parser", "target": "_blank" } } ], "text": "roundtrip it" },
+      { "type": "text", "text": " without losing a field." }
+    ] },
+    { "type": "paragraph", "content": [ { "type": "text", "text": "Now with a diff engine." } ] },
+    { "type": "heading", "attrs": { "level": 2 }, "content": [ { "type": "text", "text": "What it does" } ] },
+    { "type": "bulletList", "content": [
+      { "type": "listItem", "content": [ { "type": "paragraph", "content": [ { "type": "text", "text": "Walk, find and find_all with predicate closures" } ] } ] },
+      { "type": "listItem", "content": [ { "type": "paragraph", "content": [ { "type": "text", "text": "Transform with a " }, { "type": "text", "marks": [ { "type": "code" } ], "text": "Change" }, { "type": "text", "text": " log you can invert" } ] } ] },
+      { "type": "listItem", "content": [ { "type": "paragraph", "content": [ { "type": "text", "text": "Diff two documents into the same change type" } ] } ] }
+    ] },
+    { "type": "callout", "attrs": { "variant": "warning", "priority": 2, "collapsed": false, "meta": { "source": "import", "tags": [ "docs" ] } }, "content": [
+      { "type": "paragraph", "content": [
+        { "type": "text", "text": "Unknown node types still " },
+        { "type": "text", "marks": [ { "type": "bold" } ], "text": "render" },
+        { "type": "text", "marks": [ { "type": "italic" } ], "text": " and roundtrip." }
+      ] }
+    ] },
+    { "type": "codeBlock", "attrs": { "language": "rust" }, "content": [ { "type": "text", "text": "let doc = Document::from_json_str(&json)?;\nlet hits = doc.root().find_all(|n| n.node_type.as_deref() == Some(\"heading\"));" } ] },
+    { "type": "heading", "attrs": { "level": 2 }, "content": [ { "type": "text", "text": "Roadmap" } ] }
+  ]
+}

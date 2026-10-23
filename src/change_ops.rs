@@ -5,7 +5,8 @@
 //! - [`compact`] coalesces redundant node-local ops (safely — structural ops act
 //!   as barriers, since [`apply`] interprets child indices against the live tree).
 //! - [`map_path`] carries an index-path through a change list (the basis for
-//!   mapping a selection or decoration across an edit).
+//!   mapping a selection or decoration across an edit); [`unmap_path`] and
+//!   [`rebase_change`] go the other way.
 //!
 //! Operational-transform style *rebasing* of concurrent edits is intentionally
 //! out of scope: it needs a bidirectional position map with insertion tie-breaks
@@ -173,7 +174,7 @@ pub fn map_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
                     }
                 }
             }
-            Change::Move { path: p, from, to } => {
+            Change::Move { path: p, from, to } if from != to => {
                 if let Some(d) = affected_level(&q, p) {
                     let k = q[d];
                     if *from == k {
@@ -199,4 +200,179 @@ pub fn map_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
         }
     }
     Some(q)
+}
+
+/// Inverse of [`map_path`]: given a path in the tree *after* `changes` were
+/// applied, where was that node before them? Returns `None` if the node did
+/// not exist before (it was inserted, or lives inside a replaced subtree).
+///
+/// Lets a UI relate a [`Change`] taken from the middle of a [`diff`](crate::diff)
+/// list (whose paths are live, partially-mutated indices) back to the original
+/// tree: `unmap_path(live, &changes[..i])`.
+///
+/// ```
+/// use tiptap_rusty_parser::{map_path, unmap_path, Change};
+/// let changes = vec![Change::Insert { path: vec![], index: 0, node: Default::default() }];
+/// assert_eq!(unmap_path(&[2, 0], &changes), Some(vec![1, 0]));
+/// assert_eq!(unmap_path(&[0], &changes), None); // the inserted node itself
+/// let removed = vec![Change::Remove { path: vec![], index: 1 }];
+/// assert_eq!(unmap_path(&[1], &removed), Some(vec![2]));
+/// ```
+pub fn unmap_path(path: &[usize], changes: &[Change]) -> Option<Vec<usize>> {
+    unmap(path, changes, false)
+}
+
+/// Reverse walk shared by [`unmap_path`] and [`rebase_change`]. With `slot`,
+/// the last component of `path` is an insertion slot (`0..=len`) rather than a
+/// node: an earlier insert at the same slot leaves it in place instead of
+/// dropping it.
+fn unmap(path: &[usize], changes: &[Change], slot: bool) -> Option<Vec<usize>> {
+    unmap_text(path, changes, slot, None).map(|(p, _)| p)
+}
+
+/// Scalar span `(from, len_del)` inside a text node.
+type TextSpan = (usize, usize);
+
+/// [`unmap`] that also carries a scalar span `(from, len_del)` of the text node
+/// at `path` back through earlier splices of that node. `None` when the span
+/// touches text an earlier change inserted or the node's text was replaced.
+fn unmap_text(
+    path: &[usize],
+    changes: &[Change],
+    slot: bool,
+    text: Option<TextSpan>,
+) -> Option<(Vec<usize>, Option<TextSpan>)> {
+    let mut q = path.to_vec();
+    let mut text = text;
+    let last = q.len().wrapping_sub(1);
+    for change in changes.iter().rev() {
+        match change {
+            Change::Insert { path: p, index, .. } => {
+                if let Some(d) = affected_level(&q, p) {
+                    if *index == q[d] && !(slot && d == last) {
+                        return None; // the node on the path was inserted
+                    } else if *index < q[d] {
+                        q[d] -= 1;
+                    }
+                }
+            }
+            Change::Remove { path: p, index } => {
+                if let Some(d) = affected_level(&q, p) {
+                    if *index <= q[d] {
+                        q[d] += 1;
+                    }
+                }
+            }
+            Change::Move { path: p, from, to } if from != to => {
+                if let Some(d) = affected_level(&q, p) {
+                    let k = q[d];
+                    if *to == k && !(slot && d == last) {
+                        q[d] = *from;
+                    } else {
+                        // undo insert(to), then undo remove(from)
+                        let after_remove = if *to < k { k - 1 } else { k };
+                        q[d] = if *from <= after_remove {
+                            after_remove + 1
+                        } else {
+                            after_remove
+                        };
+                    }
+                }
+            }
+            // A node strictly inside a replaced subtree did not exist before.
+            Change::Replace { path: p, .. } if p.len() < q.len() && q[..p.len()] == *p => {
+                return None;
+            }
+            Change::SpliceText {
+                path: p,
+                from: pf,
+                len_del: pdel,
+                insert,
+            } if text.is_some() && *p == q => {
+                let (from, len_del) = text.unwrap();
+                let ins = insert.chars().count();
+                if from >= pf + ins {
+                    text = Some((from - ins + pdel, len_del));
+                } else if from + len_del > *pf {
+                    return None; // overlaps text the earlier splice inserted
+                }
+            }
+            Change::SetText { path: p, .. } | Change::Replace { path: p, .. }
+                if text.is_some() && *p == q =>
+            {
+                return None;
+            }
+            _ => {}
+        }
+    }
+    Some((q, text))
+}
+
+/// Re-express `change`, taken from the middle of a change list right after
+/// `prior`, against the tree *before* `prior` ran, so it can be applied on its
+/// own (cherry-picked) to that base. Returns `None` when its target did not
+/// exist in the base (it lives inside a node that `prior` inserted or replaced).
+///
+/// Node addresses go through [`unmap_path`]; insertion slots (`Insert::index`,
+/// `Move::to`) are carried as slots, so a sibling inserted earlier at the same
+/// position does not drop them.
+///
+/// ```
+/// use tiptap_rusty_parser::{rebase_change, Change};
+/// let prior = vec![Change::Remove { path: vec![], index: 0 }];
+/// let later = Change::SetText { path: vec![1, 0], text: Some("x".into()) };
+/// assert_eq!(
+///     rebase_change(&later, &prior),
+///     Some(Change::SetText { path: vec![2, 0], text: Some("x".into()) })
+/// );
+/// ```
+pub fn rebase_change(change: &Change, prior: &[Change]) -> Option<Change> {
+    fn child(parent: &[usize], i: usize) -> Vec<usize> {
+        let mut p = parent.to_vec();
+        p.push(i);
+        p
+    }
+    fn split(mut p: Vec<usize>) -> (Vec<usize>, usize) {
+        let i = p.pop().unwrap_or(0);
+        (p, i)
+    }
+    let mut out = change.clone();
+    match &mut out {
+        Change::Insert { path, index, .. } => {
+            (*path, *index) = split(unmap(&child(path, *index), prior, true)?);
+        }
+        Change::Remove { path, index } => {
+            (*path, *index) = split(unmap(&child(path, *index), prior, false)?);
+        }
+        Change::Move { path, from, to } => {
+            // `to` is a slot in the post-removal list; lift it into the
+            // pre-removal list, rebase, then drop the removed child again.
+            let slot = if *to >= *from { *to + 1 } else { *to };
+            let (p, f) = split(unmap(&child(path, *from), prior, false)?);
+            let (_, s) = split(unmap(&child(path, slot), prior, true)?);
+            *to = if s > f { s - 1 } else { s };
+            *path = p;
+            *from = f;
+        }
+        Change::SetAttr { path, .. }
+        | Change::RemoveAttr { path, .. }
+        | Change::SetText { path, .. }
+        | Change::SetMarks { path, .. }
+        | Change::SetExtra { path, .. }
+        | Change::RemoveExtra { path, .. }
+        | Change::Replace { path, .. } => {
+            *path = unmap(path, prior, false)?;
+        }
+        Change::SpliceText {
+            path,
+            from,
+            len_del,
+            ..
+        } => {
+            let (p, span) = unmap_text(path, prior, false, Some((*from, *len_del)))?;
+            *path = p;
+            (*from, *len_del) = span?;
+        }
+    }
+    Some(out)
 }

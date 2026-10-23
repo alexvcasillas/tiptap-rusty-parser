@@ -7,6 +7,8 @@
 //!   preserved).
 //! - **Query** with predicate closures: [`Node::find`], [`Node::find_all`],
 //!   [`Node::walk`], [`Node::descendants`].
+//! - **Query language**: compile `type == heading && attrs.level > 1` once,
+//!   match without allocating: [`Query::parse`], [`Query::find_paths`].
 //! - **Select** by type/mark/attr: [`Node::by_type`], [`Node::by_mark`],
 //!   [`Node::by_attr`].
 //! - **Address** by index path: [`Node::node_at`], [`Node::path_to`]; or by flat
@@ -33,6 +35,8 @@
 //! - **Extract** text: [`Node::text_content`], [`Node::word_count`].
 //! - **Validate** (opt-in) against a schema, incl. ProseMirror content
 //!   expressions: [`Node::validate`], [`Schema`], [`ContentExpr`].
+//! - **Source map** JSON text: node path ↔ byte span, for editors and debuggers:
+//!   [`SourceMap::pretty`], [`SourceMap::span`], [`SourceMap::path_at`].
 //! - **Render** to HTML: [`Node::to_html`], [`HtmlOptions`].
 //! - **Build** nodes ergonomically: [`Node::element`], [`Node::text`], [`doc`].
 //!
@@ -72,16 +76,18 @@ mod pos;
 mod pos_edit;
 mod pos_map;
 mod query;
+mod query_lang;
 mod range;
 mod schema;
 mod select;
+mod source_map;
 mod text;
 mod text_diff;
 mod transform;
 
 pub use block::{BlockError, BlockRange};
 pub use builder::doc;
-pub use change_ops::{compact, compose, map_path};
+pub use change_ops::{compact, compose, map_path, rebase_change, unmap_path};
 pub use content::{ContentExpr, ContentRule, ParseExprError};
 pub use diff::{apply, diff, invert, ApplyError, Change};
 pub use document::Document;
@@ -93,7 +99,9 @@ pub use pos::{LeafPolicy, PosError, PosRange, ResolvedPos, TextPoint};
 pub use pos_edit::{PosContent, PosEdit, PosEditError};
 pub use pos_map::{Assoc, PosMap};
 pub use query::Descendants;
+pub use query_lang::{Query, QueryError, QueryErrorKind};
 pub use range::{Position, Range, RangeError};
 pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};
+pub use source_map::{SourceMap, SourceMapError};
 pub use text_diff::{diff_text, DiffGranularity, DiffOptions, SegKind, TextSegment};
 pub use transform::Transform;

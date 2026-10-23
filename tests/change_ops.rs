@@ -1,6 +1,8 @@
 //! Change-list algebra: compose / compact / map_path.
 
-use tiptap_rusty_parser::{apply, compact, compose, map_path, Change, Node};
+use tiptap_rusty_parser::{
+    apply, compact, compose, map_path, rebase_change, unmap_path, Change, Node,
+};
 
 fn p(text: &str) -> Node {
     Node::element("paragraph").with_child(Node::text(text))
@@ -374,4 +376,189 @@ fn fuzz_map_path_matches_post_apply_node() {
             }
         }
     }
+}
+
+// ---- unmap_path ---------------------------------------------------------
+
+#[test]
+fn unmap_path_inverts_map_path_over_a_real_diff() {
+    let a = doc([p("a"), p("b"), p("c"), p("d"), p("e")]);
+    let b = doc([p("x"), p("b"), p("e"), p("c"), p("c2")]);
+    let changes = a.diff(&b);
+    assert!(!changes.is_empty());
+    for (i, _) in a.children().iter().enumerate() {
+        if let Some(mapped) = map_path(&[i, 0], &changes) {
+            assert_eq!(unmap_path(&mapped, &changes), Some(vec![i, 0]), "child {i}");
+        }
+    }
+    // Each prefix of the list round-trips too (the live-path case a UI needs).
+    for n in 0..=changes.len() {
+        for i in 0..a.child_count() {
+            if let Some(mapped) = map_path(&[i], &changes[..n]) {
+                assert_eq!(
+                    unmap_path(&mapped, &changes[..n]),
+                    Some(vec![i]),
+                    "prefix {n} child {i}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn unmap_path_drops_inserted_and_replaced_nodes() {
+    let ins = vec![Change::Insert {
+        path: vec![],
+        index: 1,
+        node: p("n"),
+    }];
+    assert_eq!(unmap_path(&[1], &ins), None);
+    assert_eq!(unmap_path(&[1, 0], &ins), None);
+    assert_eq!(unmap_path(&[2], &ins), Some(vec![1]));
+    assert_eq!(unmap_path(&[0], &ins), Some(vec![0]));
+    let rep = vec![Change::Replace {
+        path: vec![1],
+        node: p("r"),
+    }];
+    assert_eq!(unmap_path(&[1], &rep), Some(vec![1]));
+    assert_eq!(unmap_path(&[1, 0], &rep), None);
+    let mv = vec![Change::Move {
+        path: vec![],
+        from: 0,
+        to: 2,
+    }];
+    assert_eq!(unmap_path(&[2], &mv), Some(vec![0]));
+    assert_eq!(unmap_path(&[0], &mv), Some(vec![1]));
+    assert_eq!(unmap_path(&[1], &mv), Some(vec![2]));
+}
+
+// ---- rebase_change --------------------------------------------------------
+
+#[test]
+fn rebase_change_cherry_picks_each_diff_change_onto_the_base() {
+    let a = doc([p("a"), p("b"), p("c"), p("d"), p("e")]);
+    let b = doc([p("x"), p("b"), p("e"), p("c2"), p("c"), p("new")]);
+    let changes = a.diff(&b);
+    assert!(changes.len() > 2);
+    for i in 0..changes.len() {
+        let picked = rebase_change(&changes[i], &changes[..i]).expect("target exists in a");
+        let mut t = a.clone();
+        apply(&mut t, &[picked]).unwrap_or_else(|e| panic!("change {i}: {e}"));
+    }
+    // Picking them one at a time (re-diffing in between) converges on `b`.
+    let mut t = a.clone();
+    for _ in 0..32 {
+        let rest = t.diff(&b);
+        let Some(last) = rest.len().checked_sub(1) else {
+            break;
+        };
+        let picked = rebase_change(&rest[last], &rest[..last]).unwrap();
+        apply(&mut t, &[picked]).unwrap();
+    }
+    assert_eq!(t, b);
+}
+
+#[test]
+fn rebase_change_shifts_paths_and_slots() {
+    let prior = vec![
+        Change::Insert {
+            path: vec![],
+            index: 0,
+            node: p("n"),
+        },
+        Change::Remove {
+            path: vec![],
+            index: 3,
+        },
+    ];
+    // Node-local: live [2,0] was base [1,0].
+    let set = Change::SetText {
+        path: vec![2, 0],
+        text: Some("y".into()),
+    };
+    assert_eq!(
+        rebase_change(&set, &prior),
+        Some(Change::SetText {
+            path: vec![1, 0],
+            text: Some("y".into()),
+        })
+    );
+    // A slot right after an inserted sibling is kept, not dropped.
+    let ins = Change::Insert {
+        path: vec![],
+        index: 1,
+        node: p("m"),
+    };
+    assert_eq!(
+        rebase_change(&ins, &prior),
+        Some(Change::Insert {
+            path: vec![],
+            index: 0,
+            node: p("m"),
+        })
+    );
+    // Inside a node `prior` inserted: no base target.
+    let inside = Change::SetText {
+        path: vec![0, 0],
+        text: None,
+    };
+    assert_eq!(rebase_change(&inside, &prior), None);
+}
+
+#[test]
+fn rebase_change_ignores_noop_moves() {
+    let prior = vec![Change::Move {
+        path: vec![],
+        from: 0,
+        to: 0,
+    }];
+    let ins = Change::Insert {
+        path: vec![],
+        index: 0,
+        node: p("m"),
+    };
+    assert_eq!(rebase_change(&ins, &prior), Some(ins.clone()));
+    assert_eq!(unmap_path(&[1], &prior), Some(vec![1]));
+}
+
+#[test]
+fn rebase_change_remaps_splice_offsets() {
+    let splice = |from, len_del, insert: &str| Change::SpliceText {
+        path: vec![0, 0],
+        from,
+        len_del,
+        insert: insert.into(),
+    };
+    // base "abc"; prior inserted "X" at 0 → "Xabc"; later deletes "b" (offset 2).
+    let prior = vec![splice(0, 0, "X")];
+    assert_eq!(
+        rebase_change(&splice(2, 1, ""), &prior),
+        Some(splice(1, 1, ""))
+    );
+    let mut t = doc([p("abc")]);
+    apply(&mut t, &[rebase_change(&splice(2, 1, ""), &prior).unwrap()]).unwrap();
+    assert_eq!(t, doc([p("ac")]));
+    // Before the earlier insertion: unchanged.
+    assert_eq!(
+        rebase_change(&splice(0, 0, "y"), &prior),
+        Some(splice(0, 0, "y"))
+    );
+    // Touching the inserted text, or a whole-text rewrite: no base target.
+    assert_eq!(rebase_change(&splice(0, 2, ""), &prior), None);
+    let set = vec![Change::SetText {
+        path: vec![0, 0],
+        text: Some("zzz".into()),
+    }];
+    assert_eq!(rebase_change(&splice(1, 1, ""), &set), None);
+    // Other nodes are untouched.
+    let other = vec![Change::SpliceText {
+        path: vec![1, 0],
+        from: 0,
+        len_del: 0,
+        insert: "X".into(),
+    }];
+    assert_eq!(
+        rebase_change(&splice(2, 1, ""), &other),
+        Some(splice(2, 1, ""))
+    );
 }

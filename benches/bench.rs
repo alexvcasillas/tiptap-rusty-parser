@@ -1,7 +1,7 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tiptap_rusty_parser::{
     doc, Assoc, BlockRange, DiffGranularity, DiffOptions, Document, Mark, MarkSpec, Node, NodeSpec,
-    PosContent, PosEdit, PosMap, Position, Range, Schema,
+    PosContent, PosEdit, PosMap, Position, Query, Range, Schema, SourceMap,
 };
 
 /// Build a sizeable doc: `paras` paragraphs, each with `spans` text spans.
@@ -312,6 +312,51 @@ fn benches(c: &mut Criterion) {
             black_box(acc)
         })
     });
+
+    // Query language: compile once, match over a large mixed doc (no per-node alloc).
+    let mixed = Document::new(doc((0..2000).map(|i| match i % 4 {
+        0 => Node::element("heading")
+            .with_attr("level", (i % 3 + 1) as u64)
+            .with_text(format!("Section {i}")),
+        1 => Node::element("callout")
+            .with_attr(
+                "meta",
+                serde_json::json!({"source": if i % 8 == 1 { "import" } else { "manual" }}),
+            )
+            .with_child(Node::element("paragraph").with_text("note")),
+        _ => Node::element("paragraph").with_children((0..10).map(move |s| {
+            let t = format!("word{s} Roundtrip diff engine {i} ");
+            if s % 3 == 0 {
+                Node::text_with_marks(t, [Mark::new("bold")])
+            } else {
+                Node::text(t)
+            }
+        })),
+    })));
+    let q_struct =
+        Query::parse("type == heading && attrs.level > 1 || attrs.meta.source == import").unwrap();
+    let q_text = Query::parse("\"diff ENGINE 1999\" || has mark bold && text ~ word9").unwrap();
+    c.bench_function("query_parse", |b| {
+        b.iter(|| {
+            Query::parse(black_box(
+                "type == heading && attrs.level > 1 || (has mark bold && !text ~ foo)",
+            ))
+            .unwrap()
+        })
+    });
+    c.bench_function("query_find_paths_struct", |b| {
+        b.iter(|| black_box(q_struct.find_paths(mixed.root()).len()))
+    });
+    c.bench_function("query_find_paths_text", |b| {
+        b.iter(|| black_box(q_text.find_paths(mixed.root()).len()))
+    });
+    c.bench_function("query_matches_walk", |b| {
+        b.iter(|| {
+            let mut n = 0usize;
+            mixed.walk(&mut |node| n += q_text.matches(node) as usize);
+            black_box(n)
+        })
+    });
 }
 
 /// Studio-sized document: `n` top-level blocks (headings, paragraphs with marks,
@@ -338,9 +383,58 @@ fn studio_doc(n: usize) -> Node {
     }))
 }
 
-/// Large-document diff path (Studio-sized documents).
+/// Large-document paths the studio hits on every edit / Diff recompute.
 fn large(c: &mut Criterion) {
     let base = studio_doc(10_000);
+
+    // Old studio edit path: clone the root, run the txn, re-diff for the undo.
+    c.bench_function("edit_attr_10k_clone_invert", |b| {
+        let mut d = base.clone();
+        let mut level = 1u64;
+        b.iter(|| {
+            level = level % 3 + 1;
+            let before = d.clone();
+            let changes = {
+                let mut t = d.transform();
+                t.set_attr(vec![5000], "level", level).unwrap();
+                t.finish()
+            };
+            black_box(before.invert(&changes).unwrap());
+        })
+    });
+    // New: inverse recorded while applying.
+    c.bench_function("edit_attr_10k_incremental_inverse", |b| {
+        let mut d = base.clone();
+        let mut level = 1u64;
+        b.iter(|| {
+            level = level % 3 + 1;
+            let mut t = d.transform();
+            t.set_attr(vec![5000], "level", level).unwrap();
+            black_box(t.finish_with_inverse());
+        })
+    });
+    c.bench_function("undo_redo_10k_apply_inverting", |b| {
+        let mut d = base.clone();
+        let (_, mut undo) = {
+            let mut t = d.transform();
+            t.remove(vec![], 5000).unwrap();
+            t.finish_with_inverse()
+        };
+        b.iter(|| {
+            let redo = d.apply_inverting(std::mem::take(&mut undo)).unwrap();
+            undo = d.apply_inverting(redo).unwrap();
+        })
+    });
+    // Wrap + undo on the same tree (no per-iteration clone/drop of the doc).
+    c.bench_function("wrap_10k_scoped_txn_and_undo", |b| {
+        let mut d = base.clone();
+        b.iter(|| {
+            let mut t = d.transform();
+            t.wrap(vec![5001], "blockquote", None).unwrap();
+            let (_, undo) = t.finish_with_inverse();
+            d.apply_inverting(undo).unwrap();
+        })
+    });
 
     // Diff of the 10k doc vs a copy with 50 scattered edits.
     let mut edited = base.clone();
@@ -365,6 +459,23 @@ fn large(c: &mut Criterion) {
     }
     c.bench_function("diff_10k_blocks_50_scattered_edits", |b| {
         b.iter(|| black_box(base.diff(black_box(&edited)).len()))
+    });
+
+    // Studio JSON source view: pretty text + node spans, and the scan alone.
+    let pretty = serde_json::to_string_pretty(&base).unwrap();
+    c.bench_function("source_map_pretty_10k", |b| {
+        b.iter(|| black_box(SourceMap::pretty(black_box(&base)).1.len()))
+    });
+    c.bench_function("source_map_build_10k", |b| {
+        b.iter(|| black_box(SourceMap::build(black_box(&pretty)).unwrap().len()))
+    });
+    let map = SourceMap::build(&pretty).unwrap();
+    c.bench_function("source_map_path_at_10k", |b| {
+        let mut off = 0usize;
+        b.iter(|| {
+            off = (off + 7919) % pretty.len();
+            black_box(map.path_at(off))
+        })
     });
 }
 

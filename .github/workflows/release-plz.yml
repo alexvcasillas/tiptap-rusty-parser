@@ -8,6 +8,7 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write # crates.io + npm Trusted Publishing (OIDC)
+  actions: write # dispatch studio-release.yml
 
 # Don't overlap release runs.
 concurrency:
@@ -36,16 +37,36 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Which packages were released: the crate drives npm, the studio drives the
+      # desktop builds. (`releases_created` alone is true for a studio-only release.)
+      - name: Inspect releases
+        id: which
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          RELEASES: ${{ steps.release.outputs.releases }}
+        run: |
+          echo "$RELEASES" | jq .
+          parser="$(echo "$RELEASES" | jq -r 'any(.[]; .package_name == "tiptap-rusty-parser")')"
+          studio_tag="$(echo "$RELEASES" | jq -r '.[] | select(.package_name == "tiptap-rusty-studio") | .tag')"
+          echo "parser=$parser" >> "$GITHUB_OUTPUT"
+          echo "studio_tag=$studio_tag" >> "$GITHUB_OUTPUT"
+      - name: Build desktop apps for the studio release
+        if: steps.which.outputs.studio_tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.which.outputs.studio_tag }}
+        run: gh workflow run studio-release.yml --ref "$TAG"
+
       # Publish the WASM bindings to npm when a crate release was just cut.
       # Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN, with provenance.
       - name: Install wasm-pack
-        if: steps.release.outputs.releases_created == 'true'
+        if: steps.which.outputs.parser == 'true'
         uses: jetli/wasm-pack-action@v0.4.0
       - name: Build WASM package
-        if: steps.release.outputs.releases_created == 'true'
+        if: steps.which.outputs.parser == 'true'
         run: wasm-pack build bindings/wasm --target bundler --release
       - name: Prepare npm package
-        if: steps.release.outputs.releases_created == 'true'
+        if: steps.which.outputs.parser == 'true'
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c "import sys,json;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='tiptap-rusty-parser'))")
@@ -53,12 +74,12 @@ jobs:
           cp bindings/wasm/README.md bindings/wasm/pkg/ 2>/dev/null || true
           node -e "const f='bindings/wasm/pkg/package.json',p=require('./'+f);p.name='tiptap-rusty-parser';p.version='$VERSION';p.license='MIT';p.description='Fast WASM parser/manipulator for Tiptap/ProseMirror JSONContent';p.repository={type:'git',url:'https://github.com/alexvcasillas/tiptap-rusty-parser'};require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
       - uses: actions/setup-node@v4
-        if: steps.release.outputs.releases_created == 'true'
+        if: steps.which.outputs.parser == 'true'
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
       - name: Publish to npm (OIDC)
-        if: steps.release.outputs.releases_created == 'true'
+        if: steps.which.outputs.parser == 'true'
         run: |
           npm install -g npm@11.5.1 # pinned; Trusted Publishing needs npm >= 11.5.1
           npm publish --provenance --access public

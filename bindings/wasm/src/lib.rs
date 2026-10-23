@@ -773,7 +773,7 @@ export type Change =
   | { op: "remove"; path: number[]; index: number }
   | { op: "replace"; path: number[]; node: JSONContent }
   | { op: "move"; path: number[]; from: number; to: number };
-export interface Violation { path: number[]; kind: unknown; }
+export interface Violation { path: number[]; kind: unknown; child?: number; mark?: number; }
 export interface NormalizeOptions {
   mergeAdjacentText?: boolean;
   removeEmptyText?: boolean;

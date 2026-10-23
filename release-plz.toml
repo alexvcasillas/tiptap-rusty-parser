@@ -13,3 +13,20 @@
 name = "tiptap-rusty-parser-wasm"
 release = false
 publish = false
+
+# The GPUI desktop app: versioned and tagged by release-plz (never on crates.io).
+# It depends on the parser by path, so a parser bump also bumps the studio. The
+# `studio-v*` tag is what studio-release.yml builds; release-plz.yml dispatches
+# that workflow after the release (a tag made with GITHUB_TOKEN triggers nothing
+# by itself). release-plz opens the GitHub Release as a draft with the changelog
+# as body; studio-release.yml attaches the binaries and publishes it.
+[[package]]
+name = "tiptap-rusty-studio"
+release = true
+publish = false
+git_tag_name = "studio-v{{ version }}"
+git_release_name = "Tiptap Studio {{ version }}"
+git_release_draft = true
+git_release_latest = false
+changelog_path = "studio/CHANGELOG.md"
+features_always_increment_minor = true

@@ -195,3 +195,32 @@ fn matches_equivalent_diff() {
     assert_eq!(via_diff, doc);
     assert_replayable(&original, &doc, &changes);
 }
+
+#[test]
+fn apply_change_cherry_picks_from_diff() {
+    let mut a = Node::element("doc").with_children([p("a").with_attr("align", "left"), p("b")]);
+    let b = Node::element("doc").with_children([p("a").with_attr("align", "right")]);
+    let original = a.clone();
+    let diff = a.diff(&b);
+    assert_eq!(diff.len(), 2);
+    let first = diff[0].clone();
+
+    let changes = {
+        let mut tx = a.transform();
+        tx.apply_change(first.clone()).unwrap();
+        tx.finish()
+    };
+    assert_eq!(changes, vec![first]);
+    assert_ne!(a, original);
+    assert_replayable(&original, &a, &changes);
+
+    // A change that doesn't resolve is an error and is not recorded.
+    let mut tx = a.transform();
+    assert!(tx
+        .apply_change(Change::Remove {
+            path: vec![9],
+            index: 0
+        })
+        .is_err());
+    assert!(tx.changes().is_empty());
+}
