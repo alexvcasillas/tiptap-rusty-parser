@@ -9,7 +9,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
-use tiptap_rusty_markdown::{from_markdown, from_markdown_with, HtmlPolicy, ParseOptions};
+use tiptap_rusty_markdown::{
+    from_markdown, from_markdown_with, Document, HtmlPolicy, ParseOptions, DEFAULT_MAX_DEPTH,
+};
 use tiptap_rusty_parser::Schema;
 
 /// Fixtures whose output uses nodes/attrs outside StarterKit (validated only
@@ -33,6 +35,7 @@ fn opts_for(name: &str) -> ParseOptions {
         } else {
             HtmlPolicy::Text
         },
+        ..Default::default()
     }
 }
 
@@ -218,9 +221,9 @@ fn adversarial() -> Vec<String> {
     .collect();
 
     // deep nesting
-    v.push(">".repeat(300) + " deep");
+    v.push(">".repeat(2000) + " deep");
     v.push(
-        (0..120)
+        (0..1000)
             .map(|i| format!("{}- l{i}\n", "  ".repeat(i)))
             .collect(),
     );
@@ -228,8 +231,17 @@ fn adversarial() -> Vec<String> {
     v.push("[".repeat(500) + "x" + &"](u)".repeat(500));
     v.push("![".repeat(200) + &"](u)".repeat(200));
     v.push("`".repeat(1000));
-    v.push("> - ".repeat(100) + "x");
-    v.push("- [ ] ".repeat(100));
+    v.push("> - ".repeat(1000) + "x");
+    v.push("- [ ] ".repeat(1000));
+    v.push(
+        "> | a |\n> | - |\n".repeat(3)
+            + &"> ".repeat(70)
+            + "| a | b |\n"
+            + &"> ".repeat(70)
+            + "| - | - |\n"
+            + &"> ".repeat(70)
+            + "| c | d |",
+    );
     v.push("|".repeat(300) + "\n" + &"|-".repeat(150) + "|");
 
     // random punctuation soup
@@ -254,14 +266,17 @@ fn adversarial_inputs_never_panic_and_stay_valid() {
         ParseOptions {
             gfm: true,
             html: HtmlPolicy::Drop,
+            ..Default::default()
         },
         ParseOptions {
             gfm: false,
             html: HtmlPolicy::Text,
+            ..Default::default()
         },
         ParseOptions {
             gfm: false,
             html: HtmlPolicy::Drop,
+            ..Default::default()
         },
     ];
     for input in adversarial() {
@@ -322,6 +337,7 @@ fn dropped_html_leaves_no_trailing_hard_break() {
     let opts = ParseOptions {
         gfm: true,
         html: HtmlPolicy::Drop,
+        ..Default::default()
     };
     for (md, want) in [
         (
@@ -367,4 +383,80 @@ fn whitespace_only_link_at_block_end_is_kept() {
         let last = p.last().cloned().unwrap_or_default();
         assert_eq!(last["marks"][0]["type"], "link", "{md:?}: {v}");
     }
+}
+
+/// JSON nesting depth of a value (objects and arrays).
+fn json_depth(v: &Value) -> usize {
+    match v {
+        Value::Object(m) => 1 + m.values().map(json_depth).max().unwrap_or(0),
+        Value::Array(a) => 1 + a.iter().map(json_depth).max().unwrap_or(0),
+        _ => 0,
+    }
+}
+
+fn all_text(v: &Value, out: &mut String) {
+    if let Some(t) = v["text"].as_str() {
+        out.push_str(t);
+    }
+    if let Some(c) = v["content"].as_array() {
+        for x in c {
+            all_text(x, out);
+        }
+    }
+}
+
+#[test]
+fn deep_nesting_is_capped_and_flattened() {
+    let gfm = schema("gfm.schema.json");
+    let quotes = ">".repeat(5000) + " **deep** [l](u \"t\")";
+    let list: String = (0..5000)
+        .map(|i| format!("{}- l{i}\n", "  ".repeat(i)))
+        .collect();
+    let mixed = "> - [ ] ".repeat(2000) + "x\n" + &"> - ".repeat(2000) + "| a |\n| - |\n| `b` |";
+    for (md, want) in [
+        (quotes, "deep l".to_owned()),
+        (list, (0..5000).map(|i| format!("l{i}")).collect::<String>()),
+        (mixed, String::new()),
+    ] {
+        for max_depth in [DEFAULT_MAX_DEPTH, 40, 0] {
+            let opts = ParseOptions {
+                max_depth,
+                ..Default::default()
+            };
+            let doc = from_markdown_with(&md, &opts);
+            assert!(doc.validate(&gfm).is_empty(), "{:?}", doc.validate(&gfm));
+            let v = doc.to_value().unwrap();
+            assert!(
+                json_depth(&v) <= max_depth.max(8),
+                "{} > {max_depth}",
+                json_depth(&v)
+            );
+            let json = doc.to_json_str().unwrap();
+            let back = Document::from_json_str(&json).expect("reload");
+            assert_eq!(back, doc);
+            let mut text = String::new();
+            all_text(&v, &mut text);
+            if !want.is_empty() {
+                assert_eq!(text, want);
+            } else {
+                assert!(
+                    text.contains('x') && text.contains("[ ] ") && text.contains('b'),
+                    "{text}"
+                );
+            }
+            drop(back);
+        }
+    }
+    // shallow docs are untouched by the cap
+    let md = "> > - a\n>   > b";
+    assert_eq!(
+        from_markdown(md),
+        from_markdown_with(
+            md,
+            &ParseOptions {
+                max_depth: usize::MAX,
+                ..Default::default()
+            }
+        )
+    );
 }

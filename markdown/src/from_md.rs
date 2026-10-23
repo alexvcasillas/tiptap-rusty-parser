@@ -44,6 +44,13 @@
 //!   pulldown-cmark 0.13 and stay plain text.
 //! - Trailing spaces/tabs of paragraphs and headings are dropped, as in
 //!   CommonMark (code spans keep theirs).
+//! - Depth: the result's JSON nesting never exceeds
+//!   [`ParseOptions::max_depth`] (default 128, `serde_json`'s recursion
+//!   limit), so it always serializes and loads back. A blockquote, list or
+//!   table that would nest too deep is not created; its content is flattened
+//!   into the deepest container that fits: its paragraphs (each list item /
+//!   table cell its own paragraph, task markers as literal `[ ] `/`[x] `
+//!   text) become siblings there. Nothing is lost but that structure.
 //! - Raw HTML follows [`HtmlPolicy`]. Footnotes, math, metadata blocks and
 //!   GFM alerts are not enabled (their syntax stays text).
 
@@ -73,13 +80,23 @@ pub struct ParseOptions {
     pub gfm: bool,
     /// Raw HTML handling.
     pub html: HtmlPolicy,
+    /// Maximum JSON nesting depth of the result once serialized (objects and
+    /// arrays, as counted by `serde_json`'s recursion limit, whose default
+    /// is 128; at least 8: doc > paragraph > marked text). Deeper Markdown is
+    /// flattened (see the module docs), so every
+    /// imported document can be serialized and loaded back.
+    pub max_depth: usize,
 }
+
+/// `serde_json`'s default recursion limit.
+pub const DEFAULT_MAX_DEPTH: usize = 128;
 
 impl Default for ParseOptions {
     fn default() -> Self {
         Self {
             gfm: true,
             html: HtmlPolicy::Text,
+            max_depth: DEFAULT_MAX_DEPTH,
         }
     }
 }
@@ -106,7 +123,7 @@ pub fn from_markdown(src: &str) -> Document {
 /// ```
 /// use tiptap_rusty_markdown::{from_markdown_with, HtmlPolicy, ParseOptions};
 ///
-/// let opts = ParseOptions { gfm: false, html: HtmlPolicy::Drop };
+/// let opts = ParseOptions { gfm: false, html: HtmlPolicy::Drop, ..Default::default() };
 /// let doc = from_markdown_with("a <b>b</b>", &opts);
 /// let json = doc.to_value().unwrap();
 /// assert_eq!(json["content"][0]["content"][0]["text"], "a b");
@@ -116,11 +133,19 @@ pub fn from_markdown_with(src: &str, opts: &ParseOptions) -> Document {
     if opts.gfm {
         flags |= Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     }
-    let mut b = Builder::new(opts.html);
+    let mut b = Builder::new(opts.html, node_depth_cap(opts.max_depth));
     for ev in Parser::new_ext(src, flags) {
         b.event(ev);
     }
     Document::new(b.finish())
+}
+
+/// Deepest node index (doc = 0) whose JSON stays within `max_depth`: a node
+/// at index `k` is an object at JSON depth `2k + 1`; a marked text node adds
+/// `marks` > mark > `attrs` (+3), and the parser's serde needs one more level
+/// of headroom. At least `doc > paragraph > text`.
+fn node_depth_cap(max_depth: usize) -> usize {
+    (max_depth.saturating_sub(6) / 2).max(2)
 }
 
 // ---- builder ---------------------------------------------------------------
@@ -191,6 +216,10 @@ struct Builder {
     mark_pushed: Vec<Option<u8>>,
     image: Option<PendingImage>,
     image_depth: u32,
+    /// Deepest stack index a text node may land at.
+    cap: usize,
+    /// Open containers dropped for depth (their content is flattened).
+    skipped: u32,
 }
 
 #[inline]
@@ -368,7 +397,7 @@ fn is_hoistable_images(children: &[Node]) -> bool {
 }
 
 impl Builder {
-    fn new(html: HtmlPolicy) -> Self {
+    fn new(html: HtmlPolicy, cap: usize) -> Self {
         let mut stack = Vec::with_capacity(16);
         stack.push(Frame::new(Kind::Doc));
         Builder {
@@ -378,6 +407,19 @@ impl Builder {
             mark_pushed: Vec::new(),
             image: None,
             image_depth: 0,
+            cap,
+            skipped: 0,
+        }
+    }
+
+    /// Open a container needing `levels` stack levels below it (down to the
+    /// text), or skip it when that would pass the cap.
+    fn open_container(&mut self, kind: Kind, levels: usize) {
+        self.close_implicit();
+        if self.skipped > 0 || self.stack.len() + levels > self.cap {
+            self.skipped += 1;
+        } else {
+            self.stack.push(Frame::new(kind));
         }
     }
 
@@ -399,6 +441,9 @@ impl Builder {
             Event::SoftBreak => self.text(CowStr::Borrowed(" ")),
             Event::HardBreak => self.hard_break(),
             Event::Rule => self.push_block(element("horizontalRule", None, Vec::new())),
+            Event::TaskListMarker(checked) if self.skipped > 0 => {
+                self.text(CowStr::Borrowed(if checked { "[x] " } else { "[ ] " }))
+            }
             Event::TaskListMarker(checked) => {
                 if let Some(f) = self
                     .stack
@@ -562,7 +607,9 @@ impl Builder {
         match tag {
             Tag::Paragraph => self.open_block(Kind::Para),
             Tag::Heading { level, .. } => self.open_block(Kind::Heading(level as u8)),
-            Tag::BlockQuote(_) => self.open_block(Kind::Quote),
+            // levels: quote > paragraph > text, list > item > paragraph > text,
+            // table > row > cell > paragraph > text
+            Tag::BlockQuote(_) => self.open_container(Kind::Quote, 2),
             Tag::CodeBlock(kind) => {
                 self.open_block(Kind::Code);
                 let lang = match &kind {
@@ -577,11 +624,12 @@ impl Builder {
                 }
             }
             Tag::HtmlBlock => self.open_block(Kind::Html),
-            Tag::List(start) => self.open_block(Kind::List(start)),
-            Tag::Item => self.open_block(Kind::Item),
-            Tag::Table(_) => self.open_block(Kind::Table),
-            Tag::TableHead => self.stack.push(Frame::new(Kind::Row { header: true })),
-            Tag::TableRow => self.stack.push(Frame::new(Kind::Row { header: false })),
+            Tag::List(start) => self.open_container(Kind::List(start), 3),
+            Tag::Item => self.open_container(Kind::Item, 2),
+            Tag::Table(_) => self.open_container(Kind::Table, 4),
+            Tag::TableHead => self.open_container(Kind::Row { header: true }, 3),
+            Tag::TableRow => self.open_container(Kind::Row { header: false }, 3),
+            Tag::TableCell if self.skipped > 0 => self.open_container(Kind::Doc, 0),
             Tag::TableCell => {
                 let header = matches!(
                     self.stack.last().map(|f| f.kind),
@@ -636,6 +684,19 @@ impl Builder {
 
     fn end(&mut self, end: TagEnd) {
         match end {
+            TagEnd::BlockQuote(_)
+            | TagEnd::List(_)
+            | TagEnd::Item
+            | TagEnd::Table
+            | TagEnd::TableHead
+            | TagEnd::TableRow
+            | TagEnd::TableCell
+                if self.skipped > 0 =>
+            {
+                // flattened: each skipped item / cell ends its paragraph
+                self.close_implicit();
+                self.skipped -= 1;
+            }
             TagEnd::Paragraph
             | TagEnd::Heading(_)
             | TagEnd::BlockQuote(_)

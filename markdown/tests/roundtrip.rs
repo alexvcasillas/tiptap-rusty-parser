@@ -47,6 +47,7 @@ fn parse_opts(name: &str) -> ParseOptions {
         } else {
             HtmlPolicy::Text
         },
+        ..Default::default()
     }
 }
 
