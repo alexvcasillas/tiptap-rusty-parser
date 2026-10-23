@@ -1,7 +1,8 @@
 # Tiptap Studio release builds: macOS universal (.dmg, signed + notarized when the
 # Apple secrets exist), Windows x86_64 (.zip), Linux x86_64 (.tar.gz).
-# Tag `studio-vX.Y.Z` (must match studio/Cargo.toml) → draft GitHub Release with all three.
-# Manual runs (workflow_dispatch) build and upload artifacts only.
+# Runs on the `studio-vX.Y.Z` tag (must match studio/Cargo.toml): dispatched by release-plz.yml
+# after a release, or pushed by hand. Attaches all three to the GitHub Release and publishes it.
+# Manual runs on a branch (workflow_dispatch) build and upload artifacts only.
 # Docs: studio/packaging/README.md.
 name: studio release
 
@@ -245,7 +246,7 @@ jobs:
           retention-days: 14
 
   release:
-    name: draft GitHub Release
+    name: GitHub Release
     if: github.ref_type == 'tag'
     needs: [version, macos, windows, linux]
     runs-on: ubuntu-24.04
@@ -264,19 +265,27 @@ jobs:
           cd dist
           sha256sum -- * > SHA256SUMS.txt
           cat SHA256SUMS.txt
+      # release-plz opens the draft (body = studio/CHANGELOG.md entry) before dispatching
+      # this workflow. A tag pushed by hand has no release yet: create the draft here.
+      - name: Ensure the draft release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && exit 0
+          pre=""; case "$VERSION" in *-*) pre="--prerelease" ;; esac
+          gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft $pre --title "Tiptap Studio $VERSION" \
+            --notes "Tiptap Studio $VERSION: desktop inspector, structural editor and differ for Tiptap/ProseMirror JSON."
+      # Attach the binaries and publish. The body set above (or by release-plz) is kept.
       - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          draft: true
+          draft: false
           prerelease: ${{ contains(needs.version.outputs.version, '-') }}
-          name: Tiptap Studio ${{ needs.version.outputs.version }}
           tag_name: ${{ github.ref_name }}
-          body: |
-            Tiptap Studio ${{ needs.version.outputs.version }}: desktop inspector, structural editor and differ for Tiptap/ProseMirror JSON.
-
-            - macOS (universal, 10.15.7+): `.dmg`. A file named `-unsigned` is not notarized: `xattr -dr com.apple.quarantine "/Applications/Tiptap Studio.app"`.
-            - Windows x86_64: `.zip`, unsigned exe.
-            - Linux x86_64: `.tar.gz` (needs Vulkan, libxkbcommon, fontconfig).
-
-            Verify: `shasum -a 256 -c SHA256SUMS.txt`; on macOS `spctl -a -vv "/Applications/Tiptap Studio.app"`.
           files: dist/*
           fail_on_unmatched_files: true
+          append_body: true
+          body: |
+
+            ---
+            macOS universal 10.15.7+ (`.dmg`, Developer ID signed and notarized), Windows x86_64 (`.zip`, unsigned), Linux x86_64 (`.tar.gz`). Verify with `shasum -a 256 -c SHA256SUMS.txt`.

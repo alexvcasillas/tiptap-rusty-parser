@@ -8,7 +8,7 @@ Release builds come from one workflow, [`.github/workflows/studio-release.yml`](
 | Windows x86_64 (MSVC) | `windows-2022` | `TiptapStudio-<v>-windows-x86_64.zip` (unsigned `.exe`, GUI subsystem) |
 | Linux x86_64 | `ubuntu-22.04` | `TiptapStudio-<v>-linux-x86_64.tar.gz` (binary, `.desktop`, icon); smoke-run 10 s under Xvfb |
 
-Triggers: **Run workflow** (manual, artifacts only, 14 days) or a `studio-v*` tag (artifacts + **draft** GitHub Release with `SHA256SUMS.txt`).
+Triggers: dispatched by `release-plz.yml` on the `studio-v*` tag it creates (publishes the GitHub Release with `SHA256SUMS.txt`), a tag pushed by hand (same), or **Run workflow** on a branch (artifacts only, 14 days).
 
 ## Files
 
@@ -23,15 +23,13 @@ Triggers: **Run workflow** (manual, artifacts only, 14 days) or a `studio-v*` ta
 
 ## Cut a release
 
-1. Bump `version` in `studio/Cargo.toml` (e.g. `0.2.0`; a `-beta.1` suffix marks the release as a pre-release).
-2. Commit, then tag and push:
-   ```sh
-   git tag studio-v0.2.0
-   git push origin studio-v0.2.0
-   ```
-   The `version` job fails if the tag does not equal `studio-v<Cargo version>`.
-3. Wait for the three build jobs. Each job summary says whether the macOS build was signed and notarized.
-4. Open the draft under **Releases**, check the notes, publish.
+Releases are automated by release-plz (`release-plz.toml`), the same flow as the crate:
+
+1. Land conventional commits on `main`. `feat(studio): …` / `fix(studio): …` bump the studio; a parser bump bumps the studio too (path dependency). release-plz opens or refreshes the "chore: release" PR with the new `studio/Cargo.toml` version and a `studio/CHANGELOG.md` entry.
+2. Merge the release PR. release-plz tags `studio-v<version>`, opens a **draft** GitHub Release with the changelog as body, and dispatches this workflow on the tag.
+3. The three builds run; the `release` job attaches them plus `SHA256SUMS.txt` and **publishes** the release. The crate and npm packages go out in the same run.
+
+Manual fallback: push a `studio-v<version>` tag that equals `studio/Cargo.toml` (the `version` job checks); the workflow creates the release itself. Pre-releases: a `-beta.1` suffix in the version.
 
 Local macOS build (same steps as CI):
 
