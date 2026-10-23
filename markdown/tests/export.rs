@@ -189,3 +189,45 @@ fn rule_first_in_bullet_item_stays_in_list() {
         assert_eq!(item["content"][1]["type"], "horizontalRule", "{out:?}");
     }
 }
+
+#[test]
+fn leading_whitespace_is_kept_and_never_indents_code() {
+    let p =
+        |t: &str| format!(r#"{{"type":"paragraph","content":[{{"type":"text","text":"{t}"}}]}}"#);
+    let cases = [
+        (p("    code"), "/content/0/content/0/text", "    code"),
+        (p("\\tx"), "/content/0/content/0/text", "\tx"),
+        (
+            r#"{"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"hardBreak"},{"type":"text","text":"  b"}]}"#.to_owned(),
+            "/content/0/content/2/text",
+            "  b",
+        ),
+        (
+            r#"{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":" h"}]}"#.to_owned(),
+            "/content/0/content/0/text",
+            " h",
+        ),
+        (
+            format!(r#"{{"type":"bulletList","content":[{{"type":"listItem","content":[{}]}}]}}"#, p(" x")),
+            "/content/0/content/0/content/0/content/0/text",
+            " x",
+        ),
+        (
+            format!(
+                r#"{{"type":"table","content":[{{"type":"tableRow","content":[{{"type":"tableHeader","content":[{}]}}]}}]}}"#,
+                p(" c")
+            ),
+            "/content/0/content/0/content/0/content/0/content/0/text",
+            " c",
+        ),
+    ];
+    for (block, ptr, want) in cases {
+        let json = format!(r#"{{"type":"doc","content":[{block}]}}"#);
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        assert_eq!(
+            v.pointer(ptr).and_then(|x| x.as_str()),
+            Some(want),
+            "{out:?} -> {v}"
+        );
+    }
+}

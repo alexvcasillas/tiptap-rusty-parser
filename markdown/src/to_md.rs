@@ -152,6 +152,9 @@ struct Renderer<'a> {
     prefix: String,
     /// Byte offset where the current line's content starts (after prefix/marker).
     cs: usize,
+    /// Content start of the current heading / table cell (leading whitespace
+    /// there is stripped on re-parse, like at a line start).
+    bol: usize,
     mode: Mode,
     /// Marks currently open in the inline run, outermost first.
     active: Vec<&'a Mark>,
@@ -184,6 +187,7 @@ impl<'a> Renderer<'a> {
             out: String::with_capacity(cap),
             prefix: String::new(),
             cs: 0,
+            bol: usize::MAX,
             mode: Mode::Normal,
             active: Vec::new(),
             code_buf: String::new(),
@@ -311,9 +315,11 @@ impl<'a> Renderer<'a> {
                 }
                 self.out.push(' ');
                 let content_at = self.out.len();
+                self.bol = content_at;
                 let prev = std::mem::replace(&mut self.mode, Mode::Flat);
                 self.inline(n.children());
                 self.mode = prev;
+                self.bol = usize::MAX;
                 if self.out.len() == content_at {
                     self.out.pop();
                 } else if self.out.ends_with('#') && !self.out.ends_with("\\#") {
@@ -517,11 +523,13 @@ impl<'a> Renderer<'a> {
             for ci in 0..cols {
                 self.out.push(' ');
                 if let Some(cell) = cells.get(ci) {
+                    self.bol = self.out.len();
                     let prev = std::mem::replace(&mut self.mode, Mode::Cell);
                     if let Some(p) = cell.children().first() {
                         self.inline(p.children());
                     }
                     self.mode = prev;
+                    self.bol = usize::MAX;
                 }
                 self.out.push_str(" |");
             }
@@ -621,6 +629,8 @@ impl<'a> Renderer<'a> {
                 }
                 self.hb = true;
             }
+            // nothing before it: the space would only be stripped
+            Mode::Flat if self.out.len() == self.bol && self.ws.is_empty() => {}
             Mode::Flat => self.ws.push(' '),
             Mode::Cell => {
                 self.flush_pending();
@@ -816,9 +826,19 @@ impl<'a> Renderer<'a> {
     fn escape_text(&mut self, s: &str) {
         let b = s.as_bytes();
         let mut ls = self.at_line_start();
+        // leading whitespace would be stripped: encode the first char
+        let mut lead = ls || self.out.len() == self.bol;
         let (mut last, mut i) = (0, 0);
         while i < b.len() {
             let c = b[i];
+            if lead && (c == b' ' || c == b'\t') {
+                self.out.push_str(&s[last..i]);
+                self.out.push_str(if c == b' ' { "&#32;" } else { "&#9;" });
+                (last, ls, lead) = (i + 1, false, false);
+                i += 1;
+                continue;
+            }
+            lead = false;
             let esc = match c {
                 b'\\' | b'*' | b'`' | b'[' | b']' | b'~' => true,
                 b'_' => {
@@ -869,7 +889,7 @@ impl<'a> Renderer<'a> {
                         // a bare newline would reimport as a space
                         self.out.push('\\');
                         self.newline();
-                        ls = true;
+                        (ls, lead) = (true, true);
                     } else {
                         self.out.push(' ');
                     }
