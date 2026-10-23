@@ -412,3 +412,26 @@ fn marks_added_inside_code_span_reparse() {
         );
     }
 }
+
+fn assert_idempotent(json: &str) {
+    let m1 = md(json);
+    let m2 = to_markdown(&tiptap_rusty_markdown::from_markdown(&m1));
+    assert_eq!(m1, m2, "{json}");
+}
+
+#[test]
+fn whitespace_in_link_text_at_block_end() {
+    let link = r#""marks":[{"type":"link","attrs":{"href":"u"}}]"#;
+    for t in [" ", "a ", "\\n", "  \\n"] {
+        let text = format!(r#"{{"type":"text","text":"{t}",{link}}}"#);
+        for wrap in [
+            format!(r#"{{"type":"paragraph","content":[{text}]}}"#),
+            format!(r#"{{"type":"heading","attrs":{{"level":3}},"content":[{text}]}}"#),
+            format!(
+                r#"{{"type":"bulletList","content":[{{"type":"listItem","content":[{{"type":"paragraph","content":[{text}]}}]}}]}}"#
+            ),
+        ] {
+            assert_idempotent(&format!(r#"{{"type":"doc","content":[{wrap}]}}"#));
+        }
+    }
+}

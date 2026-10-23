@@ -303,7 +303,7 @@ fn trailing_whitespace_is_stripped_from_blocks() {
         ("<b> ", "<b>"),
         ("<b>\t", "<b>"),
         ("> q\n[]()", "q"),
-        ("[# ](2) ", "#"),
+        ("[# ](2) ", "# "),
     ] {
         let v = from_markdown(md).to_value().unwrap();
         let mut node = &v["content"][0];
@@ -353,5 +353,18 @@ fn multiline_inline_html_text_uses_hard_breaks() {
         )
         .unwrap();
         assert_eq!(v["content"][0]["content"], want, "{md:?}");
+    }
+}
+
+#[test]
+fn whitespace_only_link_at_block_end_is_kept() {
+    for md in ["[ ](u)", "a [\t](u)", "### [ ](u)", "[\\\n](u)"] {
+        let v = from_markdown(md).to_value().unwrap();
+        let p = v["content"][0]["content"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let last = p.last().cloned().unwrap_or_default();
+        assert_eq!(last["marks"][0]["type"], "link", "{md:?}: {v}");
     }
 }

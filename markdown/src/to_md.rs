@@ -716,6 +716,15 @@ impl<'a> Renderer<'a> {
                     // whitespace before it) now
                     self.flush_pending();
                 }
+                // a break inside link text opens the link (no flanking rules)
+                let link = marks
+                    .iter()
+                    .find(|m| m.mark_type == "link" && mark_rank(m).is_some());
+                if let Some(link) = link {
+                    if !self.active.iter().any(|a| a.mark_type == "link") {
+                        self.open_after_pending(std::slice::from_ref(link), false, "", '[');
+                    }
+                }
                 self.hb = true;
                 self.hb_marks = marks;
             }
@@ -822,6 +831,14 @@ impl<'a> Renderer<'a> {
         }
         while self.active.len() > i {
             if let Some(m) = self.active.pop() {
+                if m.mark_type == "link" {
+                    // whitespace (and a break) held back from inside the link
+                    // text stays inside: `[a ](u)` is fine, unlike `**a **`
+                    self.flush_ws();
+                    if self.hb && self.hb_marks.contains(m) {
+                        self.flush_hb();
+                    }
+                }
                 self.close_mark(m);
             }
         }

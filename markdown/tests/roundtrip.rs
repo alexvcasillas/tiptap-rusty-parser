@@ -214,6 +214,11 @@ fn link_edge_cases_roundtrip() {
         // `!` before a link after an escaped backslash read as an image
         "\\\\!<a@b.c>",
         "\\\\![a](b)",
+        // whitespace-only link text at the end of a block
+        "- [ ](u)",
+        "### [ ](u)",
+        "> [\\\n](u)",
+        "[  ](<>)",
     ] {
         let d1 = from_markdown_with(md, &ParseOptions::default());
         let out = to_markdown_with(&d1, &RenderOptions::default());
