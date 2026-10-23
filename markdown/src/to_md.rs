@@ -131,6 +131,9 @@ struct St {
     prev: Prev,
     /// Whether the previous sibling list used the alternate marker.
     alt: bool,
+    /// Task item: a first block other than a paragraph must start on the
+    /// next line (`- [x] - a` would be text).
+    task_line: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -246,6 +249,11 @@ impl<'a> Renderer<'a> {
     fn begin(&mut self, sep: Sep, st: &St) {
         if st.prev != Prev::None {
             self.separate(sep);
+        } else if st.task_line {
+            if self.out.ends_with(' ') {
+                self.out.pop();
+            }
+            self.newline();
         }
     }
 
@@ -294,7 +302,9 @@ impl<'a> Renderer<'a> {
             return;
         }
         let (len, cs) = (self.out.len(), self.cs);
-        self.begin(sep, st);
+        if st.prev != Prev::None {
+            self.separate(sep);
+        }
         let at = self.out.len();
         self.inline(nodes);
         if self.out.len() == at {
@@ -538,7 +548,10 @@ impl<'a> Renderer<'a> {
                 self.prefix.push_str(SPACES);
             }
             self.prefix.push_str(&SPACES[..width % SPACES.len()]);
-            let mut inner = St::default();
+            let mut inner = St {
+                task_line: item.node_type.as_deref() == Some("taskItem"),
+                ..St::default()
+            };
             self.blocks(kids, sep, &mut inner);
             self.prefix.truncate(pl);
             if self.out.len() == marker_end {

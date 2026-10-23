@@ -215,3 +215,23 @@ fn empty_link_destination_or_text_roundtrips() {
         assert_eq!(d1, d2, "{md:?} -> {out:?}");
     }
 }
+
+/// Markdown whose export put a block where it re-parses as something else.
+#[test]
+fn block_placement_roundtrips() {
+    let cases = [
+        // task item starting with a non-paragraph block
+        "- [x]\n  - a",
+        "- [ ]\n  # h",
+        "- [x]\n  ```\n  c\n  ```",
+        "- [ ]\n  > q",
+        "- [x]\n  ---",
+        "- [ ]\n  1. a\n2. b",
+    ];
+    for md in cases {
+        let d1 = from_markdown_with(md, &ParseOptions::default());
+        let out = to_markdown_with(&d1, &RenderOptions::default());
+        let d2 = from_markdown_with(&out, &ParseOptions::default());
+        assert_eq!(d1, d2, "{md:?} -> {out:?}");
+    }
+}
