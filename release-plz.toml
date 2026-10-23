@@ -24,6 +24,7 @@ publish = false
 name = "tiptap-rusty-studio"
 release = true
 publish = false
+git_only = true # not on crates.io: current version comes from the studio-v* tags
 git_tag_name = "studio-v{{ version }}"
 git_release_name = "Tiptap Studio {{ version }}"
 git_release_draft = true
