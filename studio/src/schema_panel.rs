@@ -445,13 +445,21 @@ fn menu(this: &Entity<SchemaState>, cx: &App) -> Div {
     }
     let item = |id: &'static str, icon: IconName, label: &'static str, enabled: bool| {
         let this = this.clone();
+        // Children instead of `.label()`: the button centres its label and
+        // offers no way to change that, so a full-width row aligns it left.
         Button::new(id)
             .ghost()
             .small()
             .w_full()
-            .justify_start()
-            .icon(Icon::new(icon).small())
-            .label(label)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .w_full()
+                    .child(Icon::new(icon).small())
+                    .child(label),
+            )
             .disabled(!enabled)
             .on_click(move |_, _, cx: &mut App| {
                 this.update(cx, |s, cx| {
