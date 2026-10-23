@@ -568,3 +568,26 @@ fn image_only_paragraphs_export_like_they_import() {
         ));
     }
 }
+
+#[test]
+fn hard_break_edges_with_code_headings_and_links() {
+    let link = r#"{"type":"link","attrs":{"href":"u"}}"#;
+    let docs = [
+        r#"[{"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"hardBreak"},{"type":"text","text":"c","marks":[{"type":"code"}]}]}]"#.to_owned(),
+        r#"[{"type":"paragraph","content":[{"type":"text","text":"c","marks":[{"type":"code"}]},{"type":"hardBreak"},{"type":"text","text":"c","marks":[{"type":"code"}]}]}]"#.to_owned(),
+        r#"[{"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"<"},{"type":"hardBreak"},{"type":"text","text":"'"}]}]"#.to_owned(),
+        format!(r#"[{{"type":"paragraph","content":[{{"type":"text","text":"a","marks":[{link},{{"type":"italic"}}]}},{{"type":"hardBreak","marks":[{link}]}}]}}]"#),
+        format!(r#"[{{"type":"paragraph","content":[{{"type":"text","text":"]\n","marks":[{{"type":"italic"}},{link}]}}]}}]"#),
+        format!(r#"[{{"type":"paragraph","content":[{{"type":"text","text":"a","marks":[{link}]}},{{"type":"hardBreak","marks":[{link}]}},{{"type":"hardBreak","marks":[{link}]}}]}}]"#),
+    ];
+    for content in docs {
+        let json = format!(r#"{{"type":"doc","content":{content}}}"#);
+        assert_idempotent(&json);
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        let want = Document::from_json_str(&json).unwrap().to_value().unwrap();
+        let breaks = |v: &serde_json::Value| v.to_string().matches("hardBreak").count();
+        if !content.contains("heading") && !content.contains("]\\n") {
+            assert_eq!(breaks(&v), breaks(&want), "{out:?}");
+        }
+    }
+}

@@ -654,18 +654,20 @@ impl<'a> Renderer<'a> {
                 Some("text") => {
                     // Adjacent texts with equal marks re-import as one node:
                     // escape them as one (line-start / `<` / `&` lookahead).
+                    // (In a single-line context a break is a space: absorb it.)
                     let marks = n.marks.as_deref().unwrap_or(&[]);
+                    let flat = self.mode == Mode::Flat;
                     let same = |m: &Node| {
-                        m.node_type.as_deref() == Some("text")
-                            && m.marks.as_deref().unwrap_or(&[]) == marks
-                    };
+                        matches!(m.node_type.as_deref(), Some("text"))
+                            || (flat && m.node_type.as_deref() == Some("hardBreak"))
+                    } && m.marks.as_deref().unwrap_or(&[]) == marks;
                     let j = i + nodes[i..].iter().take_while(|m| same(m)).count();
                     if j == i {
                         self.text_item(n.text.as_deref().unwrap_or(""), marks);
                     } else {
                         let mut s = String::from(n.text.as_deref().unwrap_or(""));
                         for m in &nodes[i..j] {
-                            s.push_str(m.text.as_deref().unwrap_or(""));
+                            s.push_str(m.text.as_deref().unwrap_or(" "));
                         }
                         self.text_item(&s, marks);
                         i = j;
@@ -844,13 +846,18 @@ impl<'a> Renderer<'a> {
     }
 
     fn flush_hb(&mut self) {
+        self.emit_hb(false);
+    }
+
+    /// Emit the held-back break as `\\` + newline (or two trailing spaces).
+    fn emit_hb(&mut self, spaces: bool) {
         if self.hb {
             self.hb = false;
             if self.out.len() != self.hb_run.1 {
                 self.hb_run.0 = self.out.len();
                 self.hb_run.2 = self.cs;
             }
-            self.out.push('\\');
+            self.out.push_str(if spaces { "  " } else { "\\" });
             self.newline();
             self.hb_run.1 = self.out.len();
             if !self.ws_after.is_empty() {
@@ -886,9 +893,13 @@ impl<'a> Renderer<'a> {
                 break;
             }
         }
-        // a closer at a line start (right after a break) would not close:
-        // close before the breaks
-        let breaks = if self.active.len() > i {
+        // a delimiter closer at a line start (right after a break) would not
+        // close: close before the breaks (`](u)` / `</u>` / code are fine)
+        let delim = self
+            .active
+            .last()
+            .is_some_and(|m| matches!(m.mark_type.as_str(), "bold" | "italic" | "strike"));
+        let breaks = if self.active.len() > i && delim {
             self.take_hb_run()
         } else {
             None
@@ -897,10 +908,17 @@ impl<'a> Renderer<'a> {
             if let Some(m) = self.active.pop() {
                 if m.mark_type == "link" {
                     // whitespace (and a break) held back from inside the link
-                    // text stays inside: `[a ](u)` is fine, unlike `**a **`
+                    // text stays inside: `[a ](u)` is fine, unlike `**a **`.
+                    // A `\\` break right before `]` after a delimiter closer is
+                    // read as text, so newlines become spaces / the break uses
+                    // trailing spaces.
+                    if self.ws.contains(['\n', '\r']) {
+                        self.ws = self.ws.replace(['\n', '\r'], " ");
+                    }
                     self.flush_ws();
                     if self.hb && self.hb_marks.contains(m) {
-                        self.flush_hb();
+                        let spaces = self.out.len() == self.closed_at;
+                        self.emit_hb(spaces);
                     }
                 }
                 self.close_mark(m);
