@@ -643,9 +643,9 @@ impl<'a> Renderer<'a> {
         match self.mode {
             Mode::Normal => {
                 if self.hb {
-                    // consecutive breaks: emit the earlier one now
-                    self.out.push('\\');
-                    self.newline();
+                    // consecutive breaks: emit the earlier one (and the
+                    // whitespace before it) now
+                    self.flush_pending();
                 }
                 self.hb = true;
                 self.hb_marks = marks;

@@ -188,6 +188,8 @@ fn regression_snippets_roundtrip() {
         "*\\\n'* ",
         "**\\\n<* ",
         "a **\\\nb**",
+        // whitespace before consecutive hard breaks moved past the first
+        "a \\\n\\\nb",
     ];
     for md in cases {
         let d1 = from_markdown_with(md, &ParseOptions::default());
