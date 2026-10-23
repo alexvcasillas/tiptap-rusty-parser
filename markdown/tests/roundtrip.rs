@@ -200,7 +200,7 @@ fn regression_snippets_roundtrip() {
 }
 
 #[test]
-fn empty_link_destination_or_text_roundtrips() {
+fn link_edge_cases_roundtrip() {
     for md in [
         "[a]()",
         "[> ]()",
@@ -208,6 +208,9 @@ fn empty_link_destination_or_text_roundtrips() {
         "[ ](2) `",
         "[\t](0)`c`",
         "a [ ](u)",
+        // `!` before a link after an escaped backslash read as an image
+        "\\\\!<a@b.c>",
+        "\\\\![a](b)",
     ] {
         let d1 = from_markdown_with(md, &ParseOptions::default());
         let out = to_markdown_with(&d1, &RenderOptions::default());

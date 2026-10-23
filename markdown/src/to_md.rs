@@ -861,7 +861,7 @@ impl<'a> Renderer<'a> {
         match m.mark_type.as_str() {
             "link" => {
                 // `!` + `[` would read as an image
-                if self.out.ends_with('!') && !self.out.ends_with("\\!") {
+                if ends_unescaped(&self.out, b'!') {
                     let l = self.out.len() - 1;
                     self.out.insert(l, '\\');
                 }
@@ -1081,6 +1081,15 @@ impl<'a> Renderer<'a> {
 }
 
 // ---- helpers ------------------------------------------------------------
+
+/// `out` ends with `c` not preceded by an odd number of backslashes.
+fn ends_unescaped(out: &str, c: u8) -> bool {
+    let b = out.as_bytes();
+    let Some((&last, rest)) = b.split_last() else {
+        return false;
+    };
+    last == c && rest.iter().rev().take_while(|&&x| x == b'\\').count() % 2 == 0
+}
 
 /// Not certainly whitespace or punctuation (for delimiter flanking).
 fn maybe_word(c: char) -> bool {
