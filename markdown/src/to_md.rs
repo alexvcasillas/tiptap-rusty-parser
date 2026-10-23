@@ -451,8 +451,9 @@ impl<'a> Renderer<'a> {
                 max[k] = max[k].max(cur[k]);
             }
         });
+        // the importer keeps the first info-string word only
         let lang = match n.attr("language") {
-            Some(Value::String(l)) => l.as_str(),
+            Some(Value::String(l)) => l.split_whitespace().next().unwrap_or(""),
             _ => "",
         };
         // a backtick fence's info string cannot contain backticks

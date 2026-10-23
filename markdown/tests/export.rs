@@ -503,3 +503,10 @@ fn destinations_starting_with_angle_bracket() {
         assert_eq!(p[1]["attrs"]["src"], href, "{out:?}");
     }
 }
+
+#[test]
+fn code_language_with_spaces_exports_first_word() {
+    let json = r#"{"type":"doc","content":[{"type":"codeBlock","attrs":{"language":"rust ignore"},"content":[{"type":"text","text":"x"}]}]}"#;
+    assert_eq!(md(json), "```rust\nx\n```\n");
+    assert_idempotent(json);
+}
