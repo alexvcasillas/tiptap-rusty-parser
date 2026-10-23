@@ -634,3 +634,20 @@ fn adjacent_bullet_lists_never_share_a_marker() {
     let inner = &v["content"][0]["content"][0]["content"][1]["content"][0]["content"];
     assert_eq!(inner.as_array().map(|a| a.len()), Some(3), "{out:?} {v}");
 }
+
+#[test]
+fn newline_breaks_and_empty_rendering_blocks_are_stable() {
+    for content in [
+        // a newline in a single-line context is a space, not a node end
+        r#"[{"type":"heading","attrs":{"level":5},"content":[{"type":"text","text":"&\n&"}]}]"#,
+        r#"[{"type":"paragraph","content":[{"type":"image","attrs":{"src":"s","alt":"<\n"}}]}]"#,
+        // a newline written as a break is dropped at the end like a break
+        r#"[{"type":"paragraph","content":[{"type":"text","text":"\n","marks":[{"type":"bold"}]},{"type":"hardBreak"},{"type":"hardBreak"}]}]"#,
+        r#"[{"type":"paragraph","content":[{"type":"text","text":"a\n","marks":[{"type":"bold"}]},{"type":"hardBreak","marks":[{"type":"strike"}]},{"type":"hardBreak"}]}]"#,
+        // paragraphs of breaks only render nothing
+        r#"[{"type":"bulletList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"a"}]},{"type":"paragraph","content":[{"type":"hardBreak"}]}]},{"type":"listItem"}]}]"#,
+        r#"[{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"a"}]},{"type":"orderedList","content":[{"type":"listItem","content":[{"type":"paragraph","content":[{"type":"hardBreak"}]}]}]}]}]}]"#,
+    ] {
+        assert_idempotent(&format!(r#"{{"type":"doc","content":{content}}}"#));
+    }
+}

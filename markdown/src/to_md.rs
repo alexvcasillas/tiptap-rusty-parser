@@ -1103,6 +1103,8 @@ impl<'a> Renderer<'a> {
         let mut ls = self.at_line_start();
         // leading whitespace would be stripped: encode the first char
         let mut lead = ls || self.out.len() == self.bol;
+        // a newline is a break (ends the node) only in normal text
+        let nl_end = self.mode == Mode::Normal;
         let (mut last, mut i) = (0, 0);
         if self.out.len() == self.closed_at {
             // The delimiter run just closed must stay right-flanking (and for
@@ -1147,11 +1149,12 @@ impl<'a> Renderer<'a> {
                 // newline ends the piece too (it re-imports as a break, which
                 // splits the text node).
                 b'<' => b.get(i + 1).is_none_or(|x| {
-                    x.is_ascii_alphabetic() || matches!(x, b'/' | b'!' | b'?' | b'\n' | b'\r')
+                    x.is_ascii_alphabetic()
+                        || matches!(x, b'/' | b'!' | b'?')
+                        || (nl_end && is_nl(*x))
                 }),
                 b'&' => {
-                    b.get(i + 1).is_none_or(|x| matches!(x, b'\n' | b'\r'))
-                        || entity_like(&b[i + 1..])
+                    b.get(i + 1).is_none_or(|x| nl_end && is_nl(*x)) || entity_like(&b[i + 1..])
                 }
                 b'|' => self.mode == Mode::Cell,
                 b'#' if ls => {
@@ -1200,8 +1203,13 @@ impl<'a> Renderer<'a> {
                     last = i + 1;
                     if self.mode == Mode::Normal {
                         // a bare newline would reimport as a space
+                        if self.out.len() != self.hb_run.1 {
+                            self.hb_run.0 = self.out.len();
+                            self.hb_run.2 = self.cs;
+                        }
                         self.out.push('\\');
                         self.newline();
+                        self.hb_run.1 = self.out.len();
                         (ls, lead) = (true, true);
                     } else {
                         self.out.push(' ');
@@ -1247,6 +1255,10 @@ fn maybe_punct(c: char) -> bool {
 }
 
 /// Whitespace for delimiter flanking (Unicode, like CommonMark).
+fn is_nl(b: u8) -> bool {
+    matches!(b, b'\n' | b'\r')
+}
+
 fn is_ws(c: char) -> bool {
     c.is_whitespace()
 }
@@ -1342,12 +1354,31 @@ fn is_tight(items: &[Node]) -> bool {
         } else {
             return false;
         };
-        // paragraphs without content render nothing
         kids.iter()
-            .filter(|k| !(k.node_type.as_deref() == Some("paragraph") && k.children().is_empty()))
+            .filter(|k| !renders_empty(k))
             .enumerate()
             .all(|(i, k)| is_list(k) || (i == 0 && k.node_type.as_deref() == Some("paragraph")))
     })
+}
+
+/// A paragraph the export writes as nothing (breaks / plain whitespace only).
+fn renders_empty(p: &Node) -> bool {
+    p.node_type.as_deref() == Some("paragraph")
+        && p.children().iter().all(|c| {
+            let link = c.marks.as_deref().is_some_and(|m| {
+                m.iter()
+                    .any(|m| m.mark_type == "link" && mark_rank(m).is_some())
+            });
+            !link
+                && match c.node_type.as_deref() {
+                    Some("hardBreak") => true,
+                    Some("text") => c
+                        .text
+                        .as_deref()
+                        .is_none_or(|t| t.trim_matches([' ', '\t', '\n', '\r']).is_empty()),
+                    _ => false,
+                }
+        })
 }
 
 /// Separator before a list: a list starting with an empty item or (ordered)
@@ -1357,12 +1388,7 @@ fn list_sep(list: &Node, ordered: bool, sep: Sep) -> Sep {
         return sep;
     }
     let empty_first = list.children().first().is_some_and(|it| {
-        it.node_type.as_deref() == Some("listItem")
-            && match it.children() {
-                [] => true,
-                [p] => p.node_type.as_deref() == Some("paragraph") && p.children().is_empty(),
-                _ => false,
-            }
+        it.node_type.as_deref() == Some("listItem") && it.children().iter().all(renders_empty)
     });
     if empty_first || (ordered && attr_u64(list, "start").unwrap_or(1) != 1) {
         Sep::Blank
