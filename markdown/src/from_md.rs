@@ -42,6 +42,8 @@
 //! - Autolinks: CommonMark `<https://…>` / `<a@b.c>` become links. GFM
 //!   extended autolinks (bare `www.…`/`https://…`) are not supported by
 //!   pulldown-cmark 0.13 and stay plain text.
+//! - Trailing spaces/tabs of paragraphs and headings are dropped, as in
+//!   CommonMark (code spans keep theirs).
 //! - Raw HTML follows [`HtmlPolicy`]. Footnotes, math, metadata blocks and
 //!   GFM alerts are not enabled (their syntax stays text).
 
@@ -283,6 +285,28 @@ fn inline_target(stack: &mut Vec<Frame>) -> Option<&mut Vec<Node>> {
         _ => return None,
     }
     stack.last_mut().map(|f| &mut f.children)
+}
+
+/// Drop trailing spaces/tabs of a paragraph/heading (CommonMark strips them;
+/// pulldown keeps some, e.g. after inline HTML or in `# x\t`). Code spans keep theirs.
+fn trim_trailing_ws(children: &mut Vec<Node>) {
+    while let Some(last) = children.last_mut() {
+        if !is_type(last, "text")
+            || last
+                .marks
+                .as_deref()
+                .is_some_and(|m| m.iter().any(|m| m.mark_type == "code"))
+        {
+            return;
+        }
+        let Some(t) = last.text.as_mut() else { return };
+        let keep = t.trim_end_matches([' ', '\t']).len();
+        if keep > 0 {
+            t.truncate(keep);
+            return;
+        }
+        children.pop();
+    }
 }
 
 fn ensure_para_first(children: &mut Vec<Node>) {
@@ -633,6 +657,7 @@ impl Builder {
         match f.kind {
             Kind::Doc => {}
             Kind::Para | Kind::ImplicitPara => {
+                trim_trailing_ws(&mut children);
                 if children.is_empty()
                     || (f.dropped_html
                         && children.iter().all(|c| {
@@ -657,6 +682,7 @@ impl Builder {
                 }
             }
             Kind::Heading(level) => {
+                trim_trailing_ws(&mut children);
                 parent.children.push(element(
                     "heading",
                     one_attr("level", Value::from(level)),
@@ -683,7 +709,7 @@ impl Builder {
             Kind::Html => {
                 if html == HtmlPolicy::Text {
                     let mut text = f.buf;
-                    let len = text.trim_end_matches(['\n', '\r']).len();
+                    let len = text.trim_end_matches(['\n', '\r', ' ', '\t']).len();
                     text.truncate(len);
                     if !text.is_empty() {
                         // Source line breaks become hard breaks: a raw `\n`

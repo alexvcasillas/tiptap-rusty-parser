@@ -295,3 +295,24 @@ fn default_entry_point_matches_default_options() {
         from_markdown_with(md, &ParseOptions::default())
     );
 }
+
+#[test]
+fn trailing_whitespace_is_stripped_from_blocks() {
+    for (md, want) in [
+        ("# x\t", "x"),
+        ("<b> ", "<b>"),
+        ("<b>\t", "<b>"),
+        ("> q\n[]()", "q"),
+        ("[# ](2) ", "#"),
+    ] {
+        let v = from_markdown(md).to_value().unwrap();
+        let mut node = &v["content"][0];
+        while node["type"] != "text" {
+            node = &node["content"][0];
+        }
+        assert_eq!(node["text"], want, "{md:?}: {v}");
+    }
+    // code spans keep theirs
+    let v = from_markdown("`a `").to_value().unwrap();
+    assert_eq!(v["content"][0]["content"][0]["text"], "a ");
+}
