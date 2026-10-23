@@ -1046,7 +1046,7 @@ doc.applyChanges(undo);            // back to the original
 
 An opaque `TiptapDoc` handle keeps the tree in WASM; queries return cloned
 nodes or `number[]` index paths, and mutation is path-addressed. Full method
-list in [`bindings/wasm/README.md`](bindings/wasm/README.md). Built for the
+list in [`bindings/wasm/README.md`](../bindings/wasm/README.md). Built for the
 `bundler` target.
 
 The WASM surface also exposes the flat-position engine for AI editing —
@@ -1054,7 +1054,7 @@ The WASM surface also exposes the flat-position engine for AI editing —
 `mapPosition`, and a `validateNode` schema-guard. See
 [`INTEGRATION.md`](INTEGRATION.md) for pairing with the **Tiptap AI Toolkit**
 (with a runnable demo at
-[`bindings/wasm/examples/ai-toolkit-integration.mjs`](bindings/wasm/examples/ai-toolkit-integration.mjs)).
+[`bindings/wasm/examples/ai-toolkit-integration.mjs`](../bindings/wasm/examples/ai-toolkit-integration.mjs)).
 
 ---
 
