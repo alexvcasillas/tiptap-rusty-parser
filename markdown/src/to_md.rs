@@ -939,6 +939,9 @@ impl<'a> Renderer<'a> {
                 break;
             }
         }
+        if i == self.active.len() {
+            return;
+        }
         // a delimiter closer at a line start (right after a break) would not
         // close: close before the breaks (`](u)` / `</u>` / code are fine)
         let delim = self
@@ -1232,6 +1235,13 @@ impl<'a> Renderer<'a> {
             }
         }
         while i < b.len() {
+            if !ls && !lead {
+                // mid-line only these bytes can need an escape
+                match b[i..].iter().position(|&x| MID_LINE[x as usize]) {
+                    Some(k) => i += k,
+                    None => break,
+                }
+            }
             let c = b[i];
             if lead && self.mode != Mode::Normal && (c == b'\n' || c == b'\r') {
                 // would be a stripped space here
@@ -1573,8 +1583,21 @@ fn approx_size(n: &Node) -> usize {
     fn go(n: &Node) -> usize {
         8 + n.text.as_ref().map_or(0, String::len) + n.children().iter().map(go).sum::<usize>()
     }
-    go(n) + go(n) / 8 + 16
+    let g = go(n);
+    g + g / 8 + 16
 }
+
+/// Bytes `escape_text` must look at away from a line start.
+const MID_LINE: [bool; 256] = {
+    let mut t = [false; 256];
+    let s = b"\\*`[]~_<&|\n\r";
+    let mut i = 0;
+    while i < s.len() {
+        t[s[i] as usize] = true;
+        i += 1;
+    }
+    t
+};
 
 /// `<` followed by this may open a tag or autolink.
 fn starts_tag(x: u8) -> bool {
