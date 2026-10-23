@@ -13,3 +13,7 @@ mod to_md;
 pub use from_md::{from_markdown, from_markdown_with, HtmlPolicy, ParseOptions, DEFAULT_MAX_DEPTH};
 pub use tiptap_rusty_parser::{Document, Node};
 pub use to_md::{to_markdown, to_markdown_with, RenderOptions, UnknownNodePolicy};
+
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;
