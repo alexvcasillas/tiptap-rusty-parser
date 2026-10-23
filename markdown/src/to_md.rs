@@ -385,7 +385,7 @@ impl<'a> Renderer<'a> {
                 if n.children().is_empty() {
                     return;
                 }
-                self.begin(sep, st);
+                self.begin(list_sep(n, false, sep), st);
                 let alt = st.prev == Prev::Bullet && !st.alt;
                 self.list(n, false, alt);
                 (st.prev, st.alt) = (Prev::Bullet, alt);
@@ -394,7 +394,7 @@ impl<'a> Renderer<'a> {
                 if n.children().is_empty() {
                     return;
                 }
-                self.begin(sep, st);
+                self.begin(list_sep(n, true, sep), st);
                 let alt = st.prev == Prev::Ordered && !st.alt;
                 self.list(n, true, alt);
                 (st.prev, st.alt) = (Prev::Ordered, alt);
@@ -1139,6 +1139,27 @@ fn is_tight(items: &[Node]) -> bool {
             .enumerate()
             .all(|(i, k)| is_list(k) || (i == 0 && k.node_type.as_deref() == Some("paragraph")))
     })
+}
+
+/// Separator before a list: a list starting with an empty item or (ordered)
+/// not at 1 cannot interrupt a paragraph, so it needs a blank line.
+fn list_sep(list: &Node, ordered: bool, sep: Sep) -> Sep {
+    if sep == Sep::Blank {
+        return sep;
+    }
+    let empty_first = list.children().first().is_some_and(|it| {
+        it.node_type.as_deref() == Some("listItem")
+            && match it.children() {
+                [] => true,
+                [p] => p.node_type.as_deref() == Some("paragraph") && p.children().is_empty(),
+                _ => false,
+            }
+    });
+    if empty_first || (ordered && attr_u64(list, "start").unwrap_or(1) != 1) {
+        Sep::Blank
+    } else {
+        sep
+    }
 }
 
 fn pipe_table_ok(table: &Node) -> bool {

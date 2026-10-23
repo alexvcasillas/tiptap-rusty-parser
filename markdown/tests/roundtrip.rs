@@ -227,6 +227,11 @@ fn block_placement_roundtrips() {
         "- [ ]\n  > q",
         "- [x]\n  ---",
         "- [ ]\n  1. a\n2. b",
+        // nested list that cannot interrupt the paragraph before it
+        "- a\n\n  -",
+        "1. a\n2. b\n\n   2) c",
+        "- a\n\n  10. b",
+        "- a\n  - b\n\n  *",
     ];
     for md in cases {
         let d1 = from_markdown_with(md, &ParseOptions::default());
