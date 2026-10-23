@@ -677,13 +677,22 @@ impl Workspace {
                 .bg(Tokens::background())
                 .child(
                     div()
-                        .text_color(Tokens::removed())
-                        .child(Icon::new(IconName::FileExclamationPoint).large()),
+                        .mb(px(8.))
+                        .text_color(Tokens::secondary())
+                        .child(crate::brand::logo(44.)),
                 )
                 .child(
                     div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
                         .text_size(px(14.))
                         .font_weight(FontWeight::SEMIBOLD)
+                        .child(
+                            div()
+                                .text_color(Tokens::removed())
+                                .child(Icon::new(IconName::FileExclamationPoint).small()),
+                        )
                         .child(format!("Could not open {}", e.name())),
                 )
                 .child(

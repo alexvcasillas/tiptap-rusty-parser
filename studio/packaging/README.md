@@ -18,7 +18,7 @@ Triggers: dispatched by `release-plz.yml` on the `studio-v*` tag it creates (pub
 | `macos/entitlements.plist` | hardened runtime, intentionally empty (no sandbox, no JIT) |
 | `macos/bundle.sh` | `version`, `app`, `import-cert`, `sign`, `notarize`, `dmg`, `zip`, `verify`, `cleanup` (one per CI step; bash 3.2 compatible) |
 | `linux/package.sh`, `linux/tiptap-studio.desktop` | Linux tarball |
-| `icon/icon-1024.png`, `icon/make-icon.py` | placeholder icon (tree glyph, `#5B9CF6` on `#1B1C1F`); `.icns` is built on the runner with `sips` + `iconutil` |
+| `icon/make-icon.py`, `icon/icon-1024.png`, `icon/icon.ico` | app icon: the Tiptap logo (`studio/assets/tiptap-logo.svg`) in white on `#1B1C1F`, rendered with `rsvg-convert`; `.icns` is built on the runner with `sips` + `iconutil`, the `.ico` is embedded by `studio/build.rs` (`winresource`) |
 | `README.dist.txt` | README shipped inside every archive |
 
 ## Cut a release
@@ -113,5 +113,5 @@ Or right-click the app → Open → Open. The CLI form works from the bundle: `"
 ## Known gaps
 
 - Opening a `.json` from Finder launches the app, but the app reads files from `argv` only, so the document is not loaded yet (needs a gpui `on_open_urls` hook in `main.rs`).
-- Windows `.exe` is unsigned and has no embedded icon. No Linux AppImage.
+- Windows `.exe` is unsigned. No Linux AppImage.
 - `Cargo.lock` is committed and release builds use `--locked`, so every artifact is built from the same dependency versions. After changing dependencies, commit the updated lockfile.
