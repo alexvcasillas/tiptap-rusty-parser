@@ -190,12 +190,23 @@ staple() {
   for attempt in 1 2 3 4 5 6; do
     log "stapling $target (attempt $attempt)"
     if xcrun stapler staple "$target"; then
-      xcrun stapler validate "$target"
+      validate_staple "$target"
       return 0
     fi
     sleep $((attempt * 15))
   done
   die "stapling failed after $attempt attempts"
+}
+
+# `stapler validate` does the same online ticket lookup, so it flakes the same way.
+validate_staple() {
+  local target="$1" attempt
+  for attempt in 1 2 3 4 5 6; do
+    if xcrun stapler validate "$target"; then return 0; fi
+    log "stapler validate failed for $target (attempt $attempt), retrying"
+    sleep $((attempt * 15))
+  done
+  die "stapler validate failed after $attempt attempts"
 }
 
 cmd_dmg() {
@@ -224,11 +235,11 @@ cmd_verify() {
   local app="$1" dmg="${2:-}"
   codesign --verify --deep --strict --verbose=2 "$app"
   spctl -a -t exec -vv "$app"
-  xcrun stapler validate "$app"
+  validate_staple "$app"
   if [ -n "$dmg" ]; then
     codesign --verify --strict --verbose=2 "$dmg"
     spctl -a -t open --context context:primary-signature -vv "$dmg"
-    xcrun stapler validate "$dmg"
+    validate_staple "$dmg"
   fi
 }
 
