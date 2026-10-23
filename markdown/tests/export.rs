@@ -287,3 +287,22 @@ fn abutting_emphasis_runs_reparse() {
     }
     assert!(bad.is_empty(), "{bad:#?}");
 }
+
+#[test]
+fn code_block_info_string_roundtrips() {
+    for (lang, code) in [
+        ("`c`", "x"),
+        ("```", "~~~\ny"),
+        ("a\\\\*", "x"),
+        ("&amp;", "x"),
+        ("c++", "```"),
+    ] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"codeBlock","attrs":{{"language":"{lang}"}},"content":[{{"type":"text","text":"{}"}}]}}]}}"#,
+            code.replace('\n', "\\n")
+        );
+        let want = Document::from_json_str(&json).unwrap().to_value().unwrap();
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        assert_eq!(v, want, "{out:?}");
+    }
+}

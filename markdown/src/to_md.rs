@@ -417,26 +417,46 @@ impl<'a> Renderer<'a> {
     }
 
     fn code_block(&mut self, n: &Node) {
-        // longest backtick run across the content (carried over piece borders)
-        let (mut cur, mut max, mut any) = (0usize, 0usize, false);
+        // longest backtick / tilde run across the content (carried over piece borders)
+        let (mut cur, mut max, mut any) = ([0usize; 2], [0usize; 2], false);
         walk_text(n, &mut |s| {
             any |= !s.is_empty();
             for b in s.bytes() {
-                if b == b'`' {
-                    cur += 1;
-                    max = max.max(cur);
-                } else {
-                    cur = 0;
-                }
+                let k = match b {
+                    b'`' => 0,
+                    b'~' => 1,
+                    _ => {
+                        cur = [0; 2];
+                        continue;
+                    }
+                };
+                cur[k] += 1;
+                cur[1 - k] = 0;
+                max[k] = max[k].max(cur[k]);
             }
         });
-        let fence = (max + 1).max(3);
+        let lang = match n.attr("language") {
+            Some(Value::String(l)) => l.as_str(),
+            _ => "",
+        };
+        // a backtick fence's info string cannot contain backticks
+        let (fc, run) = if lang.contains('`') {
+            ('~', max[1])
+        } else {
+            ('`', max[0])
+        };
+        let fence = (run + 1).max(3);
         for _ in 0..fence {
-            self.out.push('`');
+            self.out.push(fc);
         }
-        if let Some(Value::String(lang)) = n.attr("language") {
-            self.out
-                .extend(lang.chars().filter(|&c| c != '`' && c != '\n' && c != '\r'));
+        let lb = lang.as_bytes();
+        for (i, c) in lang.char_indices() {
+            match c {
+                '\n' | '\r' => {}
+                '\\' => self.out.push_str("\\\\"),
+                '&' if entity_like(&lb[i + 1..]) => self.out.push_str("\\&"),
+                _ => self.out.push(c),
+            }
         }
         self.newline();
         walk_text(n, &mut |s| {
@@ -451,7 +471,7 @@ impl<'a> Renderer<'a> {
             self.newline();
         }
         for _ in 0..fence {
-            self.out.push('`');
+            self.out.push(fc);
         }
     }
 
