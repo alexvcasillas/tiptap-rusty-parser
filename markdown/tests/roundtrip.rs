@@ -232,6 +232,9 @@ fn block_placement_roundtrips() {
         "1. a\n2. b\n\n   2) c",
         "- a\n\n  10. b",
         "- a\n  - b\n\n  *",
+        // mixed task list: marker kept as text of an empty item
+        "- [x] \n- ",
+        "- a\n- [ ] ",
     ];
     for md in cases {
         let d1 = from_markdown_with(md, &ParseOptions::default());

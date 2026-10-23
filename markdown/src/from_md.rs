@@ -341,6 +341,12 @@ fn prepend_marker(item: &mut Node, checked: bool) {
             }
         }
     }
+    // no trailing space when it is all the text (it would be stripped)
+    let marker = if content.is_empty() {
+        marker.trim_end()
+    } else {
+        marker
+    };
     content.insert(0, Node::text(marker));
 }
 
