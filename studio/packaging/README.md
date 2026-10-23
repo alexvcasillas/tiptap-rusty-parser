@@ -1,89 +1,119 @@
 # Packaging and releases
 
-macOS is built, signed and notarized **locally** with [`macos/release.sh`](macos/release.sh): the Developer ID key and the notarization credentials stay in the login keychain of the release Mac, nothing is stored in GitHub. Windows and Linux (no signing) come from [`.github/workflows/studio-release.yml`](../../.github/workflows/studio-release.yml), which the tag push triggers.
+Release builds come from one workflow, [`.github/workflows/studio-release.yml`](../../.github/workflows/studio-release.yml):
 
-| Build | Where | Output |
+| Job | Runner | Output |
 | --- | --- | --- |
-| macOS universal (arm64 + x86_64, `lipo`) | local Mac | `TiptapStudio-<v>-macos-universal.dmg`, Developer ID signed, notarized, stapled |
-| Windows x86_64 (MSVC) | `windows-2022` runner | `TiptapStudio-<v>-windows-x86_64.zip` (unsigned `.exe`, GUI subsystem) |
-| Linux x86_64 | `ubuntu-22.04` runner | `TiptapStudio-<v>-linux-x86_64.tar.gz` (binary, `.desktop`, icon); smoke-run 10 s under Xvfb |
+| macOS universal (arm64 + x86_64, `lipo`) | `macos-15` | `TiptapStudio-<v>-macos-universal.dmg` (signed + notarized), or `…-unsigned.dmg` without secrets |
+| Windows x86_64 (MSVC) | `windows-2022` | `TiptapStudio-<v>-windows-x86_64.zip` (unsigned `.exe`, GUI subsystem) |
+| Linux x86_64 | `ubuntu-22.04` | `TiptapStudio-<v>-linux-x86_64.tar.gz` (binary, `.desktop`, icon); smoke-run 10 s under Xvfb |
 
-Every file gets a `<file>.sha256` next to it. The three builds land in one **draft** GitHub Release under the `studio-v<version>` tag; publish it by hand.
+Triggers: **Run workflow** (manual, artifacts only, 14 days) or a `studio-v*` tag (artifacts + **draft** GitHub Release with `SHA256SUMS.txt`).
 
 ## Files
 
 | Path | What |
 | --- | --- |
-| `macos/release.sh` | the whole macOS release: build → sign → notarize → dmg → verify → tag → draft release |
-| `macos/bundle.sh` | the steps: `version`, `app`, `sign`, `notarize`, `dmg`, `zip`, `verify`, `cleanup` (bash 3.2 compatible) |
 | `macos/Info.plist` | bundle template: id `dev.tiptap.studio`, name "Tiptap Studio", `@VERSION@` from `studio/Cargo.toml`, macOS 10.15.7+ (gpui-pre's Metal minimum), Retina, opens `.json` as Viewer |
 | `macos/entitlements.plist` | hardened runtime, intentionally empty (no sandbox, no JIT) |
+| `macos/bundle.sh` | `version`, `app`, `import-cert`, `sign`, `notarize`, `dmg`, `zip`, `verify`, `cleanup` (one per CI step; bash 3.2 compatible) |
 | `linux/package.sh`, `linux/tiptap-studio.desktop` | Linux tarball |
-| `icon/icon-1024.png`, `icon/make-icon.py` | placeholder icon (tree glyph, `#5B9CF6` on `#1B1C1F`); `.icns` is built with `sips` + `iconutil` |
-| `release-notes.md` | body of the draft release (used by the script and the workflow) |
+| `icon/icon-1024.png`, `icon/make-icon.py` | placeholder icon (tree glyph, `#5B9CF6` on `#1B1C1F`); `.icns` is built on the runner with `sips` + `iconutil` |
 | `README.dist.txt` | README shipped inside every archive |
-
-## One-time setup on the release Mac
-
-1. Xcode command line tools (`xcrun notarytool`, `codesign`, `stapler`), `rustup`, `gh` logged in (`gh auth login`).
-2. A **Developer ID Application** certificate with its private key in the login keychain (Keychain Access → My Certificates; it must expand to show the key). Only the Account Holder can create one: developer.apple.com → Certificates → **+** → Developer ID Application, or import the `.p12` backup. Check: `security find-identity -v -p codesigning`.
-3. Notarization credentials stored in the keychain under the profile name `tiptap-studio` (what `bundle.sh` looks for by default):
-   ```sh
-   # App Store Connect API key (appstoreconnect.apple.com → Users and Access → Integrations →
-   # App Store Connect API → Team Keys → +, role Developer; the .p8 downloads once):
-   xcrun notarytool store-credentials tiptap-studio --key AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER-UUID>
-   # or an Apple ID + app-specific password (account.apple.com → App-Specific Passwords):
-   xcrun notarytool store-credentials tiptap-studio --apple-id <email> --team-id <TEAMID>
-   ```
-   Delete the `.p8` file afterwards; keep a copy in the password manager. Check: `xcrun notarytool history --keychain-profile tiptap-studio`.
-
-Back up the certificate (`.p12` export) and the API key in the password manager: without the certificate nothing can be signed until the Account Holder issues a new one.
 
 ## Cut a release
 
-1. Bump `version` in `studio/Cargo.toml` (e.g. `0.2.0`; a `-beta.1` suffix marks the release as a pre-release). Commit and push the branch.
-2. On the release Mac, from a clean tree:
+1. Bump `version` in `studio/Cargo.toml` (e.g. `0.2.0`; a `-beta.1` suffix marks the release as a pre-release).
+2. Commit, then tag and push:
    ```sh
-   studio/packaging/macos/release.sh
+   git tag studio-v0.2.0
+   git push origin studio-v0.2.0
    ```
-   It builds both targets (`--locked`), bundles, signs with the hardened runtime, notarizes the `.app` (waits for Apple), builds and notarizes the `.dmg`, verifies (`codesign`, `spctl`, `stapler`), then tags `studio-v<version>` at HEAD, pushes the tag and creates the draft release with the `.dmg`. If the draft already exists it adds the file to it.
-3. The tag push runs the workflow; its Windows and Linux archives join the same draft. The `version` job fails if the tag does not equal `studio-v<Cargo version>`.
+   The `version` job fails if the tag does not equal `studio-v<Cargo version>`.
+3. Wait for the three build jobs. Each job summary says whether the macOS build was signed and notarized.
 4. Open the draft under **Releases**, check the notes, publish.
 
-Options: `--no-notarize` (sign only, for a quick local build; refuses to upload), `--no-upload` (stop at `dist/`), `--skip-build` (reuse the binaries).
-
-Override the identity or profile with `APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)"` and `APPLE_KEYCHAIN_PROFILE=<name>`. The `APPLE_API_*` / `APPLE_ID` env vars from the old CI setup still work as a fallback when no profile exists.
-
-Single steps, when needed:
+Local macOS build (same steps as CI):
 
 ```sh
-studio/packaging/macos/bundle.sh app dist target/release/tiptap-studio        # arm64-only dev bundle
-studio/packaging/macos/bundle.sh sign "dist/Tiptap Studio.app"
+rustup target add aarch64-apple-darwin x86_64-apple-darwin
+MACOSX_DEPLOYMENT_TARGET=10.15.7 cargo build --release -p tiptap-rusty-studio \
+  --target aarch64-apple-darwin --target x86_64-apple-darwin
+studio/packaging/macos/bundle.sh app dist \
+  target/aarch64-apple-darwin/release/tiptap-studio target/x86_64-apple-darwin/release/tiptap-studio
+APPLE_SIGNING_IDENTITY="Developer ID Application: … (TEAMID)" studio/packaging/macos/bundle.sh sign "dist/Tiptap Studio.app"
 studio/packaging/macos/bundle.sh dmg "dist/Tiptap Studio.app" dist/TiptapStudio.dmg
 ```
+
+## GitHub secrets (Settings → Secrets and variables → Actions)
+
+Without `APPLE_CERTIFICATE` the macOS job still builds an unsigned `.dmg`. Signing needs the certificate pair; notarization needs **one** of the two credential sets (the API key wins when both exist). Nothing secret lives in the repo.
+
+| Secret | Required | Value |
+| --- | --- | --- |
+| `APPLE_CERTIFICATE` | to sign | base64 of the Developer ID Application `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | to sign | password chosen when exporting the `.p12` |
+| `APPLE_SIGNING_IDENTITY` | optional | e.g. `Developer ID Application: Tiptap GmbH (ABCDE12345)`; auto-detected from the `.p12` when unset |
+| `APPLE_API_KEY_ID` | notarize (A) | App Store Connect API key ID, e.g. `2X9R4HXF34` |
+| `APPLE_API_ISSUER` | notarize (A) | issuer ID (UUID) shown above the keys list |
+| `APPLE_API_KEY_P8` | notarize (A) | base64 of `AuthKey_<KEYID>.p8` |
+| `APPLE_ID` | notarize (B) | Apple ID email of a team member |
+| `APPLE_TEAM_ID` | notarize (B) | 10-character team ID (developer.apple.com → Membership) |
+| `APPLE_APP_PASSWORD` | notarize (B) | app-specific password from account.apple.com |
+
+### Developer ID Application certificate → `APPLE_CERTIFICATE`
+
+Only the Account Holder can create Developer ID certificates.
+
+1. Keychain Access → Certificate Assistant → *Request a Certificate From a Certificate Authority…* → save to disk (`.certSigningRequest`).
+2. developer.apple.com → Certificates, IDs & Profiles → Certificates → **+** → *Developer ID Application* (G2 Sub-CA) → upload the CSR → download and double-click the `.cer`.
+3. Keychain Access → *login* → My Certificates → right-click *Developer ID Application: …* (it must expand to show its private key) → Export → `.p12`, set a strong password (→ `APPLE_CERTIFICATE_PASSWORD`).
+4. `base64 -i DeveloperID.p12 | pbcopy` → paste as `APPLE_CERTIFICATE`. Delete the `.p12` file afterwards.
+5. Identity string, if you want to pin it: `security find-identity -v -p codesigning`.
+
+### App Store Connect API key (preferred) → `APPLE_API_*`
+
+1. appstoreconnect.apple.com → Users and Access → Integrations → App Store Connect API → Team Keys → **+**, role *Developer*.
+2. Note the **Key ID** (`APPLE_API_KEY_ID`) and the **Issuer ID** (`APPLE_API_ISSUER`).
+3. Download `AuthKey_<KEYID>.p8` (one download only), then `base64 -i AuthKey_<KEYID>.p8 | pbcopy` → `APPLE_API_KEY_P8`.
+
+### Apple ID fallback → `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD`
+
+account.apple.com → Sign-In and Security → App-Specific Passwords → generate one named `tiptap-studio-notary`.
+
+With `gh`: `gh secret set APPLE_CERTIFICATE < cert.b64` (repeat per secret).
+
+## What the macOS job does when signing
+
+1. `bundle.sh import-cert`: decode the `.p12` into a temporary keychain (random password, 6 h lock), allow `codesign` without prompts, resolve the identity.
+2. `bundle.sh sign`: `codesign --force --options runtime --timestamp --entitlements entitlements.plist` on `Contents/MacOS/tiptap-studio`, then on the bundle; `codesign --verify --deep --strict`.
+3. `bundle.sh notarize "Tiptap Studio.app"`: zip with `ditto`, `xcrun notarytool submit --wait`, print the notary log on failure, `xcrun stapler staple` the `.app`.
+4. `bundle.sh dmg`: `hdiutil` UDZO image with an `/Applications` link, signed.
+5. `bundle.sh notarize <dmg>` + staple, then `bundle.sh verify`: `codesign --verify --deep --strict`, `spctl -a -vv` for the app and the dmg, `stapler validate`.
+6. `bundle.sh cleanup` (always): delete the keychain and the decoded `.p8`.
 
 ## Verify a download (macOS)
 
 ```sh
-shasum -a 256 -c TiptapStudio-*.dmg.sha256
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
 spctl -a -t open --context context:primary-signature -vv TiptapStudio-*.dmg   # accepted, source=Notarized Developer ID
 spctl -a -vv "/Applications/Tiptap Studio.app"                                 # accepted, source=Notarized Developer ID
 codesign --verify --deep --strict --verbose=2 "/Applications/Tiptap Studio.app"
 xcrun stapler validate "/Applications/Tiptap Studio.app"
 ```
 
-## Open a build that is not notarized (macOS)
+## Open an unsigned build (macOS)
 
-A `--no-notarize` build (`-signed-not-notarized` in the name) is blocked by Gatekeeper on other Macs. Clear the quarantine flag once after copying it to Applications:
+Files named `-unsigned` are not notarized, so Gatekeeper says the app "is damaged" or "cannot be opened". Clear the quarantine flag once after copying it to Applications:
 
 ```sh
 xattr -dr com.apple.quarantine "/Applications/Tiptap Studio.app"
 ```
 
-Or right-click the app → Open → Open.
+Or right-click the app → Open → Open. The CLI form works from the bundle: `"/Applications/Tiptap Studio.app/Contents/MacOS/tiptap-studio" doc.json`.
 
 ## Known gaps
 
-- Windows `.exe` is unsigned (SmartScreen warns on first run) and has no embedded icon. No Linux AppImage.
-- No auto-update. A Sparkle feed would need a hosting bucket (R2) and an appcast; not planned yet.
+- Opening a `.json` from Finder launches the app, but the app reads files from `argv` only, so the document is not loaded yet (needs a gpui `on_open_urls` hook in `main.rs`).
+- Windows `.exe` is unsigned and has no embedded icon. No Linux AppImage.
 - `Cargo.lock` is committed and release builds use `--locked`, so every artifact is built from the same dependency versions. After changing dependencies, commit the updated lockfile.

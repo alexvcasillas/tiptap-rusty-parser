@@ -16,7 +16,7 @@ cargo run -p tiptap-rusty-studio -- a.json --schema s.json # validate against a 
 
 Not published. Not part of the parser's CI matrix (needs native windowing libs).
 
-Release builds (macOS .dmg signed and notarized locally, Windows .zip and Linux .tar.gz from CI): [packaging/README.md](packaging/README.md).
+Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [packaging/README.md](packaging/README.md).
 
 ## Layout
 
