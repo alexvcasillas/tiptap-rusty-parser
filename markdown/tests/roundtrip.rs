@@ -183,6 +183,11 @@ fn regression_snippets_roundtrip() {
         "a*{b*",
         "*b{*c",
         "_a_b",
+        // hard break opening a mark span keeps the mark
+        "~\\\n]~",
+        "*\\\n'* ",
+        "**\\\n<* ",
+        "a **\\\nb**",
     ];
     for md in cases {
         let d1 = from_markdown_with(md, &ParseOptions::default());

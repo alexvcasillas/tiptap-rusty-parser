@@ -164,6 +164,8 @@ struct Renderer<'a> {
     ws: String,
     /// Hard break held back (dropped at the end of a run).
     hb: bool,
+    /// Marks of the held-back hard break.
+    hb_marks: &'a [Mark],
     /// Delimiter of the open `italic` mark (differs from `emphasis` when the
     /// opener would abut a closing `*`/`_` run and merge with it).
     em_open: char,
@@ -196,6 +198,7 @@ impl<'a> Renderer<'a> {
             code_buf: String::new(),
             ws: String::new(),
             hb: false,
+            hb_marks: &[],
             em_open: '*',
             bold_open: '*',
             closed_at: usize::MAX,
@@ -614,9 +617,7 @@ impl<'a> Renderer<'a> {
         let marks = n.marks.as_deref().unwrap_or(&[]);
         if marks.iter().any(|m| m.mark_type == "code") {
             self.close_not_in(marks, true);
-            self.flush_pending();
-            let from = self.collect_opens(marks, true);
-            self.write_opens(from, '`');
+            self.open_after_pending(marks, true, "", '`');
             self.code_buf
                 .extend(text.chars().map(|c| if c == '\n' { ' ' } else { c }));
             return;
@@ -631,12 +632,7 @@ impl<'a> Renderer<'a> {
             }
             return;
         }
-        self.flush_pending();
-        let from = self.collect_opens(marks, true);
-        if !lead.is_empty() {
-            self.escape_text(lead);
-        }
-        self.write_opens(from, core.chars().next().unwrap_or(' '));
+        self.open_after_pending(marks, true, lead, core.chars().next().unwrap_or(' '));
         self.escape_text(core);
         self.ws.push_str(&body[core.len()..]);
     }
@@ -652,6 +648,7 @@ impl<'a> Renderer<'a> {
                     self.newline();
                 }
                 self.hb = true;
+                self.hb_marks = marks;
             }
             // nothing before it: the space would only be stripped
             Mode::Flat if self.out.len() == self.bol && self.ws.is_empty() => {}
@@ -666,9 +663,7 @@ impl<'a> Renderer<'a> {
     fn image(&mut self, n: &'a Node) {
         let marks = n.marks.as_deref().unwrap_or(&[]);
         self.close_not_in(marks, false);
-        self.flush_pending();
-        let from = self.collect_opens(marks, false);
-        self.write_opens(from, '!');
+        self.open_after_pending(marks, false, "", '!');
         self.out.push_str("![");
         if let Some(alt) = n.attr("alt").and_then(Value::as_str) {
             let prev = self.mode;
@@ -689,13 +684,44 @@ impl<'a> Renderer<'a> {
         self.out.push(')');
     }
 
+    /// Flush held-back whitespace / hard break, then `lead` and the opens of
+    /// `marks` (`next` = first char after them). A held-back hard break that
+    /// carries every newly opened mark goes inside them (`**\\\nb**`).
+    fn open_after_pending(&mut self, marks: &'a [Mark], text: bool, lead: &str, next: char) {
+        self.flush_ws();
+        let from = self.collect_opens(marks, text);
+        let early = self.hb
+            && from < self.active.len()
+            && self.active[from..]
+                .iter()
+                .all(|m| m.mark_type != "code" && self.hb_marks.contains(m));
+        if early {
+            self.write_opens(from, '\\');
+        }
+        self.flush_hb();
+        if !lead.is_empty() {
+            self.escape_text(lead);
+        }
+        if !early {
+            self.write_opens(from, next);
+        }
+    }
+
     fn flush_pending(&mut self) {
+        self.flush_ws();
+        self.flush_hb();
+    }
+
+    fn flush_ws(&mut self) {
         if !self.ws.is_empty() {
             let w = std::mem::take(&mut self.ws);
             self.escape_text(&w);
             self.ws = w;
             self.ws.clear();
         }
+    }
+
+    fn flush_hb(&mut self) {
         if self.hb {
             self.hb = false;
             self.out.push('\\');
