@@ -659,6 +659,18 @@ impl<'a> Renderer<'a> {
         let marks = n.marks.as_deref().unwrap_or(&[]);
         if marks.iter().any(|m| m.mark_type == "code") {
             self.close_not_in(marks, true);
+            // code is innermost: a mark opening now must not land inside it
+            if self.active.last().is_some_and(|a| a.mark_type == "code")
+                && marks.iter().any(|m| {
+                    m.mark_type != "code"
+                        && mark_rank(m).is_some()
+                        && !self.active.iter().any(|a| a.mark_type == m.mark_type)
+                })
+            {
+                if let Some(c) = self.active.pop() {
+                    self.close_mark(c);
+                }
+            }
             self.open_after_pending(marks, true, "", '`');
             self.code_buf.extend(
                 text.chars()

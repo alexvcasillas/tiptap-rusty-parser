@@ -380,3 +380,35 @@ fn whitespace_after_hard_break_is_kept() {
         assert_eq!(v, want, "{out:?}");
     }
 }
+
+#[test]
+fn marks_added_inside_code_span_reparse() {
+    for (second, ty) in [
+        (r#"[{"type":"bold"},{"type":"code"}]"#, "bold"),
+        (r#"[{"type":"strike"},{"type":"code"}]"#, "strike"),
+        (
+            r#"[{"type":"code"},{"type":"link","attrs":{"href":"u"}}]"#,
+            "link",
+        ),
+    ] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[
+            {{"type":"text","text":"a","marks":[{{"type":"code"}}]}},
+            {{"type":"text","text":"b","marks":{second}}}]}}]}}"#
+        );
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        let p = &v["content"][0]["content"];
+        assert_eq!(p[0]["text"], "a", "{out:?}");
+        assert_eq!(p[1]["text"], "b", "{out:?}");
+        let types: Vec<_> = p[1]["marks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["type"].clone())
+            .collect();
+        assert!(
+            types.contains(&ty.into()) && types.contains(&"code".into()),
+            "{out:?}"
+        );
+    }
+}
