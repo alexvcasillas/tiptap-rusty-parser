@@ -591,3 +591,19 @@ fn hard_break_edges_with_code_headings_and_links() {
         }
     }
 }
+
+#[test]
+fn lookahead_escapes_before_newlines_match_split_nodes() {
+    for t in [
+        "2)\\n&", "&\\n_", "<\\nb", "-\\n:", "+\\nx", "=\\nx", "#\\nx", "1.\\nx",
+    ] {
+        for wrap in [
+            format!(r#"{{"type":"paragraph","content":[{{"type":"text","text":"{t}"}}]}}"#),
+            format!(
+                r#"{{"type":"orderedList","content":[{{"type":"listItem","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{t}","marks":[{{"type":"bold"}}]}}]}}]}}]}}"#
+            ),
+        ] {
+            assert_idempotent(&format!(r#"{{"type":"doc","content":[{wrap}]}}"#));
+        }
+    }
+}

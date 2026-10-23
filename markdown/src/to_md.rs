@@ -1136,27 +1136,34 @@ impl<'a> Renderer<'a> {
                     let w = |x: Option<&u8>| x.is_some_and(|x| x.is_ascii_alphanumeric());
                     !(i > 0 && w(b.get(i - 1)) && w(b.get(i + 1)))
                 }
-                // at the end of the piece the next char is unknown (it may
-                // come from a node with marks that render no delimiter)
-                b'<' => b
-                    .get(i + 1)
-                    .is_none_or(|x| x.is_ascii_alphabetic() || matches!(x, b'/' | b'!' | b'?')),
-                b'&' => i + 1 == b.len() || entity_like(&b[i + 1..]),
+                // At the end of the piece the next char is unknown (it may
+                // come from a node with marks that render no delimiter); a
+                // newline ends the piece too (it re-imports as a break, which
+                // splits the text node).
+                b'<' => b.get(i + 1).is_none_or(|x| {
+                    x.is_ascii_alphabetic() || matches!(x, b'/' | b'!' | b'?' | b'\n' | b'\r')
+                }),
+                b'&' => {
+                    b.get(i + 1).is_none_or(|x| matches!(x, b'\n' | b'\r'))
+                        || entity_like(&b[i + 1..])
+                }
                 b'|' => self.mode == Mode::Cell,
                 b'#' if ls => {
                     let mut j = i;
                     while j < b.len() && b[j] == b'#' {
                         j += 1;
                     }
-                    j - i <= 6 && b.get(j).is_none_or(|x| matches!(x, b' ' | b'\t'))
+                    j - i <= 6
+                        && b.get(j)
+                            .is_none_or(|x| matches!(x, b' ' | b'\t' | b'\n' | b'\r'))
                 }
                 b'>' if ls => true,
-                b'-' | b'+' if ls => b
-                    .get(i + 1)
-                    .is_none_or(|x| matches!(x, b' ' | b'\t') || (c == b'-' && *x == b'-')),
+                b'-' | b'+' if ls => b.get(i + 1).is_none_or(|x| {
+                    matches!(x, b' ' | b'\t' | b'\n' | b'\r') || (c == b'-' && *x == b'-')
+                }),
                 b'=' if ls => b
                     .get(i + 1)
-                    .is_none_or(|x| matches!(x, b' ' | b'\t' | b'=')),
+                    .is_none_or(|x| matches!(x, b' ' | b'\t' | b'=' | b'\n' | b'\r')),
                 b'0'..=b'9' if ls => {
                     let mut j = i;
                     while j < b.len() && b[j].is_ascii_digit() {
@@ -1164,7 +1171,8 @@ impl<'a> Renderer<'a> {
                     }
                     if j - i <= 9
                         && matches!(b.get(j), Some(b'.' | b')'))
-                        && b.get(j + 1).is_none_or(|x| matches!(x, b' ' | b'\t'))
+                        && b.get(j + 1)
+                            .is_none_or(|x| matches!(x, b' ' | b'\t' | b'\n' | b'\r'))
                     {
                         self.out.push_str(&s[last..j]);
                         self.out.push('\\');
