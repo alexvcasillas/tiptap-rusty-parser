@@ -167,6 +167,9 @@ struct Renderer<'a> {
     /// Delimiter of the open `italic` mark (differs from `emphasis` when the
     /// opener would abut a closing `*`/`_` run and merge with it).
     em_open: char,
+    /// Delimiter of the open `bold` mark (`_` when `**` would merge with a
+    /// preceding `*` closer).
+    bold_open: char,
     /// `out.len()` right after the last emphasis closer.
     closed_at: usize,
 }
@@ -194,6 +197,7 @@ impl<'a> Renderer<'a> {
             ws: String::new(),
             hb: false,
             em_open: '*',
+            bold_open: '*',
             closed_at: usize::MAX,
         }
     }
@@ -592,7 +596,7 @@ impl<'a> Renderer<'a> {
             self.close_not_in(marks, true);
             self.flush_pending();
             let from = self.collect_opens(marks, true);
-            self.write_opens(from);
+            self.write_opens(from, '`');
             self.code_buf
                 .extend(text.chars().map(|c| if c == '\n' { ' ' } else { c }));
             return;
@@ -612,7 +616,7 @@ impl<'a> Renderer<'a> {
         if !lead.is_empty() {
             self.escape_text(lead);
         }
-        self.write_opens(from);
+        self.write_opens(from, core.chars().next().unwrap_or(' '));
         self.escape_text(core);
         self.ws.push_str(&body[core.len()..]);
     }
@@ -644,7 +648,7 @@ impl<'a> Renderer<'a> {
         self.close_not_in(marks, false);
         self.flush_pending();
         let from = self.collect_opens(marks, false);
-        self.write_opens(from);
+        self.write_opens(from, '!');
         self.out.push_str("![");
         if let Some(alt) = n.attr("alt").and_then(Value::as_str) {
             let prev = self.mode;
@@ -718,10 +722,29 @@ impl<'a> Renderer<'a> {
         from
     }
 
-    fn write_opens(&mut self, from: usize) {
+    /// Open `active[from..]`; `next` is the first char written after them.
+    fn write_opens(&mut self, from: usize, next: char) {
+        let start = self.out.len();
         for i in from..self.active.len() {
             let m = self.active[i];
             self.open_mark(m);
+        }
+        // The leading delimiter run must be left-flanking (and for `_` not
+        // also right-flanking): a word char before it breaks that when the
+        // run is followed by punctuation, or always for `_`. Encode that char.
+        let b = &self.out.as_bytes()[start..];
+        let Some(&c) = b.first().filter(|c| matches!(c, b'*' | b'_' | b'~')) else {
+            return;
+        };
+        let run = b.iter().take_while(|&&x| x == c).count();
+        let n = b.get(run).map_or(next, |&x| x as char);
+        if let Some(p) = self.out[..start].chars().next_back() {
+            if maybe_word(p) && (maybe_punct(n) || c == b'_') {
+                let mut e = String::with_capacity(12);
+                let _ = write!(e, "&#{};", p as u32);
+                self.out.replace_range(start - p.len_utf8()..start, &e);
+                self.closed_at = usize::MAX;
+            }
         }
     }
 
@@ -735,7 +758,17 @@ impl<'a> Renderer<'a> {
                 }
                 self.out.push('[');
             }
-            "bold" => self.out.push_str("**"),
+            "bold" => {
+                // `*a*` + `**b**` would merge into one `***` run
+                let c = if self.out.len() == self.closed_at && self.out.ends_with('*') {
+                    '_'
+                } else {
+                    '*'
+                };
+                self.bold_open = c;
+                self.out.push(c);
+                self.out.push(c);
+            }
             "italic" => {
                 // `**a*b****c*`: a closer run directly followed by an opener
                 // of the same char merges into one run; switch delimiter.
@@ -766,14 +799,18 @@ impl<'a> Renderer<'a> {
                 self.out.push(')');
             }
             "bold" => {
-                self.out.push_str("**");
+                self.out.push(self.bold_open);
+                self.out.push(self.bold_open);
                 self.closed_at = self.out.len();
             }
             "italic" => {
                 self.out.push(self.em_open);
                 self.closed_at = self.out.len();
             }
-            "strike" => self.out.push_str("~~"),
+            "strike" => {
+                self.out.push_str("~~");
+                self.closed_at = self.out.len();
+            }
             "underline" => self.out.push_str("</u>"),
             "subscript" => self.out.push_str("</sub>"),
             "superscript" => self.out.push_str("</sup>"),
@@ -829,6 +866,21 @@ impl<'a> Renderer<'a> {
         // leading whitespace would be stripped: encode the first char
         let mut lead = ls || self.out.len() == self.bol;
         let (mut last, mut i) = (0, 0);
+        if self.out.len() == self.closed_at {
+            // The delimiter run just closed must stay right-flanking (and for
+            // `_` not also left-flanking): a word char after it breaks that
+            // when the run follows punctuation, or always for `_`.
+            if let Some(n) = s.chars().next().filter(|&n| maybe_word(n)) {
+                let ob = self.out.as_bytes();
+                let c = ob[ob.len() - 1];
+                let run = ob.iter().rev().take_while(|&&x| x == c).count();
+                let p = self.out[..ob.len() - run].chars().next_back();
+                if c == b'_' || p.is_some_and(maybe_punct) {
+                    let _ = write!(self.out, "&#{};", n as u32);
+                    (last, i, lead) = (n.len_utf8(), n.len_utf8(), false);
+                }
+            }
+        }
         while i < b.len() {
             let c = b[i];
             if lead && (c == b' ' || c == b'\t') {
@@ -913,6 +965,16 @@ impl<'a> Renderer<'a> {
 }
 
 // ---- helpers ------------------------------------------------------------
+
+/// Not certainly whitespace or punctuation (for delimiter flanking).
+fn maybe_word(c: char) -> bool {
+    !c.is_whitespace() && !c.is_ascii_punctuation()
+}
+
+/// Not certainly whitespace or alphanumeric (for delimiter flanking).
+fn maybe_punct(c: char) -> bool {
+    !c.is_whitespace() && !c.is_alphanumeric()
+}
 
 fn is_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r')

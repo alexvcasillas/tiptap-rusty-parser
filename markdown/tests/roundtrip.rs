@@ -178,6 +178,11 @@ fn regression_snippets_roundtrip() {
         "| a |\n| --- |\n| ![x](y) |",
         // mark nesting order
         "**~~both~~** ~~**both**~~",
+        // delimiter runs that stopped flanking / merged on export
+        "_{_**b**",
+        "a*{b*",
+        "*b{*c",
+        "_a_b",
     ];
     for md in cases {
         let d1 = from_markdown_with(md, &ParseOptions::default());

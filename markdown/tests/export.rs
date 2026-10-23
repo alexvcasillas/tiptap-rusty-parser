@@ -231,3 +231,59 @@ fn leading_whitespace_is_kept_and_never_indents_code() {
         );
     }
 }
+
+#[test]
+fn abutting_emphasis_runs_reparse() {
+    let t =
+        |text: &str, marks: &str| format!(r#"{{"type":"text","text":"{text}","marks":[{marks}]}}"#);
+    let (it, bo, st) = (
+        r#"{"type":"italic"}"#,
+        r#"{"type":"bold"}"#,
+        r#"{"type":"strike"}"#,
+    );
+    let cases = [
+        vec![t("a", it), t("b", bo)],
+        vec![t("{", it), t("b", bo)],
+        vec![t("a", bo), t("b", it)],
+        vec![t("a", it), t("b", "")],
+        vec![t("a", ""), t("b", it), t("c", "")],
+        vec![t("a", bo), t("b", "")],
+        vec![t("a", ""), t("b", bo), t("c", "")],
+        vec![t("a", bo), t("b", it), t("c", "")],
+        vec![t("a", ""), t("{b", it)],
+        vec![t("b{", it), t("c", "")],
+        vec![t("a", ""), t("{b", bo)],
+        vec![t("b{", bo), t("c", "")],
+        vec![t("é", ""), t("{b", it), t("é", "")],
+        vec![t("a", ""), t("{b", st), t("c", "")],
+        vec![t("a", ""), t("b}", st), t("c", "")],
+        vec![t("a", ""), t("b", &format!("{bo},{it}")), t("c", "")],
+        vec![t("a", ""), t("{b}", &format!("{bo},{it}")), t("c", "")],
+        vec![t("a", it), t("{", &format!("{bo},{it}")), t("c", it)],
+    ];
+    let mut bad = Vec::new();
+    for emphasis in ['*', '_'] {
+        let opts = RenderOptions {
+            emphasis,
+            ..RenderOptions::default()
+        };
+        for nodes in &cases {
+            let json = format!(
+                r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{}]}}]}}"#,
+                nodes.join(",")
+            );
+            let (out, v) = reimport(&json, &opts);
+            let want = Document::from_json_str(&json).unwrap().to_value().unwrap();
+            let norm = |v: &serde_json::Value| {
+                // `"marks":[]` and an absent `marks` mean the same
+                serde_json::to_string(v)
+                    .unwrap()
+                    .replace(r#","marks":[]"#, "")
+            };
+            if norm(&v) != norm(&want) {
+                bad.push(format!("{emphasis} {out:?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "{bad:#?}");
+}
