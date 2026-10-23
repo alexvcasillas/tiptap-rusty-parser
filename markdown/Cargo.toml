@@ -1,0 +1,25 @@
+[package]
+name = "tiptap-rusty-markdown"
+version = "0.1.0"
+edition = "2021"
+description = "Fast Markdown <-> Tiptap/ProseMirror JSONContent conversion on top of tiptap-rusty-parser"
+license = "MIT"
+repository = "https://github.com/alexvcasillas/tiptap-studio"
+keywords = ["tiptap", "prosemirror", "markdown", "commonmark", "gfm"]
+categories = ["parsing", "text-processing"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+tiptap-rusty-parser = { version = "0.5.2", path = "../parser" }
+pulldown-cmark = { version = "0.13", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench"
+harness = false

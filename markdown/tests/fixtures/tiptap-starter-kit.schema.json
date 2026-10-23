@@ -1,0 +1,24 @@
+{
+  "$comment": "Tiptap StarterKit (v3) as a tiptap-rusty-parser Schema. Content uses ProseMirror content expressions; attrs list every allowed attribute key (an empty list allows none). underline and link are included because StarterKit v3 bundles them (v2 did not). Extensions outside StarterKit (callout, image, table, textAlign, ...) are reported as unknown.",
+  "nodes": {
+    "doc": { "content": "block+", "attrs": [] },
+    "paragraph": { "content": "inline*", "group": "block", "attrs": [] },
+    "text": { "group": "inline", "attrs": [] },
+    "heading": { "content": "inline*", "group": "block", "attrs": ["level"] },
+    "blockquote": { "content": "block+", "group": "block", "attrs": [] },
+    "bulletList": { "content": "listItem+", "group": "block list", "attrs": [] },
+    "orderedList": { "content": "listItem+", "group": "block list", "attrs": ["start", "type"] },
+    "listItem": { "content": "paragraph block*", "attrs": [] },
+    "codeBlock": { "content": "text*", "group": "block", "attrs": ["language"] },
+    "horizontalRule": { "content": "", "group": "block", "attrs": [] },
+    "hardBreak": { "content": "", "group": "inline", "attrs": [] }
+  },
+  "marks": {
+    "bold": { "attrs": [] },
+    "italic": { "attrs": [] },
+    "strike": { "attrs": [] },
+    "code": { "attrs": [] },
+    "underline": { "attrs": [] },
+    "link": { "attrs": ["href", "target", "rel", "class"] }
+  }
+}
