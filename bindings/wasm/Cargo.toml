@@ -4,7 +4,7 @@ version = "0.1.2"
 edition = "2021"
 description = "WebAssembly bindings for tiptap-rusty-parser: parse, query, mutate and validate Tiptap/ProseMirror JSONContent in JS"
 license = "MIT"
-repository = "https://github.com/alexvcasillas/tiptap-rusty-parser"
+repository = "https://github.com/alexvcasillas/tiptap-studio"
 publish = false
 
 [lib]
