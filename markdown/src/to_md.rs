@@ -497,6 +497,17 @@ impl<'a> Renderer<'a> {
         } else {
             self.bullet
         };
+        // `- - -` (nested lists opened on one line) reads as a thematic break
+        let bullet = if ordered {
+            bullet
+        } else {
+            let line = &self.out.as_bytes()[self.out.rfind('\n').map_or(0, |i| i + 1)..];
+            let count = |c: char| line.iter().filter(|&&b| b == c as u8).count();
+            [bullet, '-', '*', '+']
+                .into_iter()
+                .find(|&c| count(c) < 2)
+                .unwrap_or(bullet)
+        };
         let delim = if alt { ')' } else { '.' };
         for (i, item) in items.iter().enumerate() {
             if i > 0 {

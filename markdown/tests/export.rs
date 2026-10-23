@@ -306,3 +306,27 @@ fn code_block_info_string_roundtrips() {
         assert_eq!(v, want, "{out:?}");
     }
 }
+
+#[test]
+fn nested_bullet_markers_on_one_line_are_not_a_rule() {
+    let mut item = r#"{"type":"listItem"}"#.to_owned();
+    for _ in 0..4 {
+        item = format!(
+            r#"{{"type":"listItem","content":[{{"type":"bulletList","content":[{item}]}}]}}"#
+        );
+    }
+    let json =
+        format!(r#"{{"type":"doc","content":[{{"type":"bulletList","content":[{item}]}}]}}"#);
+    for bullet in ['-', '*', '+'] {
+        let opts = RenderOptions {
+            bullet,
+            ..RenderOptions::default()
+        };
+        let (out, v) = reimport(&json, &opts);
+        let mut n = &v["content"][0];
+        for depth in 0..5 {
+            assert_eq!(n["type"], "bulletList", "{bullet} depth {depth}: {out:?}");
+            n = &n["content"][0]["content"][1];
+        }
+    }
+}
