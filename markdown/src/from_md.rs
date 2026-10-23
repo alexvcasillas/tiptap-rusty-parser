@@ -388,16 +388,7 @@ impl Builder {
             }
             Event::Html(t) | Event::InlineHtml(t) => self.raw_html(t),
             Event::SoftBreak => self.text(CowStr::Borrowed(" ")),
-            Event::HardBreak => {
-                if let Some(ch) = inline_target(&mut self.stack) {
-                    let mut br = element("hardBreak", None, Vec::new());
-                    if !self.marks.is_empty() {
-                        // inline nodes carry the surrounding marks, like images
-                        br.marks = Some(self.marks.clone());
-                    }
-                    ch.push(br);
-                }
-            }
+            Event::HardBreak => self.hard_break(),
             Event::Rule => self.push_block(element("horizontalRule", None, Vec::new())),
             Event::TaskListMarker(checked) => {
                 if let Some(f) = self
@@ -485,8 +476,36 @@ impl Builder {
         }
     }
 
+    fn hard_break(&mut self) {
+        if let Some(ch) = inline_target(&mut self.stack) {
+            let mut br = element("hardBreak", None, Vec::new());
+            if !self.marks.is_empty() {
+                // inline nodes carry the surrounding marks, like images
+                br.marks = Some(self.marks.clone());
+            }
+            ch.push(br);
+        }
+    }
+
     fn raw_html(&mut self, t: CowStr<'_>) {
         match self.html {
+            HtmlPolicy::Text
+                if t.contains('\n')
+                    && !matches!(
+                        self.stack.last().map(|f| f.kind),
+                        Some(Kind::Code | Kind::Html)
+                    ) =>
+            {
+                // multi-line inline HTML: line breaks become hard breaks (a
+                // raw `\n` in a text node would not survive an export)
+                for (i, line) in t.split('\n').enumerate() {
+                    if i > 0 {
+                        self.hard_break();
+                    }
+                    let line = line.strip_suffix('\r').unwrap_or(line);
+                    self.text(CowStr::Borrowed(line));
+                }
+            }
             HtmlPolicy::Text => self.text(t),
             HtmlPolicy::Drop => {
                 if let Some(top) = self.stack.last_mut() {
@@ -724,6 +743,7 @@ impl Builder {
                             if i > 0 {
                                 nodes.push(element("hardBreak", None, Vec::new()));
                             }
+                            let line = line.strip_suffix('\r').unwrap_or(line);
                             if !line.is_empty() {
                                 nodes.push(Node::text(line));
                             }

@@ -343,3 +343,15 @@ fn dropped_html_leaves_no_trailing_hard_break() {
         assert_eq!(v["content"], want, "{md:?}");
     }
 }
+
+#[test]
+fn multiline_inline_html_text_uses_hard_breaks() {
+    for md in ["a <!-- x\ny -->", "a <!-- x\r\ny -->"] {
+        let v = from_markdown(md).to_value().unwrap();
+        let want: Value = serde_json::from_str(
+            r#"[{"type":"text","text":"a <!-- x"},{"type":"hardBreak"},{"type":"text","text":"y -->"}]"#,
+        )
+        .unwrap();
+        assert_eq!(v["content"][0]["content"], want, "{md:?}");
+    }
+}

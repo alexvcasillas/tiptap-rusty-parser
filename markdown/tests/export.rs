@@ -349,3 +349,18 @@ fn unicode_whitespace_at_mark_edges() {
         "{out:?}"
     );
 }
+
+#[test]
+fn carriage_returns_in_text_are_line_breaks() {
+    for t in ["a\\rb", "a\\r\\nb", "a\\nb"] {
+        let json = format!(
+            r#"{{"type":"doc","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{t}"}}]}}]}}"#
+        );
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        let want: serde_json::Value = serde_json::from_str(
+            r#"[{"type":"text","text":"a"},{"type":"hardBreak"},{"type":"text","text":"b"}]"#,
+        )
+        .unwrap();
+        assert_eq!(v["content"][0]["content"], want, "{t} {out:?}");
+    }
+}

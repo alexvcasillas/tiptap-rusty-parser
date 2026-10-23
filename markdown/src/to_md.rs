@@ -648,8 +648,10 @@ impl<'a> Renderer<'a> {
         if marks.iter().any(|m| m.mark_type == "code") {
             self.close_not_in(marks, true);
             self.open_after_pending(marks, true, "", '`');
-            self.code_buf
-                .extend(text.chars().map(|c| if c == '\n' { ' ' } else { c }));
+            self.code_buf.extend(
+                text.chars()
+                    .map(|c| if matches!(c, '\n' | '\r') { ' ' } else { c }),
+            );
             return;
         }
         let body = text.trim_start_matches(is_ws);
@@ -1021,7 +1023,14 @@ impl<'a> Renderer<'a> {
                     i = j;
                     continue;
                 }
-                b'\n' => {
+                b'\r' if b.get(i + 1) == Some(&b'\n') => {
+                    // `\r\n`: one line break, emitted at the `\n`
+                    self.out.push_str(&s[last..i]);
+                    last = i + 1;
+                    i += 1;
+                    continue;
+                }
+                b'\n' | b'\r' => {
                     self.out.push_str(&s[last..i]);
                     last = i + 1;
                     if self.mode == Mode::Normal {
