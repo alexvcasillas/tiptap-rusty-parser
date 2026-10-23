@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2](https://github.com/alexvcasillas/tiptap-studio/compare/v0.5.1...v0.5.2) - 2026-10-23
+
+### Added
+
+- *(wasm)* publish to npm as @tiptap-studio/rusty-parser ([#63](https://github.com/alexvcasillas/tiptap-studio/pull/63))
+
+### Other
+
+- *(parser)* fix wasm links after the move into parser/ ([#62](https://github.com/alexvcasillas/tiptap-studio/pull/62))
+- move the parser crate into parser/ and make the root a virtual workspace ([#61](https://github.com/alexvcasillas/tiptap-studio/pull/61))
+
 ## [0.5.1](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/v0.5.0...v0.5.1) - 2026-10-23
 
 ### Other
