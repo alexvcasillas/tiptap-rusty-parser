@@ -747,21 +747,24 @@ impl<'a> Renderer<'a> {
     fn open_after_pending(&mut self, marks: &'a [Mark], text: bool, lead: &str, next: char) {
         self.flush_ws();
         let from = self.collect_opens(marks, text);
-        let early = self.hb
-            && from < self.active.len()
-            && self.active[from..]
-                .iter()
-                .all(|m| m.mark_type != "code" && self.hb_marks.contains(m));
-        if early {
-            self.write_opens(from, '\\');
+        let mut mid = from;
+        if self.hb {
+            // new marks the break also carries open (outermost) before it;
+            // delimiter nesting order is free, import re-canonicalizes it
+            let hbm = self.hb_marks;
+            let carried = |m: &Mark| m.mark_type != "code" && hbm.contains(m);
+            let new = &mut self.active[from..];
+            if new.iter().any(|m| carried(m)) {
+                new.sort_by_key(|m| !carried(m));
+                mid += new.iter().take_while(|m| carried(m)).count();
+                self.write_opens(from, mid, '\\');
+            }
         }
         self.flush_hb();
         if !lead.is_empty() {
             self.escape_text(lead);
         }
-        if !early {
-            self.write_opens(from, next);
-        }
+        self.write_opens(mid, self.active.len(), next);
     }
 
     fn flush_pending(&mut self) {
@@ -831,10 +834,13 @@ impl<'a> Renderer<'a> {
         from
     }
 
-    /// Open `active[from..]`; `next` is the first char written after them.
-    fn write_opens(&mut self, from: usize, next: char) {
+    /// Open `active[from..to]`; `next` is the first char written after them.
+    fn write_opens(&mut self, from: usize, to: usize, next: char) {
+        if from >= to {
+            return;
+        }
         let start = self.out.len();
-        for i in from..self.active.len() {
+        for i in from..to {
             let m = self.active[i];
             self.open_mark(m);
         }

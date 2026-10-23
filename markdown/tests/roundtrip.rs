@@ -188,6 +188,9 @@ fn regression_snippets_roundtrip() {
         "*\\\n'* ",
         "**\\\n<* ",
         "a **\\\nb**",
+        "**\\\n_a_**",
+        "_\\\n**b**_",
+        "**\\\n~~a~~**",
         // whitespace before consecutive hard breaks moved past the first
         "a \\\n\\\nb",
     ];
