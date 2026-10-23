@@ -1,0 +1,18 @@
+{
+ "type": "paragraph",
+ "content": [
+  {
+   "type": "text",
+   "text": "root para "
+  },
+  {
+   "type": "text",
+   "text": "bold",
+   "marks": [
+    {
+     "type": "bold"
+    }
+   ]
+  }
+ ]
+}

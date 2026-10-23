@@ -1,0 +1,114 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "callout",
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "inside callout"
+      }
+     ]
+    },
+    {
+     "type": "bulletList",
+     "content": [
+      {
+       "type": "listItem",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "li"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "mention",
+   "attrs": {
+    "id": "1"
+   }
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "hi "
+    },
+    {
+     "type": "mention",
+     "attrs": {
+      "id": "1"
+     }
+    },
+    {
+     "type": "badge",
+     "content": [
+      {
+       "type": "text",
+       "text": " nested text",
+       "marks": [
+        {
+         "type": "bold"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": " end"
+    }
+   ]
+  },
+  {
+   "type": "wrapper",
+   "content": [
+    {
+     "type": "text",
+     "text": "bare text"
+    },
+    {
+     "type": "text",
+     "text": " more",
+     "marks": [
+      {
+       "type": "italic"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "outer",
+   "content": [
+    {
+     "type": "inner",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "deep"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

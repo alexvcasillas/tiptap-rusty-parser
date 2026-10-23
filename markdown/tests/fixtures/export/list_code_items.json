@@ -1,0 +1,94 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "bulletList",
+   "content": [
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "run:"
+        }
+       ]
+      },
+      {
+       "type": "codeBlock",
+       "attrs": {
+        "language": "sh"
+       },
+       "content": [
+        {
+         "type": "text",
+         "text": "a\n\nb"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "codeBlock",
+       "content": [
+        {
+         "type": "text",
+         "text": "only code"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "listItem"
+    },
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "heading",
+       "attrs": {
+        "level": 2
+       },
+       "content": [
+        {
+         "type": "text",
+         "text": "h"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "listItem",
+     "content": [
+      {
+       "type": "bulletList",
+       "content": [
+        {
+         "type": "listItem",
+         "content": [
+          {
+           "type": "paragraph",
+           "content": [
+            {
+             "type": "text",
+             "text": "lone nested"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

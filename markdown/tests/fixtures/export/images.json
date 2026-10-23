@@ -1,0 +1,62 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "image",
+   "attrs": {
+    "src": "a.png",
+    "alt": "Alt [x]",
+    "title": "T \"q\""
+   }
+  },
+  {
+   "type": "image",
+   "attrs": {
+    "src": "https://x.test/a b(1).png"
+   }
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "inline "
+    },
+    {
+     "type": "image",
+     "attrs": {
+      "src": "i.png",
+      "alt": "i"
+     }
+    },
+    {
+     "type": "text",
+     "text": " img"
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "image",
+     "attrs": {
+      "src": "l.png",
+      "alt": "linked"
+     },
+     "marks": [
+      {
+       "type": "link",
+       "attrs": {
+        "href": "https://l.test"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "image"
+  }
+ ]
+}

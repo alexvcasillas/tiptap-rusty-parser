@@ -1,0 +1,94 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "taskList",
+   "content": [
+    {
+     "type": "taskItem",
+     "attrs": {
+      "checked": false
+     },
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "todo"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "taskItem",
+     "attrs": {
+      "checked": true
+     },
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "done"
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "taskItem",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "parent"
+        }
+       ]
+      },
+      {
+       "type": "taskList",
+       "content": [
+        {
+         "type": "taskItem",
+         "attrs": {
+          "checked": true
+         },
+         "content": [
+          {
+           "type": "paragraph",
+           "content": [
+            {
+             "type": "text",
+             "text": "child"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "taskItem",
+     "content": [
+      {
+       "type": "paragraph",
+       "content": [
+        {
+         "type": "text",
+         "text": "no attr"
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
