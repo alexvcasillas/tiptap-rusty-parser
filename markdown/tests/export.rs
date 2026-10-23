@@ -710,3 +710,25 @@ fn angle_and_ampersand_at_block_end_need_no_escape() {
         assert!(!md(&json).contains('\\'), "{}", md(&json));
     }
 }
+
+#[test]
+fn entity_encoding_does_not_break_neighbouring_delimiters() {
+    for content in [
+        // `~~` opener after `9` encodes it; the `**` opener before it must stay flanking
+        r#"[{"type":"text","text":"x"},{"type":"text","text":"9","marks":[{"type":"bold"}]},{"type":"text","text":"\\","marks":[{"type":"strike"},{"type":"bold"}]}]"#,
+        // an intraword `_` next to an encoded char must not become a delimiter
+        r#"[{"type":"text","text":"a_b","marks":[{"type":"italic"}]},{"type":"text","text":"`","marks":[{"type":"strike"},{"type":"italic"}]}]"#,
+        r#"[{"type":"text","text":"{","marks":[{"type":"italic"}]},{"type":"text","text":"b_c"}]"#,
+        // marks opened between breaks that end the block
+        r#"[{"type":"hardBreak","marks":[{"type":"italic"}]},{"type":"hardBreak","marks":[{"type":"bold"}]},{"type":"hardBreak","marks":[{"type":"bold"}]}]"#,
+    ] {
+        let json =
+            format!(r#"{{"type":"doc","content":[{{"type":"paragraph","content":{content}}}]}}"#);
+        assert_idempotent(&json);
+        let (out, v) = reimport(&json, &RenderOptions::default());
+        let want = Document::from_json_str(&json).unwrap().to_value().unwrap();
+        if !content.contains("hardBreak") {
+            assert_eq!(v, want, "{out:?}");
+        }
+    }
+}

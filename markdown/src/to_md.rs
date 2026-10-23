@@ -178,11 +178,10 @@ struct Renderer<'a> {
     /// Span (start, end, cs before) of the last run of emitted hard breaks;
     /// `out.len() == end` means nothing followed it yet.
     hb_run: (usize, usize, usize),
-    /// First byte known to follow the current text run (0 = unknown;
-    /// whitespace / newline only).
-    next_hint: u8,
-    /// `next_hint` for the piece being escaped.
-    hint: u8,
+    /// Offset of an unescaped `<` / `&` that ended the last escaped piece:
+    /// escaped later if the next piece, written right after it, would turn
+    /// it into a tag / autolink / entity.
+    amb_at: usize,
     /// Last `write_opens`: (out start, out end, first `active` index).
     /// (`restore`: the char before them, if it was entity-encoded.)
     opened: (usize, usize, usize, Option<char>),
@@ -222,8 +221,7 @@ impl<'a> Renderer<'a> {
             ws_after: String::new(),
             hb_run: (0, usize::MAX, 0),
             opened: (0, usize::MAX, 0, None),
-            next_hint: 0,
-            hint: 0,
+            amb_at: usize::MAX,
             em_open: '*',
             bold_open: '*',
             closed_at: usize::MAX,
@@ -632,11 +630,12 @@ impl<'a> Renderer<'a> {
     // ---- inline runs ----------------------------------------------------
 
     fn inline(&mut self, nodes: &'a [Node]) {
+        let start = self.out.len();
         self.active.clear();
         self.ws.clear();
         self.ws_after.clear();
         self.hb = false;
-        self.items(nodes, true);
+        self.items(nodes);
         self.close_not_in(&[], true);
         // trailing whitespace is stripped on re-parse, except non-ASCII (NBSP, ...)
         let ascii_ws = [' ', '\t', '\n', '\r'];
@@ -653,8 +652,19 @@ impl<'a> Renderer<'a> {
         }
         // breaks at the end of the run would leave a literal `\\` (and the
         // whitespace before them would dangle)
-        if self.take_hb_run().is_some() {
-            let keep = self.out.trim_end_matches([' ', '\t']).len().max(self.cs);
+        let mut dropped = self.take_hb_run().is_some();
+        let tail = self.prefix.len() + 2;
+        while self.out.len() >= start + tail
+            && self.out.ends_with(self.prefix.as_str())
+            && self.out.as_bytes()[..self.out.len() - self.prefix.len()].ends_with(b"\\\n")
+            && ends_unescaped(&self.out[..self.out.len() - tail + 1], b'\\')
+        {
+            // (left by marks opened between breaks)
+            self.out.truncate(self.out.len() - tail);
+            dropped = true;
+        }
+        if dropped {
+            let keep = self.out.trim_end_matches([' ', '\t']).len().max(start);
             self.out.truncate(keep);
         }
         self.ws.clear();
@@ -662,8 +672,7 @@ impl<'a> Renderer<'a> {
         self.hb = false;
     }
 
-    /// `last`: nothing follows `nodes` in the run.
-    fn items(&mut self, nodes: &'a [Node], last: bool) {
+    fn items(&mut self, nodes: &'a [Node]) {
         let mut i = 0;
         while i < nodes.len() {
             let n = &nodes[i];
@@ -680,18 +689,6 @@ impl<'a> Renderer<'a> {
                             || (flat && m.node_type.as_deref() == Some("hardBreak"))
                     } && m.marks.as_deref().unwrap_or(&[]) == marks;
                     let j = i + nodes[i..].iter().take_while(|m| same(m)).count();
-                    // what follows the run, for end-of-piece lookahead
-                    self.next_hint = match nodes.get(j) {
-                        Some(m) if m.node_type.as_deref() == Some("hardBreak") => b'\n',
-                        Some(m) if m.node_type.as_deref() == Some("text") => m
-                            .text
-                            .as_deref()
-                            .and_then(|t| t.chars().next())
-                            .filter(|c| c.is_whitespace())
-                            .map_or(0, |c| if is_nl(c as u8) { b'\n' } else { b' ' }),
-                        None if last => b' ',
-                        _ => 0,
-                    };
                     if j == i {
                         self.text_item(n.text.as_deref().unwrap_or(""), marks);
                     } else {
@@ -705,11 +702,11 @@ impl<'a> Renderer<'a> {
                 }
                 Some("hardBreak") => self.hard_break(n),
                 Some("image") => self.image(n),
-                None => self.items(n.children(), false),
-                Some(ty) if is_known_container(ty) => self.items(n.children(), false),
+                None => self.items(n.children()),
+                Some(ty) if is_known_container(ty) => self.items(n.children()),
                 Some(_) => match self.opts.unknown_node {
                     UnknownNodePolicy::Skip => {}
-                    UnknownNodePolicy::Transparent => self.items(n.children(), false),
+                    UnknownNodePolicy::Transparent => self.items(n.children()),
                     UnknownNodePolicy::Html => {
                         self.close_not_in(&[], false);
                         self.flush_pending();
@@ -775,13 +772,7 @@ impl<'a> Renderer<'a> {
             return;
         }
         self.open_after_pending(marks, true, lead, core.chars().next().unwrap_or(' '));
-        self.hint = if core.len() < body.len() {
-            b' '
-        } else {
-            self.next_hint
-        };
         self.escape_text(core);
-        self.hint = 0;
         self.ws.push_str(&body[core.len()..]);
     }
 
@@ -1038,12 +1029,57 @@ impl<'a> Renderer<'a> {
         let n = b.get(run).map_or(next, |&x| x as char);
         if let Some(p) = self.out[..start].chars().next_back() {
             if maybe_word(p) && (maybe_punct(n) || c == b'_') {
-                let mut e = String::with_capacity(12);
-                let _ = write!(e, "&#{};", p as u32);
                 let at = start - p.len_utf8();
-                self.out.replace_range(at..start, &e);
+                let undo = self.encode_before(at, p);
                 self.closed_at = usize::MAX;
-                self.opened = (at, self.out.len(), from, Some(p));
+                // an undo is only exact when nothing before `at` changed
+                let end = if undo.is_some() {
+                    self.out.len()
+                } else {
+                    usize::MAX
+                };
+                self.opened = (at, end, from, undo);
+            }
+        }
+    }
+
+    /// Entity-encode `p` at `at`. The `&…;` is punctuation, which can break
+    /// the flanking of a delimiter run right before it (repeat there) and turn
+    /// an intraword `_` into a delimiter (escape it). Returns the char to put
+    /// back at `at` to undo, if nothing else changed.
+    fn encode_before(&mut self, mut at: usize, mut p: char) -> Option<char> {
+        let mut undo = Some(p);
+        loop {
+            let mut e = String::with_capacity(12);
+            let _ = write!(e, "&#{};", p as u32);
+            self.out.replace_range(at..at + p.len_utf8(), &e);
+            let b = self.out.as_bytes();
+            let Some(&d) = b[..at].last().filter(|d| matches!(d, b'*' | b'_' | b'~')) else {
+                return undo;
+            };
+            if b[..at - 1]
+                .iter()
+                .rev()
+                .take_while(|&&x| x == b'\\')
+                .count()
+                % 2
+                == 1
+            {
+                return undo; // escaped: text
+            }
+            if d == b'_' && at >= 2 && b[at - 2].is_ascii_alphanumeric() {
+                // an intraword `_` of text (a delimiter there could not flank)
+                self.out.insert(at - 1, '\\');
+                return None;
+            }
+            let run = b[..at].iter().rev().take_while(|&&x| x == d).count();
+            match self.out[..at - run].chars().next_back() {
+                Some(q) if maybe_word(q) => {
+                    at = at - run - q.len_utf8();
+                    p = q;
+                    undo = None;
+                }
+                _ => return undo,
             }
         }
     }
@@ -1165,11 +1201,20 @@ impl<'a> Renderer<'a> {
         let mut ls = self.at_line_start();
         // leading whitespace would be stripped: encode the first char
         let mut lead = ls || self.out.len() == self.bol;
-        // a newline is a break (ends the node) only in normal text
-        let nl_end = self.mode == Mode::Normal;
-        let hint = self.hint;
-        let end = (hint != 0).then_some(&hint);
         let (mut last, mut i) = (0, 0);
+        // end of a first char written as an entity (no longer a word char)
+        let mut enc_end = 0;
+        if self.amb_at != usize::MAX && self.amb_at + 1 == self.out.len() {
+            let bad = match self.out.as_bytes()[self.amb_at] {
+                b'<' => b.first().is_some_and(|&x| starts_tag(x)),
+                b'&' => entity_like(b),
+                _ => false,
+            };
+            if bad {
+                self.out.insert(self.amb_at, '\\');
+            }
+        }
+        self.amb_at = usize::MAX;
         if self.out.len() == self.closed_at {
             // The delimiter run just closed must stay right-flanking (and for
             // `_` not also left-flanking): a word char after it breaks that
@@ -1182,6 +1227,7 @@ impl<'a> Renderer<'a> {
                 if c == b'_' || p.is_some_and(maybe_punct) {
                     let _ = write!(self.out, "&#{};", n as u32);
                     (last, i, lead) = (n.len_utf8(), n.len_utf8(), false);
+                    enc_end = i;
                 }
             }
         }
@@ -1206,21 +1252,11 @@ impl<'a> Renderer<'a> {
                 b'\\' | b'*' | b'`' | b'[' | b']' | b'~' => true,
                 b'_' => {
                     let w = |x: Option<&u8>| x.is_some_and(|x| x.is_ascii_alphanumeric());
-                    !(i > 0 && w(b.get(i - 1)) && w(b.get(i + 1)))
+                    !(i > 0 && i != enc_end && w(b.get(i - 1)) && w(b.get(i + 1)))
                 }
-                // At the end of the piece the next char is unknown (it may
-                // come from a node with marks that render no delimiter); a
-                // newline ends the piece too (it re-imports as a break, which
-                // splits the text node).
-                b'<' => b.get(i + 1).or(end).is_none_or(|x| {
-                    x.is_ascii_alphabetic()
-                        || matches!(x, b'/' | b'!' | b'?')
-                        || (nl_end && is_nl(*x))
-                }),
-                b'&' => {
-                    b.get(i + 1).or(end).is_none_or(|x| nl_end && is_nl(*x))
-                        || entity_like(&b[i + 1..])
-                }
+                // at the end of the piece: decided by the next one (`amb_at`)
+                b'<' => b.get(i + 1).is_some_and(|&x| starts_tag(x)),
+                b'&' => entity_like(&b[i + 1..]),
                 b'|' => self.mode == Mode::Cell,
                 b'#' if ls => {
                     let mut j = i;
@@ -1295,6 +1331,9 @@ impl<'a> Renderer<'a> {
             i += 1;
         }
         self.out.push_str(&s[last..]);
+        if matches!(b.last(), Some(b'<' | b'&')) && last < b.len() {
+            self.amb_at = self.out.len() - 1;
+        }
     }
 }
 
@@ -1320,10 +1359,6 @@ fn maybe_punct(c: char) -> bool {
 }
 
 /// Whitespace for delimiter flanking (Unicode, like CommonMark).
-fn is_nl(b: u8) -> bool {
-    matches!(b, b'\n' | b'\r')
-}
-
 fn is_ws(c: char) -> bool {
     c.is_whitespace()
 }
@@ -1539,6 +1574,11 @@ fn approx_size(n: &Node) -> usize {
         8 + n.text.as_ref().map_or(0, String::len) + n.children().iter().map(go).sum::<usize>()
     }
     go(n) + go(n) / 8 + 16
+}
+
+/// `<` followed by this may open a tag or autolink.
+fn starts_tag(x: u8) -> bool {
+    x.is_ascii_alphabetic() || matches!(x, b'/' | b'!' | b'?')
 }
 
 /// `&` followed by something that reads as a character reference.
