@@ -316,3 +316,30 @@ fn trailing_whitespace_is_stripped_from_blocks() {
     let v = from_markdown("`a `").to_value().unwrap();
     assert_eq!(v["content"][0]["content"][0]["text"], "a ");
 }
+
+#[test]
+fn dropped_html_leaves_no_trailing_hard_break() {
+    let opts = ParseOptions {
+        gfm: true,
+        html: HtmlPolicy::Drop,
+    };
+    for (md, want) in [
+        (
+            "a\\\n<b>",
+            r#"[{"type":"paragraph","content":[{"type":"text","text":"a"}]}]"#,
+        ),
+        (
+            "a  \n</b>",
+            r#"[{"type":"paragraph","content":[{"type":"text","text":"a"}]}]"#,
+        ),
+        ("\\\n<b>", r#"[{"type":"paragraph"}]"#),
+        (
+            "x\n\n\\\n<b>",
+            r#"[{"type":"paragraph","content":[{"type":"text","text":"x"}]}]"#,
+        ),
+    ] {
+        let v = from_markdown_with(md, &opts).to_value().unwrap();
+        let want: Value = serde_json::from_str(want).unwrap();
+        assert_eq!(v["content"], want, "{md:?}");
+    }
+}

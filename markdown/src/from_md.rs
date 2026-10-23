@@ -288,9 +288,14 @@ fn inline_target(stack: &mut Vec<Frame>) -> Option<&mut Vec<Node>> {
 }
 
 /// Drop trailing spaces/tabs of a paragraph/heading (CommonMark strips them;
-/// pulldown keeps some, e.g. after inline HTML or in `# x\t`). Code spans keep theirs.
+/// pulldown keeps some, e.g. after inline HTML or in `# x\t`). Code spans keep
+/// theirs. Also drops trailing hard breaks (left by dropped inline HTML).
 fn trim_trailing_ws(children: &mut Vec<Node>) {
     while let Some(last) = children.last_mut() {
+        if is_type(last, "hardBreak") {
+            children.pop();
+            continue;
+        }
         if !is_type(last, "text")
             || last
                 .marks
