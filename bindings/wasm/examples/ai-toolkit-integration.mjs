@@ -3,7 +3,7 @@
 // needs — smart diff, position-addressed apply, invertible reject, and
 // selection mapping — plus the schema-guard.
 //
-//   npm i tiptap-rusty-parser
+//   npm i @tiptap-studio/rusty-parser
 //   node bindings/wasm/examples/ai-toolkit-integration.mjs
 //
 // (Or, from a local build: `wasm-pack build bindings/wasm --target nodejs`
@@ -13,7 +13,7 @@ import {
   TiptapDoc,
   mapPosition,
   validateNode,
-} from "tiptap-rusty-parser";
+} from "@tiptap-studio/rusty-parser";
 
 const assert = (cond, msg) => {
   if (!cond) throw new Error("assertion failed: " + msg);

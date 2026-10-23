@@ -12,7 +12,7 @@ ProseMirror `JSONContent` documents, in Rust.
 - **Extract text** — `text_content`, `char_count`, `word_count` (Unicode-aware).
 - **Validate** (opt-in) — check against an allow-list `Schema` (Rust or JSON).
 - **Build** ergonomically — `Node::element`, `Node::text`, `doc(..)`, `with_*` chaining.
-- **JS/WASM** — `npm i tiptap-rusty-parser` for browser/bundler apps (see [JavaScript / WASM](#javascript--wasm)).
+- **JS/WASM** — `npm i @tiptap-studio/rusty-parser` for browser/bundler apps (see [JavaScript / WASM](#javascript--wasm)).
 - **Fast** — borrow over copy, stack-based traversal (no recursion blowup), `lto`
   release profile, criterion benches.
 
@@ -1018,11 +1018,11 @@ let document = doc([
 The crate ships WASM bindings on npm for browser/bundler apps:
 
 ```bash
-npm install tiptap-rusty-parser
+npm install @tiptap-studio/rusty-parser
 ```
 
 ```js
-import { TiptapDoc } from "tiptap-rusty-parser";
+import { TiptapDoc } from "@tiptap-studio/rusty-parser";
 
 const doc = TiptapDoc.fromJSON({
   type: "doc",

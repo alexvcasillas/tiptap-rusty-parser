@@ -1,11 +1,11 @@
-# tiptap-rusty-parser (WASM)
+# @tiptap-studio/rusty-parser
 
 WebAssembly bindings for [`tiptap-rusty-parser`](https://crates.io/crates/tiptap-rusty-parser) —
 a fast, schema-agnostic parser/manipulator for Tiptap/ProseMirror `JSONContent`,
 written in Rust and compiled to WASM.
 
 ```bash
-npm install tiptap-rusty-parser
+npm install @tiptap-studio/rusty-parser
 ```
 
 Built for the `bundler` target (Vite, webpack, Next, …).
@@ -13,7 +13,7 @@ Built for the `bundler` target (Vite, webpack, Next, …).
 ## Usage
 
 ```js
-import { TiptapDoc } from "tiptap-rusty-parser";
+import { TiptapDoc } from "@tiptap-studio/rusty-parser";
 
 const doc = TiptapDoc.fromJSON({
   type: "doc",
