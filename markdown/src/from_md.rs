@@ -173,7 +173,8 @@ enum Kind {
 
 struct Frame {
     kind: Kind,
-    children: Vec<Node>,
+    /// Where this frame's children start in `Builder::kids`.
+    start: usize,
     /// Code / HTML block text.
     buf: String,
     /// Code block attrs.
@@ -187,10 +188,10 @@ struct Frame {
 
 impl Frame {
     #[inline]
-    fn new(kind: Kind) -> Self {
+    fn new(kind: Kind, start: usize) -> Self {
         Frame {
             kind,
-            children: Vec::new(),
+            start,
             buf: String::new(),
             attrs: None,
             task: None,
@@ -210,6 +211,9 @@ struct PendingImage {
 struct Builder {
     html: HtmlPolicy,
     stack: Vec<Frame>,
+    /// Children of all open frames, innermost last (one shared stack; a
+    /// closing frame's tail is moved into an exactly sized `Vec`).
+    kids: Vec<Node>,
     marks: Vec<Mark>,
     /// Per open inline mark tag: the rank of the mark it pushed onto `marks`
     /// (`None` if the type was already active).
@@ -272,11 +276,17 @@ fn marks_eq(existing: Option<&[Mark]>, stack: &[Mark], code: bool) -> bool {
     }
 }
 
-fn push_text(children: &mut Vec<Node>, marks: &[Mark], code: bool, t: CowStr<'_>) {
+fn push_text(
+    (children, start): (&mut Vec<Node>, usize),
+    marks: &[Mark],
+    code: bool,
+    t: CowStr<'_>,
+) {
     if t.is_empty() {
         return;
     }
-    if let Some(last) = children.last_mut() {
+    let own = children.len() > start;
+    if let Some(last) = children.last_mut().filter(|_| own) {
         if is_type(last, "text") && marks_eq(last.marks.as_deref(), marks, code) {
             if let Some(s) = last.text.as_mut() {
                 s.push_str(&t);
@@ -305,15 +315,20 @@ fn push_text(children: &mut Vec<Node>, marks: &[Mark], code: bool, t: CowStr<'_>
 
 /// The children of the current inline container, opening an implicit
 /// paragraph in block containers. `None` where inline content can't go.
-fn inline_target(stack: &mut Vec<Frame>) -> Option<&mut Vec<Node>> {
+/// (Children live on the shared `kids` stack from the returned start on.)
+fn inline_target<'k>(
+    stack: &mut Vec<Frame>,
+    kids: &'k mut Vec<Node>,
+) -> Option<(&'k mut Vec<Node>, usize)> {
     match stack.last()?.kind {
         Kind::Para | Kind::ImplicitPara | Kind::Heading(_) => {}
         Kind::Doc | Kind::Quote | Kind::Item | Kind::Cell { .. } => {
-            stack.push(Frame::new(Kind::ImplicitPara))
+            stack.push(Frame::new(Kind::ImplicitPara, kids.len()))
         }
         _ => return None,
     }
-    stack.last_mut().map(|f| &mut f.children)
+    let start = stack.last()?.start;
+    Some((kids, start))
 }
 
 /// Drop trailing spaces/tabs of a paragraph/heading (CommonMark strips them;
@@ -399,10 +414,11 @@ fn is_hoistable_images(children: &[Node]) -> bool {
 impl Builder {
     fn new(html: HtmlPolicy, cap: usize) -> Self {
         let mut stack = Vec::with_capacity(16);
-        stack.push(Frame::new(Kind::Doc));
+        stack.push(Frame::new(Kind::Doc, 0));
         Builder {
             html,
             stack,
+            kids: Vec::with_capacity(8),
             marks: Vec::new(),
             mark_pushed: Vec::new(),
             image: None,
@@ -419,7 +435,7 @@ impl Builder {
         if self.skipped > 0 || self.stack.len() + levels > self.cap {
             self.skipped += 1;
         } else {
-            self.stack.push(Frame::new(kind));
+            self.stack.push(Frame::new(kind, self.kids.len()));
         }
     }
 
@@ -433,7 +449,7 @@ impl Builder {
             Event::End(end) => self.end(end),
             Event::Text(t) => self.text(t),
             Event::Code(t) => {
-                if let Some(ch) = inline_target(&mut self.stack) {
+                if let Some(ch) = inline_target(&mut self.stack, &mut self.kids) {
                     push_text(ch, &self.marks, true, t);
                 }
             }
@@ -510,8 +526,8 @@ impl Builder {
             },
             ..Default::default()
         };
-        if let Some(ch) = inline_target(&mut self.stack) {
-            ch.push(node);
+        if let Some(ch) = inline_target(&mut self.stack, &mut self.kids) {
+            ch.0.push(node);
         }
     }
 
@@ -525,19 +541,19 @@ impl Builder {
             }
             return;
         }
-        if let Some(ch) = inline_target(&mut self.stack) {
+        if let Some(ch) = inline_target(&mut self.stack, &mut self.kids) {
             push_text(ch, &self.marks, false, t);
         }
     }
 
     fn hard_break(&mut self) {
-        if let Some(ch) = inline_target(&mut self.stack) {
+        if let Some(ch) = inline_target(&mut self.stack, &mut self.kids) {
             let mut br = element("hardBreak", None, Vec::new());
             if !self.marks.is_empty() {
                 // inline nodes carry the surrounding marks, like images
                 br.marks = Some(self.marks.clone());
             }
-            ch.push(br);
+            ch.0.push(br);
         }
     }
 
@@ -571,14 +587,14 @@ impl Builder {
 
     fn push_block(&mut self, node: Node) {
         self.close_implicit();
-        if let Some(top) = self.stack.last_mut() {
-            top.children.push(node);
+        if !self.stack.is_empty() {
+            self.kids.push(node);
         }
     }
 
     fn open_block(&mut self, kind: Kind) {
         self.close_implicit();
-        self.stack.push(Frame::new(kind));
+        self.stack.push(Frame::new(kind, self.kids.len()));
     }
 
     /// Marks are kept in canonical nesting order (link > strike > bold >
@@ -635,7 +651,8 @@ impl Builder {
                     self.stack.last().map(|f| f.kind),
                     Some(Kind::Row { header: true })
                 );
-                self.stack.push(Frame::new(Kind::Cell { header }));
+                self.stack
+                    .push(Frame::new(Kind::Cell { header }, self.kids.len()));
             }
             Tag::Emphasis => self.push_mark(Mark::new("italic")),
             Tag::Strong => self.push_mark(Mark::new("bold")),
@@ -747,7 +764,8 @@ impl Builder {
         let Some(parent) = self.stack.last_mut() else {
             return;
         };
-        let mut children = f.children;
+        let mut children: Vec<Node> = self.kids.drain(f.start.min(self.kids.len())..).collect();
+        let kids = &mut self.kids;
         match f.kind {
             Kind::Doc => {}
             Kind::Para | Kind::ImplicitPara => {
@@ -763,21 +781,19 @@ impl Builder {
                 }
                 // Cells stay `cell > paragraph > image` (pipe tables need it).
                 let keep_para = match parent.kind {
-                    Kind::Item => parent.children.is_empty(),
+                    Kind::Item => kids.len() == parent.start,
                     Kind::Cell { .. } => true,
                     _ => false,
                 };
                 if !keep_para && is_hoistable_images(&children) {
-                    parent
-                        .children
-                        .extend(children.into_iter().filter(|c| is_type(c, "image")));
+                    kids.extend(children.into_iter().filter(|c| is_type(c, "image")));
                 } else {
-                    parent.children.push(element("paragraph", None, children));
+                    kids.push(element("paragraph", None, children));
                 }
             }
             Kind::Heading(level) => {
                 trim_trailing_ws(&mut children);
-                parent.children.push(element(
+                kids.push(element(
                     "heading",
                     one_attr("level", Value::from(level)),
                     children,
@@ -785,7 +801,7 @@ impl Builder {
             }
             Kind::Quote => {
                 ensure_nonempty(&mut children);
-                parent.children.push(element("blockquote", None, children));
+                kids.push(element("blockquote", None, children));
             }
             Kind::Code => {
                 let mut text = f.buf;
@@ -798,7 +814,7 @@ impl Builder {
                     vec![Node::text(text)]
                 };
                 let attrs = f.attrs.or_else(|| one_attr("language", Value::Null));
-                parent.children.push(element("codeBlock", attrs, content));
+                kids.push(element("codeBlock", attrs, content));
             }
             Kind::Html => {
                 if html == HtmlPolicy::Text {
@@ -818,7 +834,7 @@ impl Builder {
                                 nodes.push(Node::text(line));
                             }
                         }
-                        parent.children.push(element("paragraph", None, nodes));
+                        kids.push(element("paragraph", None, nodes));
                     }
                 }
             }
@@ -832,7 +848,7 @@ impl Builder {
                         item.node_type = Some("taskItem".to_owned());
                         item.attrs = one_attr("checked", Value::Bool(t.unwrap_or(false)));
                     }
-                    parent.children.push(element("taskList", None, children));
+                    kids.push(element("taskList", None, children));
                 } else {
                     if tasks.iter().any(Option::is_some) {
                         for (item, t) in children.iter_mut().zip(&tasks) {
@@ -853,24 +869,24 @@ impl Builder {
                             children,
                         ),
                     };
-                    parent.children.push(node);
+                    kids.push(node);
                 }
             }
             Kind::Item => {
                 ensure_para_first(&mut children);
-                parent.children.push(element("listItem", None, children));
+                kids.push(element("listItem", None, children));
                 parent.tasks.push(f.task);
             }
             Kind::Table => {
                 if !children.is_empty() {
-                    parent.children.push(element("table", None, children));
+                    kids.push(element("table", None, children));
                 }
             }
-            Kind::Row { .. } => parent.children.push(element("tableRow", None, children)),
+            Kind::Row { .. } => kids.push(element("tableRow", None, children)),
             Kind::Cell { header } => {
                 ensure_nonempty(&mut children);
                 let ty = if header { "tableHeader" } else { "tableCell" };
-                parent.children.push(element(ty, None, children));
+                kids.push(element(ty, None, children));
             }
         }
     }
@@ -880,7 +896,8 @@ impl Builder {
         while self.stack.len() > 1 {
             self.close_top();
         }
-        let mut children = self.stack.pop().map(|f| f.children).unwrap_or_default();
+        self.stack.pop();
+        let mut children: Vec<Node> = self.kids.drain(..).collect();
         ensure_nonempty(&mut children);
         Node {
             node_type: Some("doc".to_owned()),
