@@ -177,9 +177,22 @@ cmd_notarize() {
     die "notarization failed (status: ${status:-unknown}, exit $rc)"
   fi
   [ "$upload" = "$target" ] || rm -f "$upload"
-  log "stapling $target"
-  xcrun stapler staple "$target"
-  xcrun stapler validate "$target"
+  staple "$target"
+}
+
+# Staple with retries: the ticket lookup (CloudKit) drops connections now and then,
+# and the ticket can take a moment to propagate after "Accepted".
+staple() {
+  local target="$1" attempt
+  for attempt in 1 2 3 4 5 6; do
+    log "stapling $target (attempt $attempt)"
+    if xcrun stapler staple "$target"; then
+      xcrun stapler validate "$target"
+      return 0
+    fi
+    sleep $((attempt * 15))
+  done
+  die "stapling failed after $attempt attempts"
 }
 
 cmd_dmg() {
