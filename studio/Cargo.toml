@@ -19,7 +19,7 @@ name = "tiptap-studio"
 path = "src/main.rs"
 
 [dependencies]
-tiptap-rusty-parser = { path = ".." }
+tiptap-rusty-parser = { path = "../parser" }
 gpui-kit = "0.8.0"
 serde_json = { version = "1", features = ["preserve_order"] }
 anyhow = "1"

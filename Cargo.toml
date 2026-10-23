@@ -1,33 +1,8 @@
-[package]
-name = "tiptap-rusty-parser"
-version = "0.5.1"
-edition = "2021"
-description = "Fast schema-agnostic parser and manipulator for Tiptap/ProseMirror JSONContent documents"
-license = "MIT"
-repository = "https://github.com/alexvcasillas/tiptap-studio"
-keywords = ["tiptap", "prosemirror", "json", "parser", "editor"]
-categories = ["parsing", "text-processing"]
-
-[package.metadata.docs.rs]
-all-features = true
-
-[dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
-thiserror = "2"
-unicode-segmentation = "1"
-
-[dev-dependencies]
-criterion = "0.5"
-proptest = "1"
-
-[[bench]]
-name = "bench"
-harness = false
+# Virtual workspace: the parser crate, its WASM bindings and the studio app.
+[workspace]
+resolver = "2"
+members = ["parser", "bindings/wasm", "studio"]
 
 [profile.release]
 lto = true
 codegen-units = 1
-
-[workspace]
-members = ["bindings/wasm", "studio"]
