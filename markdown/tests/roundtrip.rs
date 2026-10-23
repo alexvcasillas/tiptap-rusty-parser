@@ -191,3 +191,13 @@ fn regression_snippets_roundtrip() {
         assert_eq!(d1, d2, "{md:?} -> {out:?}");
     }
 }
+
+#[test]
+fn empty_link_destination_roundtrips() {
+    for md in ["[a]()", "[> ]()", "x [a](<> \"t\")"] {
+        let d1 = from_markdown_with(md, &ParseOptions::default());
+        let out = to_markdown_with(&d1, &RenderOptions::default());
+        let d2 = from_markdown_with(&out, &ParseOptions::default());
+        assert_eq!(d1, d2, "{md:?} -> {out:?}");
+    }
+}

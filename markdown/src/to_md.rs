@@ -1117,7 +1117,8 @@ fn mark_attr<'m>(m: &'m Mark, key: &str) -> Option<&'m str> {
 fn mark_rank(m: &Mark) -> Option<u8> {
     Some(match m.mark_type.as_str() {
         "link" => {
-            mark_attr(m, "href")?;
+            // `[a]()` is a link too: only a missing / non-string href is not
+            m.attrs.as_ref()?.get("href")?.as_str()?;
             0
         }
         "underline" => 1,

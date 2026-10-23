@@ -6,7 +6,7 @@ see [site](https://x.test/a) and [titled](https://x.test "Hi \"there\"")
 
 [**bold link**](https://x.test) [*em*](https://x.test)
 
-empty href
+[empty href](<>)
 
 no href
 
