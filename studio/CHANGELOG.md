@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/studio-v0.1.1...studio-v0.1.2) - 2026-10-23
+
+### Other
+
+- updated the following local packages: tiptap-rusty-parser
+
 ## [0.1.1](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/studio-v0.1.0...studio-v0.1.1) - 2026-10-23
 
 ### Fixed
