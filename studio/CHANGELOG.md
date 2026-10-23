@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/studio-v0.1.2...studio-v0.2.0) - 2026-10-23
+
+### Added
+
+- *(studio)* Tiptap logo in the app and as the app icon ([#57](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/57))
+
+### Fixed
+
+- *(studio)* theme overlay reaches component tokens, Tiptap purple accent, Copy JSON button with Copied feedback ([#58](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/58))
+- *(studio)* retry stapler validate in verify on transient ticket-lookup errors ([#55](https://github.com/alexvcasillas/tiptap-rusty-parser/pull/55))
+
 ## [0.1.2](https://github.com/alexvcasillas/tiptap-rusty-parser/compare/studio-v0.1.1...studio-v0.1.2) - 2026-10-23
 
 ### Other
