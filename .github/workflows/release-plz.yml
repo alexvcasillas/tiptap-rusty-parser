@@ -3,6 +3,9 @@ name: Release-plz
 on:
   push:
     branches: [main]
+  # Manual: publish the npm package at the current crate version only (no
+  # release-plz run). For when the crate published but the npm step failed.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -31,6 +34,7 @@ jobs:
           targets: wasm32-unknown-unknown
       - name: Run release-plz
         id: release
+        if: github.event_name == 'push'
         uses: release-plz/action@v0.5
         with:
           command: release
@@ -41,7 +45,7 @@ jobs:
       # desktop builds. (`releases_created` alone is true for a studio-only release.)
       - name: Inspect releases
         id: which
-        if: steps.release.outputs.releases_created == 'true'
+        if: github.event_name == 'push' && steps.release.outputs.releases_created == 'true'
         env:
           RELEASES: ${{ steps.release.outputs.releases }}
         run: |
@@ -57,16 +61,21 @@ jobs:
           TAG: ${{ steps.which.outputs.studio_tag }}
         run: gh workflow run studio-release.yml --ref "$TAG"
 
-      # Publish the WASM bindings to npm when a crate release was just cut.
+      - name: Decide on npm
+        id: npm
+        run: echo "publish=${{ github.event_name == 'workflow_dispatch' || steps.which.outputs.parser == 'true' }}" >> "$GITHUB_OUTPUT"
+
+      # Publish the WASM bindings to npm when a crate release was just cut, or
+      # on a manual dispatch (republish at the crate's current version).
       # Uses npm Trusted Publishing (OIDC) — no NPM_TOKEN, with provenance.
       - name: Install wasm-pack
-        if: steps.which.outputs.parser == 'true'
+        if: steps.npm.outputs.publish == 'true'
         uses: jetli/wasm-pack-action@v0.4.0
       - name: Build WASM package
-        if: steps.which.outputs.parser == 'true'
+        if: steps.npm.outputs.publish == 'true'
         run: wasm-pack build bindings/wasm --target bundler --release
       - name: Prepare npm package
-        if: steps.which.outputs.parser == 'true'
+        if: steps.npm.outputs.publish == 'true'
         run: |
           VERSION=$(cargo metadata --no-deps --format-version 1 \
             | python3 -c "import sys,json;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='tiptap-rusty-parser'))")
@@ -74,12 +83,12 @@ jobs:
           cp bindings/wasm/README.md bindings/wasm/pkg/ 2>/dev/null || true
           node -e "const f='bindings/wasm/pkg/package.json',p=require('./'+f);p.name='@tiptap-studio/rusty-parser';p.version='$VERSION';p.license='MIT';p.description='Fast WASM parser/manipulator for Tiptap/ProseMirror JSONContent';p.repository={type:'git',url:'https://github.com/alexvcasillas/tiptap-studio'};require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
       - uses: actions/setup-node@v4
-        if: steps.which.outputs.parser == 'true'
+        if: steps.npm.outputs.publish == 'true'
         with:
           node-version: 20
           registry-url: https://registry.npmjs.org
       - name: Publish to npm (OIDC)
-        if: steps.which.outputs.parser == 'true'
+        if: steps.npm.outputs.publish == 'true'
         run: |
           npm install -g npm@11.5.1 # pinned; Trusted Publishing needs npm >= 11.5.1
           npm publish --provenance --access public
@@ -89,6 +98,7 @@ jobs:
   # changelog from conventional commits since the last release.
   release-pr:
     name: Release PR
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
