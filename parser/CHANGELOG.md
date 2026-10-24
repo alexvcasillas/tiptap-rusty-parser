@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1](https://github.com/alexvcasillas/tiptap-studio/compare/v0.6.0...v0.6.1) - 2026-10-24
+
+### Other
+
+- *(parser)* exact-capacity child vectors on deserialize ([#70](https://github.com/alexvcasillas/tiptap-studio/pull/70))
+
 ## [0.6.0](https://github.com/alexvcasillas/tiptap-studio/compare/v0.5.2...v0.6.0) - 2026-10-24
 
 ### Other
