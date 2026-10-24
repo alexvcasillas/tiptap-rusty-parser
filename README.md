@@ -15,6 +15,10 @@
   <a href="https://tiptap-studio.alexvcasillas.dev">Website</a>
 </p>
 
+<p align="center">
+  <img src="docs/public/screenshots/inspect.png" alt="Tiptap Studio inspecting a document: node tree, rendered preview and the inspector with typed attribute editors" width="900">
+</p>
+
 ## What it does
 
 - **Inspect** a document as a node tree, a rendered preview, its JSON source and an
@@ -27,6 +31,10 @@
   problem.
 - **Find** nodes with a small query language: `type == heading && attrs.level > 1`.
 - **Browse** a Tiptap Document Server, read-only, with tokens kept in your keychain.
+
+<p align="center">
+  <img src="docs/public/screenshots/diff.png" alt="Diff mode: the change list, both trees tinted by change, and the before and after of the selected change" width="900">
+</p>
 
 Start with the [install guide](https://tiptap-studio.alexvcasillas.dev/docs/studio) and the [tour](https://tiptap-studio.alexvcasillas.dev/docs/studio/tour).
 
