@@ -6847,7 +6847,7 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tiptap-rusty-markdown"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "criterion",
  "pulldown-cmark",
@@ -6858,7 +6858,7 @@ dependencies = [
 
 [[package]]
 name = "tiptap-rusty-parser"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "criterion",
  "proptest",
@@ -6882,7 +6882,7 @@ dependencies = [
 
 [[package]]
 name = "tiptap-rusty-studio"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "anyhow",
  "gpui-kit",
