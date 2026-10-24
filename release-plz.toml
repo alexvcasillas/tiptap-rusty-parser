@@ -29,6 +29,12 @@ name = "tiptap-rusty-parser-wasm"
 release = false
 publish = false
 
+# Compiles the docs site's Rust examples as doctests; never released.
+[[package]]
+name = "docs-check"
+release = false
+publish = false
+
 # The GPUI desktop app: versioned and tagged by release-plz (never on crates.io).
 # It depends on the parser by path, so a parser bump also bumps the studio. The
 # `studio-v*` tag is what studio-release.yml builds; release-plz.yml dispatches

@@ -1,0 +1,46 @@
+---
+title: Files and settings
+description: Opening and saving documents, unsaved changes, and where settings are stored.
+---
+
+## Open a document
+
+Open a document as A with **Open** (⌘O, Ctrl+O on Windows and Linux), by dropping a file
+on the window, from **Open**'s list of recent files (the last ten), or from the command
+line. On macOS you can also open a `.json` file with Tiptap Studio from Finder, or drop
+one on its Dock icon.
+
+Without a file, the app opens a bundled sample document that shows headings, marks, a
+link, a list, a quote, a custom `callout` node, a rule and a code block.
+
+## Unsaved changes
+
+A dot in the title bar means A has unsaved edits. Before anything replaces it (opening
+another file, a Document Server document, closing the window or quitting), the app asks:
+**Save**, **Don't Save** or **Cancel**.
+
+## Changes on disk
+
+The app checks the open file every two seconds. If it changed on disk and you have no
+unsaved edits, it reloads silently. If you do, a banner offers **Reload** (take the file
+from disk) or **Keep mine**, and you can dismiss it.
+
+## Settings files
+
+Settings live in one folder:
+
+| OS | Folder |
+| --- | --- |
+| macOS | `~/Library/Application Support/tiptap-studio` |
+| Windows | `%APPDATA%\tiptap-studio` |
+| Linux | `$XDG_CONFIG_HOME/tiptap-studio`, or `~/.config/tiptap-studio` |
+
+| File | Contents |
+| --- | --- |
+| `layout.json` | Pane widths, hidden panes, the Source toggle and the window size |
+| `recent.json` | Recently opened files, newest first |
+| `servers.json` | Document Server profiles: label, app id and URL, never the token |
+
+Delete `layout.json` or `recent.json` to reset them. Tokens are not in this folder: they
+are in the operating system's keychain, see
+[Document Server](/docs/studio/document-server#tokens).

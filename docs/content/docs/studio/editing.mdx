@@ -1,0 +1,66 @@
+---
+title: Editing
+description: Change the structure, attributes, marks and text of a document.
+---
+
+Every edit is one undo step. ⌘Z undoes, ⌘⇧Z redoes (Ctrl+Z and Ctrl+Shift+Z or Ctrl+Y on
+Windows and Linux). Nothing touches the file until you save.
+
+## Structure actions
+
+The inspector's **Structure** section works on the selected node. A button is disabled
+when the action does not apply.
+
+| Action | What it does |
+| --- | --- |
+| **Insert** | Adds a node before, after or inside the selection. See below. |
+| **Wrap in…** | Wraps the node in a `blockquote`, a `bulletList › listItem`, an `orderedList › listItem`, a `callout`, or a type you enter. Not available on the root. |
+| **Lift** | Moves the node out of its parent into the grandparent, splitting the parent around it so its other children stay put. Needs a grandparent. |
+| **Split** | Splits a block with two or more children at its midpoint. On a node without children, such as a text node, splits its parent just before it. Disabled when it would only produce an empty block. |
+| **Join next** | Merges the next sibling's children into the selected block. Disabled when there is no next sibling or either side cannot hold children (a text node, for example). |
+| **Move up**, **Move down** | Swaps the node with its previous or next sibling. Also ⌥↑ / ⌥↓ (Alt). |
+| **Delete node** | Removes the node. Also ⌫ or Delete. Not available on the root. |
+
+## Inserting nodes
+
+**Insert** opens a chooser. Pick where the node goes (**before**, **after** or
+**inside** the selection), then a preset:
+
+- `paragraph`, `heading 1`, `heading 2`, `heading 3`
+- `bulletList › listItem › paragraph`, `orderedList › listItem › paragraph`,
+  `taskList › taskItem › paragraph`
+- `blockquote › paragraph`, `codeBlock`, `horizontalRule`
+- `hardBreak` (only inside a block that holds text)
+
+Inside a block that holds text you can also insert a **Text** node, and any custom type
+by name. Presets create the smallest valid subtree: empty text blocks get no content,
+because ProseMirror does not allow empty text nodes.
+
+## Keyboard editing
+
+With the tree or preview focused:
+
+| Key | Action |
+| --- | --- |
+| ⏎ | Insert an empty paragraph after the selected block (at the end of the document when nothing is selected) |
+| ⌘D | Duplicate the node after itself |
+| ⌘C | Copy the node as pretty JSON |
+| ⌘X | Cut the node |
+| ⌘V | Paste after the selection (at the end of the document when nothing is selected) |
+
+Use Ctrl instead of ⌘ on Windows and Linux. Paste accepts one node (an object with a
+`type`), an array of nodes, or a whole `doc`, whose content is pasted. These keys do not
+fire while you type in an inspector field.
+
+## Editing attributes, marks and text
+
+Change values directly in the inspector: see [The inspector](/docs/studio/inspect#the-inspector).
+Text changes apply when the field loses focus.
+
+## Edit JSON
+
+**Edit JSON** in the inspector's JSON section opens the selected node's complete JSON.
+Change anything, including the type, attributes, marks and children, then press **Apply**
+(⌘⏎, or Ctrl+Enter on Windows and Linux) to replace the node, or **Cancel** (Esc). If
+the JSON does not parse, the error shows above the editor and the document stays as it
+was.

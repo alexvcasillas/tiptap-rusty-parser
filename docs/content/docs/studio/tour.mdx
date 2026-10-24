@@ -1,0 +1,57 @@
+---
+title: Tour
+description: The window, Inspect and Diff mode, and the panes.
+---
+
+## Two modes
+
+The title bar switches between two modes:
+
+- **Inspect** works on one document, called **A**: read it, edit it, validate it.
+- **Diff** compares A with a second document, **B**, and lets you take B's changes into A.
+  See [Diff and merge](/docs/studio/diff).
+
+Next to the mode switch, the title bar shows the file name, a dot when A has unsaved
+edits, and a summary. In Inspect mode that is the node count, the number of text nodes
+and the number of node types the app does not recognise. In Diff mode it is the change
+counts: additions, removals, edits, the total and how many changes you dismissed.
+
+## The toolbar
+
+In both modes:
+
+| Control | What it does |
+| --- | --- |
+| **Open** | Open a document as A. The arrow next to it lists recent files. |
+| **Save**, **Save as…** | Write A to disk. |
+| **Undo**, **Redo** | Step through your edits. |
+| **Server…** | Browse a Tiptap Document Server. See [Document Server](/docs/studio/document-server). |
+| Find box | Search with the query language. See [Find](/docs/studio/find). |
+
+Inspect mode adds:
+
+| Control | What it does |
+| --- | --- |
+| **Copy JSON** | Copies the whole document as pretty JSON. The button reads **Copied** for two seconds. |
+| **Source** | Shows the JSON source instead of the rendered preview. |
+| **Schema** | Load, reload or unload a schema. See [Schema validation](/docs/studio/schema). |
+
+Diff mode adds **Open B…**, **Swap**, **Apply all to A**, and the **Only changed** and
+**Sync scroll** checkboxes.
+
+## Panes
+
+Inspect mode has three panes:
+
+- **Tree** on the left: every node, with a summary per row. The header has buttons to
+  expand or collapse everything.
+- **Preview** in the middle: the document rendered. Click a block to select it. **Source**
+  (⌘3, Ctrl+3 on Windows and Linux) swaps it for the pretty-printed JSON.
+- **Inspector** on the right: the selected node. See [Inspect](/docs/studio/inspect).
+
+Diff mode has four: the change list, tree A, tree B, and a before/after inspector.
+
+Drag a divider to resize a pane and double-click it to reset its width. ⌘1 hides or
+shows the left pane (the tree, or the change list in Diff mode) and ⌘2 the inspector.
+Pane widths and hidden panes (kept separately for each mode), the Source toggle and the
+window size are remembered between launches.

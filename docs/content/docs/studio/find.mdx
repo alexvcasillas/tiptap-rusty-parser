@@ -1,0 +1,46 @@
+---
+title: Find
+description: Search a document with the query language.
+---
+
+The find box in the toolbar searches the document with the same query language as the
+parser's `Query`. ⌘F (Ctrl+F) focuses it.
+
+Matches update as you type. The counter shows the current match and the total; ⏎ and
+⇧⏎ in the box, or ⌘G and ⌘⇧G (Ctrl+G, Ctrl+Shift+G) anywhere, select the next or
+previous match after the current selection, wrapping around. Esc
+clears the search and returns focus to the tree. Matching rows get an accent bar in the
+tree and matching blocks a light accent fill in the preview.
+
+**Only matches** (the filter button next to the counter) hides every tree row that is
+not a match or an ancestor of one.
+
+In Diff mode both trees show matches: B runs the same query, and each tree header shows
+how many it found. The counter and stepping cover A.
+
+If the query does not parse, the box is marked and a popover explains the error. The
+last valid query stays active until you fix it.
+
+## Query language
+
+A bare word matches a node whose own text or type contains it, ignoring case. Quote
+phrases. Fields compare exactly:
+
+| Query | Matches |
+| --- | --- |
+| `engine` | nodes whose text or type contains "engine" |
+| `"diff engine"` | the phrase "diff engine" |
+| `type == heading && attrs.level > 1` | headings of level 2 and deeper |
+| `type == paragraph and not children` | empty paragraphs |
+| `has mark link` | nodes with a `link` mark |
+| `marks.link.href ~ tiptap.dev` | links whose `href` contains "tiptap.dev" |
+| `attrs.level` | nodes that have a `level` attribute |
+| `text ~ todo \|\| text ~ fixme` | text containing "todo" or "fixme" |
+| `depth <= 1` | the root and its direct children |
+
+Operators: `==` (`=`) exact, `!=`, `<`, `<=`, `>`, `>=`, and `~` for a case-insensitive
+substring. Combine with `&&` (`and`, or just a space), `||` (`or`), `!` (`not`) and
+parentheses. Fields: `type`, `text`, `attrs.<path>`, `marks.<name>[.<path>]`, `mark`,
+`has mark <name>`, `has attr <path>`, `children`, `depth`. A field with no operator tests
+that it exists. Attribute paths go into objects and arrays (`attrs.meta.source`,
+`attrs.tags.0`). To search for a keyword like `type` as a word, quote it.

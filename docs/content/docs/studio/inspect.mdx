@@ -1,0 +1,57 @@
+---
+title: Inspect
+description: Read a document through the tree, the preview, the JSON source and the inspector.
+---
+
+## Selecting nodes
+
+Click a row in the tree or a block in the preview to select that node. The tree, the
+preview and the inspector always show the same selection. With the tree or preview
+focused, the arrow keys walk the document:
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ | Previous / next visible node |
+| ← | Collapse the node, or jump to its parent |
+| → | Expand the node, or step into its first child |
+| Home / End | First / last node |
+| Esc | Clear the selection |
+
+## The preview
+
+The preview renders paragraphs, headings, lists, blockquotes, code blocks and rules,
+with bold, italic, underline, strike, code and link marks. Images show as a placeholder
+with their `src`. A node type the app
+does not recognise renders as a dashed amber block with its type name, and you can still
+select and edit it like any other node.
+
+## The JSON source
+
+**Source** in the toolbar (⌘3, Ctrl+3 on Windows and Linux) replaces the preview with
+the document's pretty-printed JSON, with line numbers. It stays in sync with the
+selection both ways: selecting a node highlights its lines and scrolls to them, and
+clicking a line selects the deepest node on it. The source view is read-only; edit
+through the tree, the inspector or **Edit JSON**.
+
+## The inspector
+
+The inspector shows the selected node in sections:
+
+- **Identity**: the node type, its index path (for example `doc › 2 › 0`) and a summary
+  of its content.
+- **Text**: for text nodes, an editor for the text. The change is applied when the field
+  loses focus.
+- **Attributes**: one editor per attribute, chosen by value type. Strings get a text
+  field, numbers a stepper, booleans a switch, and objects or arrays a JSON text area.
+  Remove an attribute with its remove button, or add one by key.
+- **Marks**: for text nodes, a chip per mark: `bold`, `italic`, `underline`, `strike`,
+  `code`, `link`, plus any other mark already on the node. Click a chip to toggle the
+  mark. Mark attributes are editable. To add another mark, give its type and optionally
+  one attribute; typing `link` as the type pre-fills the key `href`.
+- **Structure**: insert, wrap and move nodes. See [Editing](/docs/studio/editing).
+- **JSON**: the node's own fields as JSON (children are summarised, not expanded), and a
+  button that copies the full node. **Edit JSON** opens the complete node for editing.
+- **Schema**: when a schema is loaded, the problems on this node. See
+  [Schema validation](/docs/studio/schema).
+
+Key order and unknown fields are preserved exactly as they appear in the file.

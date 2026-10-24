@@ -48,6 +48,13 @@ jobs:
       - name: Doctests (markdown)
         run: cargo test --doc -p tiptap-rusty-markdown
 
+      # Every ```rust block on the docs site (docs/content) compiles against
+      # the crates, and every page with Rust code is registered.
+      - name: Docs site examples
+        run: |
+          cargo clippy -p docs-check --all-targets -- -D warnings
+          cargo test -p docs-check
+
   # Informational: surfaces API-breaking changes vs the published crate so a
   # deliberate breaking version bump is visible up front. Never blocks merge.
   semver:

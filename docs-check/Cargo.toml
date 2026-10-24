@@ -1,0 +1,11 @@
+[package]
+name = "docs-check"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Compiles the Rust code blocks of the docs site (docs/content) as doctests."
+
+[dependencies]
+tiptap-rusty-parser = { path = "../parser" }
+tiptap-rusty-markdown = { path = "../markdown" }
+serde_json = { version = "1", features = ["preserve_order"] }
