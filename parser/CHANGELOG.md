@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0](https://github.com/alexvcasillas/tiptap-studio/compare/v0.5.2...v0.6.0) - 2026-10-24
+
+### Other
+
+- *(parser)* [**breaking**] box Node/Mark attrs and extra maps, serde without flatten ([#66](https://github.com/alexvcasillas/tiptap-studio/pull/66))
+
 ## [0.5.2](https://github.com/alexvcasillas/tiptap-studio/compare/v0.5.1...v0.5.2) - 2026-10-23
 
 ### Added
