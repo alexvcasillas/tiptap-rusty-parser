@@ -18,12 +18,8 @@ git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
 # Markdown <-> JSONContent, published to crates.io with its own tag.
-# On hold until 0.1.0 is published manually (crates.io Trusted Publishing
-# cannot create a new crate); then drop `release`/`publish` here and in Cargo.toml.
 [[package]]
 name = "tiptap-rusty-markdown"
-release = false
-publish = false
 changelog_path = "markdown/CHANGELOG.md"
 git_tag_name = "markdown-v{{ version }}"
 git_release_name = "tiptap-rusty-markdown {{ version }}"
