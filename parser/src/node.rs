@@ -15,18 +15,22 @@ use std::fmt;
 /// All structural fields are optional to faithfully distinguish "missing" from
 /// "empty" on roundtrip. Unknown top-level keys land in [`Node::extra`].
 ///
+/// `attrs` and `extra` are boxed so the common attr-less, extra-less node stays
+/// small (one pointer each); `extra: None` and `Some(empty)` compare equal and
+/// serialize identically.
+///
 /// Serde: serialized as a JSON object with keys in the order `type`, `attrs`,
 /// `content`, `marks`, `text` (each only when `Some`), then `extra` in its own
 /// order. On deserialize, a `null` known field reads as `None`, a repeated
 /// known field is a `duplicate field` error, and a repeated unknown key keeps
 /// its first position with the last value.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct Node {
     /// Node type, e.g. `"doc"`, `"paragraph"`, `"text"`.
     pub node_type: Option<String>,
 
     /// Node attributes.
-    pub attrs: Option<Map<String, Value>>,
+    pub attrs: Option<Box<Map<String, Value>>>,
 
     /// Child nodes.
     pub content: Option<Vec<Node>>,
@@ -37,24 +41,24 @@ pub struct Node {
     /// Text payload (text nodes only).
     pub text: Option<String>,
 
-    /// Any unknown/extra top-level fields, preserved verbatim.
-    pub extra: Map<String, Value>,
+    /// Any unknown/extra top-level fields, preserved verbatim (`None` = none).
+    pub extra: Option<Box<Map<String, Value>>>,
 }
 
 /// A mark applied to a node (e.g. `bold`, `italic`, `link`).
 ///
 /// Serde: `type` (required, string), then `attrs` (when `Some`), then `extra`;
 /// same `null`/duplicate rules as [`Node`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Mark {
     /// Mark type, e.g. `"bold"`.
     pub mark_type: String,
 
     /// Mark attributes (e.g. `href` for a link).
-    pub attrs: Option<Map<String, Value>>,
+    pub attrs: Option<Box<Map<String, Value>>>,
 
-    /// Any unknown/extra fields, preserved verbatim.
-    pub extra: Map<String, Value>,
+    /// Any unknown/extra fields, preserved verbatim (`None` = none).
+    pub extra: Option<Box<Map<String, Value>>>,
 }
 
 impl Mark {
@@ -70,7 +74,7 @@ impl Mark {
         Mark {
             mark_type: mark_type.into(),
             attrs: None,
-            extra: Map::new(),
+            extra: None,
         }
     }
 
@@ -78,9 +82,101 @@ impl Mark {
     #[inline]
     pub fn attr(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.attrs
-            .get_or_insert_with(Map::new)
+            .get_or_insert_with(Default::default)
             .insert(key.into(), value.into());
         self
+    }
+
+    /// Attrs map, if any.
+    #[inline]
+    pub fn attrs(&self) -> Option<&Map<String, Value>> {
+        self.attrs.as_deref()
+    }
+
+    /// Mutable attrs map, creating it if absent.
+    #[inline]
+    pub fn attrs_mut(&mut self) -> &mut Map<String, Value> {
+        self.attrs.get_or_insert_with(Default::default)
+    }
+
+    /// Unknown/extra fields, if any (may be `Some(empty)`).
+    #[inline]
+    pub fn extra(&self) -> Option<&Map<String, Value>> {
+        self.extra.as_deref()
+    }
+
+    /// Mutable extra map, creating it if absent.
+    #[inline]
+    pub fn extra_mut(&mut self) -> &mut Map<String, Value> {
+        self.extra.get_or_insert_with(Default::default)
+    }
+}
+
+impl Node {
+    /// Attrs map, if any.
+    #[inline]
+    pub fn attrs(&self) -> Option<&Map<String, Value>> {
+        self.attrs.as_deref()
+    }
+
+    /// Unknown/extra fields, if any (may be `Some(empty)`).
+    #[inline]
+    pub fn extra(&self) -> Option<&Map<String, Value>> {
+        self.extra.as_deref()
+    }
+
+    /// Mutable extra map, creating it if absent.
+    #[inline]
+    pub fn extra_mut(&mut self) -> &mut Map<String, Value> {
+        self.extra.get_or_insert_with(Default::default)
+    }
+
+    /// Extra field `key`.
+    #[inline]
+    pub fn extra_field(&self, key: &str) -> Option<&Value> {
+        self.extra.as_ref()?.get(key)
+    }
+
+    /// Remove extra field `key`, dropping the map once empty.
+    pub fn remove_extra(&mut self, key: &str) -> Option<Value> {
+        let m = self.extra.as_mut()?;
+        let prev = m.remove(key);
+        if m.is_empty() {
+            self.extra = None;
+        }
+        prev
+    }
+}
+
+/// `None` and `Some(empty)` are the same extra set.
+#[inline]
+pub(crate) fn extra_eq(
+    a: &Option<Box<Map<String, Value>>>,
+    b: &Option<Box<Map<String, Value>>>,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => x == y,
+        (Some(m), None) | (None, Some(m)) => m.is_empty(),
+    }
+}
+
+impl PartialEq for Node {
+    #[inline]
+    fn eq(&self, o: &Node) -> bool {
+        self.node_type == o.node_type
+            && self.text == o.text
+            && self.attrs == o.attrs
+            && self.marks == o.marks
+            && extra_eq(&self.extra, &o.extra)
+            && self.content == o.content
+    }
+}
+
+impl PartialEq for Mark {
+    #[inline]
+    fn eq(&self, o: &Mark) -> bool {
+        self.mark_type == o.mark_type && self.attrs == o.attrs && extra_eq(&self.extra, &o.extra)
     }
 }
 
@@ -193,7 +289,7 @@ impl<'de> Deserialize<'de> for Node {
                         }
                         Key::Other(k) => {
                             let v: Value = map.next_value()?;
-                            n.extra.insert(k, v);
+                            n.extra_mut().insert(k, v);
                         }
                     }
                 }
@@ -211,7 +307,7 @@ impl Serialize for Node {
             + self.content.is_some() as usize
             + self.marks.is_some() as usize
             + self.text.is_some() as usize
-            + self.extra.len();
+            + self.extra.as_ref().map_or(0, |e| e.len());
         let mut m = s.serialize_map(Some(len))?;
         if let Some(t) = &self.node_type {
             m.serialize_entry("type", t)?;
@@ -228,7 +324,7 @@ impl Serialize for Node {
         if let Some(t) = &self.text {
             m.serialize_entry("text", t)?;
         }
-        for (k, v) in &self.extra {
+        for (k, v) in self.extra.iter().flat_map(|e| e.iter()) {
             m.serialize_entry(k, v)?;
         }
         m.end()
@@ -248,7 +344,7 @@ impl<'de> Deserialize<'de> for Mark {
             fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Mark, A::Error> {
                 let mut mark_type: Option<String> = None;
                 let mut attrs = None;
-                let mut extra = Map::new();
+                let mut extra: Option<Box<Map<String, Value>>> = None;
                 let mut seen = 0u8;
                 while let Some(key) = map.next_key::<Key>()? {
                     match key {
@@ -265,7 +361,7 @@ impl<'de> Deserialize<'de> for Mark {
                         Key::Text => extra_entry(&mut map, &mut extra, "text")?,
                         Key::Other(k) => {
                             let v: Value = map.next_value()?;
-                            extra.insert(k, v);
+                            extra.get_or_insert_with(Default::default).insert(k, v);
                         }
                     }
                 }
@@ -285,23 +381,25 @@ impl<'de> Deserialize<'de> for Mark {
 #[inline]
 fn extra_entry<'de, A: MapAccess<'de>>(
     map: &mut A,
-    extra: &mut Map<String, Value>,
+    extra: &mut Option<Box<Map<String, Value>>>,
     key: &str,
 ) -> Result<(), A::Error> {
     let v: Value = map.next_value()?;
-    extra.insert(key.to_owned(), v);
+    extra
+        .get_or_insert_with(Default::default)
+        .insert(key.to_owned(), v);
     Ok(())
 }
 
 impl Serialize for Mark {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        let len = 1 + self.attrs.is_some() as usize + self.extra.len();
+        let len = 1 + self.attrs.is_some() as usize + self.extra.as_ref().map_or(0, |e| e.len());
         let mut m = s.serialize_map(Some(len))?;
         m.serialize_entry("type", &self.mark_type)?;
         if let Some(a) = &self.attrs {
             m.serialize_entry("attrs", a)?;
         }
-        for (k, v) in &self.extra {
+        for (k, v) in self.extra.iter().flat_map(|e| e.iter()) {
             m.serialize_entry(k, v)?;
         }
         m.end()

@@ -19,7 +19,7 @@ fn mark_err(s: &str) -> String {
 #[test]
 fn unknown_keys_keep_order_around_known_ones() {
     let n = node(r#"{"b":1,"type":"p","a":2,"text":"x","c":{"z":1,"y":2}}"#);
-    let keys: Vec<&str> = n.extra.keys().map(String::as_str).collect();
+    let keys: Vec<&str> = n.extra().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["b", "a", "c"]);
     // Known fields first, then extra in source order (nested order kept too).
     assert_eq!(
@@ -37,7 +37,7 @@ fn null_known_fields_read_as_missing() {
     assert_eq!(n.marks, None);
     assert_eq!(n.text, None);
     // Unknown nulls are kept verbatim.
-    assert_eq!(n.extra.get("z"), Some(&Value::Null));
+    assert_eq!(n.extra_field("z"), Some(&Value::Null));
     assert_eq!(serde_json::to_string(&n).unwrap(), r#"{"z":null}"#);
 }
 
@@ -100,7 +100,7 @@ fn mark_type_is_required_and_non_null() {
 fn mark_node_only_keys_are_extra() {
     let m: Mark =
         serde_json::from_str(r#"{"text":"t","type":"b","content":[1],"marks":0}"#).unwrap();
-    let keys: Vec<&str> = m.extra.keys().map(String::as_str).collect();
+    let keys: Vec<&str> = m.extra().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["text", "content", "marks"]);
     assert_eq!(
         serde_json::to_string(&m).unwrap(),
@@ -135,4 +135,21 @@ fn nested_roundtrip_via_value_and_tagged_enum() {
     let s = serde_json::to_string(&c).unwrap();
     let c2: Change = serde_json::from_str(&s).unwrap();
     assert_eq!(c2, c);
+}
+
+#[test]
+fn absent_and_empty_extra_are_equal() {
+    let a = Node::element("p");
+    let mut b = Node::element("p");
+    b.extra = Some(Default::default());
+    assert_eq!(a, b);
+    assert!(a.diff(&b).is_empty());
+    assert_eq!(serde_json::to_string(&b).unwrap(), r#"{"type":"p"}"#);
+    let mut m = Mark::new("bold");
+    m.extra_mut();
+    assert_eq!(m, Mark::new("bold"));
+    // Removing the last extra key drops the map.
+    let mut c = node(r#"{"type":"p","x":1}"#);
+    assert_eq!(c.remove_extra("x"), Some(json!(1)));
+    assert!(c.extra.is_none());
 }

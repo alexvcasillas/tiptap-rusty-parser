@@ -493,7 +493,11 @@ fn set_block_attrs(
         }
     }
     let node = block_mut(work, &target)?;
-    node.attrs = if attrs.is_empty() { None } else { Some(attrs) };
+    node.attrs = if attrs.is_empty() {
+        None
+    } else {
+        Some(Box::new(attrs))
+    };
     Ok(())
 }
 

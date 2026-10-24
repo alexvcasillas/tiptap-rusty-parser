@@ -155,7 +155,7 @@ impl Node {
     ) -> Result<(), BlockError> {
         let node = self.at_block(path)?;
         node.node_type = Some(new_type.into());
-        node.attrs = attrs;
+        node.attrs = attrs.map(Box::new);
         Ok(())
     }
 
@@ -313,7 +313,7 @@ impl Node {
             .collect();
         let wrapper = Node {
             node_type: Some(wrapper_type.into()),
-            attrs,
+            attrs: attrs.map(Box::new),
             content: Some(run),
             ..Node::default()
         };

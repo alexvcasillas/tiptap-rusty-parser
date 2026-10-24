@@ -1317,7 +1317,7 @@ impl Render for InspectorPanel {
             for m in &marks {
                 let mt = m.mark_type.clone();
                 let mut sec = section(format!("{mt} attrs"), None);
-                for (k, v) in m.attrs.iter().flatten() {
+                for (k, v) in m.attrs.iter().flat_map(|a| a.iter()) {
                     let editor = self.editor(
                         format!("m:{mt}:{k}"),
                         Target::MarkAttr(mt.clone(), k.clone()),

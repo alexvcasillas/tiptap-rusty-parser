@@ -57,7 +57,7 @@ fn build_mark(mark_type: String, attrs: JsValue) -> Result<Mark, JsError> {
     if !attrs.is_null() && !attrs.is_undefined() {
         let m: serde_json::Map<String, Value> = from_value(attrs).map_err(err)?;
         if !m.is_empty() {
-            mark.attrs = Some(m);
+            mark.attrs = Some(Box::new(m));
         }
     }
     Ok(mark)
@@ -269,7 +269,7 @@ impl TiptapDoc {
         if !attrs.is_null() && !attrs.is_undefined() {
             let m: serde_json::Map<String, Value> = from_value(attrs).map_err(err)?;
             if !m.is_empty() {
-                mark.attrs = Some(m);
+                mark.attrs = Some(Box::new(m));
             }
         }
         Ok(self.at_mut(&path)?.add_mark(mark))

@@ -1052,12 +1052,12 @@ fn describe(i: usize, changes: &[Change], a: &Node, b: &Node) -> Entry {
             ),
             Change::SetExtra { key, value, .. } => (
                 Some(key),
-                Some(val(na.and_then(|n| n.extra.get(key)))),
+                Some(val(na.and_then(|n| n.extra_field(key)))),
                 Some(short_value(value).into()),
             ),
             Change::RemoveExtra { key, .. } => (
                 Some(key),
-                Some(val(na.and_then(|n| n.extra.get(key)))),
+                Some(val(na.and_then(|n| n.extra_field(key)))),
                 Some("∅".into()),
             ),
             Change::Replace { node, .. } => (
@@ -1592,8 +1592,8 @@ impl DiffPanel {
 
         // ATTRIBUTES A → B
         let empty = serde_json::Map::new();
-        let aa = na.and_then(|n| n.attrs.as_ref()).unwrap_or(&empty);
-        let ba = nb.and_then(|n| n.attrs.as_ref()).unwrap_or(&empty);
+        let aa = na.and_then(|n| n.attrs.as_deref()).unwrap_or(&empty);
+        let ba = nb.and_then(|n| n.attrs.as_deref()).unwrap_or(&empty);
         let mut keys: Vec<&String> = aa.keys().collect();
         for k in ba.keys() {
             if !aa.contains_key(k) {

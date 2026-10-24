@@ -69,7 +69,7 @@ impl Node {
             return false;
         };
         mark.attrs
-            .get_or_insert_with(Map::new)
+            .get_or_insert_with(Default::default)
             .insert(key.into(), value.into());
         true
     }
@@ -88,7 +88,7 @@ impl Node {
 
     /// Mutable access to the attrs map, creating it if absent.
     pub fn attrs_mut(&mut self) -> &mut Map<String, Value> {
-        self.attrs.get_or_insert_with(Map::new)
+        self.attrs.get_or_insert_with(Default::default)
     }
 
     /// Set attr `key`, returning the previous value if any.
