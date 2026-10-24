@@ -1,0 +1,56 @@
+---
+title: Document Server
+description: Browse documents and versions on a Tiptap Document Server, read-only.
+---
+
+**Server…** in the toolbar opens a panel that lists the documents and versions on a
+[Tiptap Document Server](https://tiptap.dev/docs/collaboration/documents/rest-api) and opens
+them in the app. It only reads: the client sends `GET` requests and nothing else, so it
+cannot change anything on the server.
+
+## Add a server
+
+Add a profile with:
+
+- **Label**: any name, for example `Production`.
+- **App id**: your Tiptap Cloud app id. Or, for testing, a **Base URL override**: an
+  `https://` URL (plain `http://` only for localhost).
+- **Token**: a JWT with the `Documents:Api:All` permission.
+
+Then **Connect**. **Edit** and **Remove** manage the profile, and **Forget token**
+deletes the stored token.
+
+## Browse and open
+
+The panel lists the server's documents (**Load more** fetches the next page). Pick a
+document to see its versions, then:
+
+- **Open as A**: open it as the document you work on.
+- **Open as B**: load it as B for [Diff mode](/docs/studio/diff).
+- **Diff versions…**: pick a version for A, then one for B, and the app opens both in
+  Diff mode.
+
+The title bar shows where a document came from, for example `☁ my-app / doc-42 @ v3`.
+Replacing an A with unsaved edits asks **Save**, **Don't Save** or **Cancel**, as Open
+does. Saving a document that came from the server asks for a file path first, because
+the app never writes back to the server.
+
+## Tokens
+
+Bring your own token; nothing is bundled.
+
+- Tokens are stored in the operating system's keychain: Keychain on macOS, Credential
+  Manager on Windows, the Secret Service on Linux. The profile file holds only the label,
+  app id and URL.
+- Without a keychain, the token is kept in memory for the session only and the panel says
+  it is not saved.
+- The token is never written to a file, a log or the clipboard, the field is masked, and it
+  is never pre-filled.
+- A JWT is decoded (not verified) to show its audience, permissions and expiry. The panel
+  warns when it has no expiry or expires more than 24 hours from now. Prefer short-lived
+  JWTs signed on your server.
+- A token that is not a JWT, such as a legacy API secret, gets a stronger warning and is
+  only stored after you tick **Save to keychain anyway**.
+
+Requests time out after 10 seconds to connect and 30 seconds to read, and redirects are
+not followed, so the token is never sent to another host.

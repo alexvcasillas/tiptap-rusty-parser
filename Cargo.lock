@@ -1545,6 +1545,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "docs-check"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "tiptap-rusty-markdown",
+ "tiptap-rusty-parser",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"

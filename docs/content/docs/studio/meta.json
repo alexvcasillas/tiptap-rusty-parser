@@ -1,0 +1,19 @@
+{
+  "title": "Tiptap Studio",
+  "root": true,
+  "pages": [
+    "index",
+    "tour",
+    "---Working with documents---",
+    "inspect",
+    "editing",
+    "find",
+    "schema",
+    "diff",
+    "document-server",
+    "---Reference---",
+    "shortcuts",
+    "files",
+    "troubleshooting"
+  ]
+}

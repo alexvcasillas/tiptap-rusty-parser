@@ -1,0 +1,41 @@
+---
+title: Troubleshooting
+description: Opening unsigned builds and measuring performance.
+---
+
+## macOS says the app is damaged or cannot be opened
+
+Builds named `-unsigned` are not notarized, so Gatekeeper blocks them. Clear the quarantine
+flag once after copying the app to Applications:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Tiptap Studio.app"
+```
+
+Official releases are signed and notarized and do not need this.
+
+## Windows SmartScreen warns on launch
+
+The Windows build is not code-signed. Choose **More info**, then **Run anyway**.
+
+## Linux: the app does not start
+
+Tiptap Studio renders with Vulkan. Make sure a Vulkan driver is installed (for example
+Mesa's) along with `libxkbcommon`, `libxkbcommon-x11`, `libxcb`, `libwayland-client` and
+`fontconfig`.
+
+## A file does not open
+
+When a document fails to parse, the window shows the error with its line and column and an
+excerpt of the file, instead of closing. Fix the file and open it again, or pick another
+from the recent files listed there.
+
+## Measuring performance
+
+Set `TIPTAP_STUDIO_PROFILE=1` to print timings of the hot paths to stderr: loading and
+parsing, building the tree and preview, recomputing find and diff results, applying edits
+and their undo, and the time from an interaction to the next frame.
+
+```sh
+TIPTAP_STUDIO_PROFILE=1 tiptap-studio large.json
+```

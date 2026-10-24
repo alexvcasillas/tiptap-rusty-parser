@@ -1,0 +1,25 @@
+@import "tailwindcss";
+@import "fumadocs-ui/css/neutral.css";
+@import "fumadocs-ui/css/preset.css";
+
+/* Tiptap brand purple: 500 on light, 400 on dark (studio accent). */
+@theme {
+  --color-fd-primary: #6229ff;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-ring: #6229ff;
+}
+
+.dark {
+  --color-fd-primary: #7a52ff;
+  --color-fd-primary-foreground: #ffffff;
+  --color-fd-ring: #7a52ff;
+}
+
+html {
+  scrollbar-gutter: stable;
+}
+
+html > body[data-scroll-locked] {
+  margin-right: 0px !important;
+  --removed-body-scroll-bar-size: 0px !important;
+}
