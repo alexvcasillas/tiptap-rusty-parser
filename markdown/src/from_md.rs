@@ -897,7 +897,9 @@ impl Builder {
             self.close_top();
         }
         self.stack.pop();
-        let mut children: Vec<Node> = self.kids.drain(..).collect();
+        // Exact-sized copy; `mem::take` would keep the shared stack's spare capacity.
+        let mut children = Vec::with_capacity(self.kids.len());
+        children.append(&mut self.kids);
         ensure_nonempty(&mut children);
         Node {
             node_type: Some("doc".to_owned()),
