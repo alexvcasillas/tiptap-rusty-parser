@@ -20,4 +20,5 @@ libxkbcommon-x11, libxcb, libwayland-client and fontconfig (present on most desk
 Optional desktop entry: copy tiptap-studio.desktop to ~/.local/share/applications/
 and tiptap-studio.png to ~/.local/share/icons/hicolor/1024x1024/apps/.
 
-Source and docs: https://github.com/alexvcasillas/tiptap-studio/tree/main/studio
+Docs: https://tiptap-studio.alexvcasillas.dev/docs/studio
+Source: https://github.com/alexvcasillas/tiptap-studio

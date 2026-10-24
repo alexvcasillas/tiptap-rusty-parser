@@ -107,5 +107,5 @@ pub use text_diff::{diff_text, DiffGranularity, DiffOptions, SegKind, TextSegmen
 pub use transform::Transform;
 
 #[cfg(doctest)]
-#[doc = include_str!("../MIGRATION.md")]
-struct MigrationDoctests;
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

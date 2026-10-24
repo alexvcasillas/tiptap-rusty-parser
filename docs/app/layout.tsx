@@ -8,6 +8,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://tiptap-studio.alexvcasillas.dev"),
   title: {
     template: "%s | Tiptap Studio",
     default: "Tiptap Studio",

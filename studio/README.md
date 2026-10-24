@@ -1,4 +1,4 @@
-# tiptap-studio
+# Tiptap Studio
 
 Native desktop inspector, structural editor and differ for Tiptap/ProseMirror
 JSON documents. Built on [GPUI](https://gpui.rs) through
@@ -14,30 +14,25 @@ cargo run -p tiptap-rusty-studio -- a.json b.json # A + B for Diff mode
 cargo run -p tiptap-rusty-studio -- a.json --schema s.json # validate against a schema (--schema starter-kit = bundled)
 ```
 
-Not published. Not part of the parser's CI matrix (needs native windowing libs).
+**Using the app:** download a build from the [releases](https://github.com/alexvcasillas/tiptap-studio/releases) and read the [user guide](https://tiptap-studio.alexvcasillas.dev/docs/studio). This README is for working on the app itself.
 
 Release builds (signed macOS .dmg, Windows .zip, Linux .tar.gz) and secrets: [packaging/README.md](packaging/README.md).
 
 ## Layout
 
-```
-title bar   tiptap-studio · [Inspect | Diff] · file name · node stats
-toolbar     Open · Save · Save as… · Undo · Redo · Server… · JSON · Source · Schema
-panes       tree (280) · preview (fluid) · inspector (320), drag a divider to resize, double-click it to reset
-view        ⌘1 / ctrl-1 toggle tree (Diff: changes) · ⌘2 / ctrl-2 toggle inspector · ⌘3 / ctrl-3 preview ↔ JSON source; widths, collapsed panes and window bounds persist per mode in <config>/tiptap-studio/layout.json
-
-Diff mode
-title bar   a.json → b.json · +n −n ~n · total changes
-toolbar     … · Open B… · Swap · Apply all to A · Only changed · Sync scroll
-panes       changes (300) · tree A (fluid) · tree B (fluid) · before/after (300)
-keys        ↑/↓ step changes · ⏎ Take B · ⌫ Dismiss (again: restore) · ctrl/cmd-z undo
-```
+The window, both modes, the toolbar and the panes are described in the
+[tour](https://tiptap-studio.alexvcasillas.dev/docs/studio/tour); every shortcut is in the
+[shortcuts reference](https://tiptap-studio.alexvcasillas.dev/docs/studio/shortcuts). The code that builds them is in
+`workspace.rs` (title bar, toolbar, modes) and `layout.rs` (panes, persistence).
 
 ## Modules
 
 | File | Purpose |
 | --- | --- |
 | `main.rs` | boots `gpui_kit::application()`, applies the theme, opens one `Workspace` window |
+| `brand.rs` | the Tiptap logo, embedded from `assets/tiptap-logo.svg` and tinted with an explicit colour |
+| `files.rs` | open A (dialog, drag and drop, recent files, files sent by the OS), the unsaved-changes guard, parse errors as UI state, reload on external change, config dir |
+| `nav.rs` | keyboard navigation and editing keys in the `Document` context (tree, preview) |
 | `state.rs` | `DocumentState` entity: parser `Document` + selection path + expanded set + undo/redo. `edit()` runs a `Transform`, keeps the `Change` log, stores `invert()` for undo. Row summaries and type helpers |
 | `tree.rs` | `TreePanel`: flattens visible paths only when structure/expansion/find change (not on selection), labels on-screen rows at render, `uniform_list`; chevron toggles, click selects |
 | `preview.rs` | `PreviewPanel`: read-only render, virtualized (`list()` + `ListState`, one item per top-level block, heights remeasured per revision); click a block to select it; unknown types render as a dashed amber block |
