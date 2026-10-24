@@ -4,6 +4,8 @@ Fast Markdown ⇄ Tiptap / ProseMirror JSONContent conversion, built on
 [`tiptap-rusty-parser`](https://crates.io/crates/tiptap-rusty-parser) and
 [`pulldown-cmark`](https://crates.io/crates/pulldown-cmark).
 
+**Documentation:** [guide](https://tiptap-studio.alexvcasillas.dev/docs/markdown) · [API reference](https://docs.rs/tiptap-rusty-markdown)
+
 ```rust
 use tiptap_rusty_markdown::{from_markdown, to_markdown};
 
@@ -65,11 +67,14 @@ Options are plain serde data (no closures), ready for WASM/FFI.
 - Underline/sub/sup and `<br>` in cells export as HTML, which reimports as text under `HtmlPolicy::Text`.
 - Rare emphasis nesting between punctuation can re-parse differently.
 
+More in [Limitations](https://tiptap-studio.alexvcasillas.dev/docs/markdown/limitations).
+
 ## Performance
 
 Single pass over the event stream, no intermediate AST. On a 1 MB document
-(release, criterion): import ≈ 55 ms, export ≈ 9 ms.
-`cargo bench -p tiptap-rusty-markdown`.
+(release, criterion, Apple M2 Max): import ≈ 21 ms, export ≈ 4.8 ms. Run
+`cargo bench -p tiptap-rusty-markdown` for numbers on your machine, and see the
+[performance guide](https://tiptap-studio.alexvcasillas.dev/docs/markdown/performance).
 
 ## License
 

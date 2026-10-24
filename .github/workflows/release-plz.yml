@@ -81,7 +81,7 @@ jobs:
             | python3 -c "import sys,json;print(next(p['version'] for p in json.load(sys.stdin)['packages'] if p['name']=='tiptap-rusty-parser'))")
           cp LICENSE bindings/wasm/pkg/ 2>/dev/null || true
           cp bindings/wasm/README.md bindings/wasm/pkg/ 2>/dev/null || true
-          node -e "const f='bindings/wasm/pkg/package.json',p=require('./'+f);p.name='@tiptap-studio/rusty-parser';p.version='$VERSION';p.license='MIT';p.description='Fast WASM parser/manipulator for Tiptap/ProseMirror JSONContent';p.repository={type:'git',url:'https://github.com/alexvcasillas/tiptap-studio'};require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
+          node -e "const f='bindings/wasm/pkg/package.json',p=require('./'+f);p.name='@tiptap-studio/rusty-parser';p.version='$VERSION';p.license='MIT';p.description='Fast WASM parser/manipulator for Tiptap/ProseMirror JSONContent';p.repository={type:'git',url:'https://github.com/alexvcasillas/tiptap-studio'};p.homepage='https://tiptap-studio.alexvcasillas.dev/docs/javascript';require('fs').writeFileSync(f,JSON.stringify(p,null,2))"
       - uses: actions/setup-node@v4
         if: steps.npm.outputs.publish == 'true'
         with:

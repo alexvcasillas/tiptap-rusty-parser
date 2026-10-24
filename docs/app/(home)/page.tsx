@@ -1,3 +1,4 @@
+import Image from "next/image";
 import Link from "next/link";
 import { Logo } from "@/components/logo";
 import { releasesUrl } from "@/lib/shared";
@@ -81,6 +82,15 @@ export default function HomePage() {
           </Link>
         </div>
       </section>
+
+      <Image
+        src="/screenshots/inspect.png"
+        alt="Tiptap Studio inspecting a document: node tree, rendered preview and the inspector"
+        width={2880}
+        height={2168}
+        priority
+        className="w-full rounded-xl border border-fd-border shadow-2xl"
+      />
 
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {features.map((f) => (
