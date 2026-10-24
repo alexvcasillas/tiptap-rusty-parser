@@ -1,0 +1,160 @@
+---
+title: "@tiptap-studio/rusty-parser"
+description: The Rust parser compiled to WebAssembly, for browsers and bundlers.
+---
+
+`@tiptap-studio/rusty-parser` is [`tiptap-rusty-parser`](/docs/parser) compiled to
+WebAssembly. It parses, queries, edits, diffs and validates Tiptap / ProseMirror
+`JSONContent` from JavaScript, with the document held in WebAssembly memory.
+
+The npm version follows the crate. This section documents 0.6.1.
+
+## Install
+
+```sh
+npm install @tiptap-studio/rusty-parser
+```
+
+The package exports one class and six functions:
+
+| Export | Kind | Page |
+| --- | --- | --- |
+| `TiptapDoc` | class | [TiptapDoc](/docs/javascript/tiptap-doc) |
+| `mapPosition`, `mapPositionRange` | functions | [Positions](/docs/javascript/positions) |
+| `compose`, `compact`, `mapPath` | functions | [Change algebra](/docs/javascript/change-algebra) |
+| `validateNode` | function | [Schema](/docs/javascript/schema) |
+
+## Bundler setup
+
+The package is built with `wasm-pack build --target bundler`. It is an ES module
+(`"type": "module"`) whose entry file imports the WebAssembly binary directly:
+
+```js
+import * as wasm from "./tiptap_rusty_parser_wasm_bg.wasm";
+```
+
+The module instantiates itself when it is first imported. There is no `init()` function
+to call. Your toolchain has to support importing a `.wasm` file as a module:
+
+- **webpack 5**: turn on `experiments.asyncWebAssembly`.
+- **Vite**: add `vite-plugin-wasm`, plus `vite-plugin-top-level-await` unless your
+  `build.target` is `esnext`.
+- **Node.js**: Node 24.22 imports it directly and prints an `ExperimentalWarning` about
+  WebAssembly modules.
+
+For webpack:
+
+```js
+// webpack.config.js
+export default {
+  experiments: { asyncWebAssembly: true },
+};
+```
+
+For Vite:
+
+```js
+// vite.config.js
+import { defineConfig } from "vite";
+import wasm from "vite-plugin-wasm";
+import topLevelAwait from "vite-plugin-top-level-await";
+
+export default defineConfig({
+  plugins: [wasm(), topLevelAwait()],
+});
+```
+
+Next.js 16 builds with Turbopack by default, and a `webpack()` hook in `next.config` only
+applies to webpack builds (`next build --webpack`).
+
+Check your bundler's documentation for the exact setting in the version you use. Only the
+bundler build is published. A `--target web` build, which loads with an `init()` call and
+needs no bundler support, is not on npm.
+
+## First example
+
+```ts
+import { TiptapDoc } from "@tiptap-studio/rusty-parser";
+
+const doc = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [
+    { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Title" }] },
+    { type: "paragraph", content: [{ type: "text", text: "Hello world" }] },
+  ],
+});
+
+doc.textContent(); // "TitleHello world"
+doc.wordCount(); // 3
+
+// Find nodes by index path, then edit by path.
+const [headingPath] = doc.pathsByType("heading"); // [0]
+doc.setAttr(headingPath, "level", 1);
+doc.addMark([0, 0], "bold", undefined); // true
+
+const json = doc.toJSON(); // a plain JSONContent object
+doc.free();
+```
+
+Paths are plain `number[]` index paths from the root: `[]` is the root, `[1, 0]` is the
+first child of the second child. See [Paths and positions](/docs/parser/paths-and-positions)
+for the model.
+
+## How values cross the boundary
+
+The document tree stays inside WebAssembly. Only the values you pass in and get back cross
+the boundary, converted with `serde-wasm-bindgen`:
+
+- Arguments such as paths, nodes, marks, attributes, schemas and change lists are plain JS
+  objects and arrays.
+- Return values are plain JS objects and arrays. They are copies: changing a node returned
+  by `nodeAt` or `byType` does not change the document. Edit through the `TiptapDoc`
+  methods instead.
+- Unknown node and mark fields are kept, so `fromJSON` then `toJSON` returns the same
+  content.
+
+## Memory and disposal
+
+A `TiptapDoc` owns memory inside the WebAssembly instance. JavaScript's garbage collector
+cannot see how large it is.
+
+- Call `doc.free()` when you are done with a document. Using the object afterwards throws.
+- The class also implements `Symbol.dispose`, so a runtime with explicit resource
+  management can free it at the end of a scope with `using`:
+
+  ```ts
+  {
+    using doc = TiptapDoc.fromJSON(json);
+    doc.textContent();
+  } // doc.free() runs here
+  ```
+
+- A `TiptapDoc` that is never freed is released by a `FinalizationRegistry` after it is
+  garbage collected, where the runtime supports one. That can happen late or not at all,
+  so free documents explicitly in long-running code, especially in loops.
+
+Values returned by methods, such as `toJSON()` or a change list, are ordinary JS values and
+need no freeing.
+
+## Errors
+
+Methods throw a JS `Error` when an argument does not have the expected shape, when a path
+does not resolve, or when an edit is out of range. The message is the Rust error's text,
+for example `pos: 99 out of range (document size 20)`. See
+[TypeScript and errors](/docs/javascript/typescript#errors).
+
+## What is not exposed
+
+The JS API is a subset of the Rust crate. These Rust features have no JS binding yet:
+
+- the [query language](/docs/parser/query-language) and closure queries;
+- [transactions](/docs/parser/transactions) (`Transform`), see
+  [Transactions and undo](/docs/javascript/transactions) for the JS equivalent;
+- `unmap_path` and `rebase_change` from the [change algebra](/docs/parser/change-algebra);
+- custom leaf policies for flat positions;
+- source maps and Markdown conversion.
+
+<Cards>
+  <Card title="TiptapDoc" href="/docs/javascript/tiptap-doc">Every method, grouped by purpose.</Card>
+  <Card title="TypeScript and errors" href="/docs/javascript/typescript">The shipped types and how failures surface.</Card>
+</Cards>

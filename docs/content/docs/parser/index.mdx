@@ -1,0 +1,93 @@
+---
+title: tiptap-rusty-parser
+description: A Rust crate to parse, walk, query, mutate and serialize Tiptap / ProseMirror JSON documents.
+---
+
+`tiptap-rusty-parser` reads Tiptap (ProseMirror) `JSONContent` documents into a mutable
+tree of nodes and writes them back out. You can find nodes with closures or a small
+query language, edit the tree in place, address nodes by index path or by ProseMirror
+position, diff two documents, validate against a schema and render HTML.
+
+The crate is built around three rules:
+
+- **Schema-agnostic.** Any node or mark type is accepted. A schema is optional and only
+  used when you ask for validation.
+- **Faithful roundtrip.** Unknown node types and unknown JSON fields are kept and written
+  back. Missing and empty fields stay distinct, so `"content": []` does not turn into a
+  missing key or the other way round.
+- **Performance first.** Queries return borrows instead of clones, and edits happen in
+  place on the tree.
+
+Tiptap Studio runs every document operation through this crate.
+
+## Install
+
+```toml
+[dependencies]
+tiptap-rusty-parser = "0.6"
+```
+
+The crate uses Rust edition 2021 and depends on `serde`, `serde_json` (with
+`preserve_order`), `thiserror` and `unicode-segmentation`.
+
+## Quick start
+
+Parse a document, find nodes, change them and serialize the result:
+
+```rust
+use tiptap_rusty_parser::{Document, Mark, Node, Query};
+
+let mut doc = Document::from_json_str(
+    r#"{"type":"doc","content":[
+        {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Notes"}]},
+        {"type":"paragraph","content":[{"type":"text","text":"hello"}]}
+    ]}"#,
+)?;
+
+// Query with a closure, or with the query language.
+assert_eq!(doc.by_type("paragraph").len(), 1);
+let q = Query::parse("type == heading && attrs.level == 1")?;
+assert_eq!(q.find_paths(doc.root()), vec![vec![0]]);
+
+// Bold every text node and append a paragraph.
+let changed = doc.replace_all(
+    |n| n.node_type.as_deref() == Some("text"),
+    |n| {
+        n.add_mark(Mark::new("bold"));
+    },
+);
+assert_eq!(changed, 2);
+doc.push_child(Node::element("paragraph").with_text("bye"));
+
+assert_eq!(doc.text_content_with_separator("\n"), "Notes\nhello\nbye");
+assert!(doc.to_json_str()?.ends_with(r#"{"type":"paragraph","content":[{"type":"text","text":"bye"}]}]}"#));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Document` derefs to its root `Node`, so every `Node` method works on a `Document`
+directly.
+
+## API reference
+
+The full API reference, with every type and method, is on
+[docs.rs](https://docs.rs/tiptap-rusty-parser/latest/tiptap_rusty_parser/). These pages
+explain how the pieces fit together.
+
+## Next
+
+<Cards>
+  <Card title="Data model" href="/docs/parser/data-model">`Document`, `Node`, `Mark` and how unknown fields survive.</Card>
+  <Card title="Parsing" href="/docs/parser/parsing">Every way in and out, plus source maps.</Card>
+  <Card title="Querying" href="/docs/parser/querying">Walk the tree and find nodes with closures and selectors.</Card>
+  <Card title="Query language" href="/docs/parser/query-language">`type == heading && attrs.level > 1` and the rest.</Card>
+  <Card title="Paths and positions" href="/docs/parser/paths-and-positions">Index paths, ProseMirror positions and position maps.</Card>
+  <Card title="Mutating" href="/docs/parser/mutating">Marks, attributes, children, text and bulk edits.</Card>
+  <Card title="Normalizing" href="/docs/parser/normalizing">Merge adjacent text and drop empty nodes.</Card>
+  <Card title="Range and block editing" href="/docs/parser/range-and-block-editing">Editor-style text and block commands.</Card>
+  <Card title="Text" href="/docs/parser/text">Plain text, character and word counts.</Card>
+  <Card title="Transactions" href="/docs/parser/transactions">Edit while recording an invertible change log.</Card>
+  <Card title="Schema" href="/docs/parser/schema">Opt-in validation against a schema.</Card>
+  <Card title="Diffing" href="/docs/parser/diffing">Structural diff, apply and invert.</Card>
+  <Card title="HTML" href="/docs/parser/html">Render a document to HTML.</Card>
+  <Card title="Errors" href="/docs/parser/errors">Every error type in one place.</Card>
+</Cards>

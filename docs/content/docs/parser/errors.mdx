@@ -1,0 +1,166 @@
+---
+title: Errors
+description: Every error type the parser returns, what causes it and which calls produce it.
+---
+
+Each area of the crate has its own error type, so a `match` only covers what can actually
+go wrong. All of them implement `std::error::Error` and `Display`, so `?` into
+`Box<dyn std::error::Error>` works everywhere.
+
+```rust
+# use tiptap_rusty_parser::{Document, PosContent, PosEdit, Query};
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut doc = Document::from_json_str(
+        r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hi"}]}]}"#,
+    )?; // ParseError
+    let q = Query::parse("type == paragraph")?; // QueryError
+    assert_eq!(q.find_paths(doc.root()), vec![vec![0]]);
+    doc.apply_pos_edits(&[PosEdit::Insert {
+        pos: 3,
+        content: PosContent::Text { text: "!".into(), marks: None },
+    }])?; // PosEditError
+    assert_eq!(doc.text_content(), "hi!");
+    Ok(())
+}
+run().unwrap();
+```
+
+## Overview
+
+| Error | Returned by | Means |
+| --- | --- | --- |
+| `ParseError` | `Document::from_json_str`, `from_value`, `from_reader`, `to_json_str`, `to_string_pretty`, `to_value`, `Schema::from_json_str` | The JSON could not be read or written. |
+| `ApplyError` | `apply`, `invert`, `Node::apply`, `Node::invert`, `Node::apply_inverting`, `Transform` field and child steps | A change's path or index does not resolve. |
+| `RangeError` | `insert_text`, `delete_range`, `replace_range`, `add_mark_range`, `remove_mark_range`, `toggle_mark_range` | An inline `Position` or `Range` is invalid for the block. |
+| `BlockError` | `set_block_type`, `split_block`, `split_block_at`, `join_blocks`, `wrap`, `wrap_range`, `lift`, `Transform` structural and inline steps | A block edit's path, index or range is invalid. |
+| `PosError` | `resolve`, `pos_before`, `pos_after`, `pos_in_text`, `pos_to_inline`, `inline_to_pos`, and the `_with` forms of the first three | A flat position or a path does not resolve. |
+| `PosEditError` | `apply_pos_edits`, `apply_pos_edits_mapped` | A position-addressed batch could not be applied. |
+| `QueryError` | `Query::parse` | The query string is invalid. |
+| `SourceMapError` | `SourceMap::build` | The text is not a JSON node tree. |
+| `ParseExprError` | `ContentExpr::parse`, `NodeSpec::try_content_match` | A content expression is invalid. |
+
+Schema validation does not return an error. It returns a list of `Violation`s; see
+[Schema validation](/docs/parser/schema#violations).
+
+`ParseError` derives only `Debug`. Every other error type also derives `Clone`,
+`PartialEq` and `Eq`, so tests can compare them with `assert_eq!`.
+
+## `ParseError`
+
+| Variant | When |
+| --- | --- |
+| `Json(serde_json::Error)` | Malformed JSON, a field with the wrong type (such as a non-string `type`), a known field repeated in one object, or an invalid content expression in a schema. |
+| `Io(std::io::Error)` | `Document::from_reader` could not read. |
+
+The crate's `Result<T>` alias is `std::result::Result<T, ParseError>`.
+
+```rust
+# use tiptap_rusty_parser::{Document, ParseError};
+let err = Document::from_json_str(r#"{"type":"doc","type":"doc"}"#).unwrap_err();
+assert!(matches!(err, ParseError::Json(_)));
+```
+
+## `ApplyError`
+
+A struct with one field, `path: Vec<usize>`. For a missing node it is the change's path.
+For a child index out of range it is the parent path with the index appended. Lists from
+`diff` and `Transform` never fail on the tree they were made for. See
+[Transactions](/docs/parser/transactions#applyerror) for what each API leaves behind
+after an error.
+
+## `RangeError`
+
+| Variant | When |
+| --- | --- |
+| `ChildOutOfRange { child }` | `Position::child` is past the end of the block's content. |
+| `OffsetOutOfRange { child, offset }` | `Position::offset` is past the end of that child's text. |
+| `NotTextNode { child }` | A non-zero `offset` points into a child that is not text. |
+| `InvertedRange` | The range's end comes before its start. |
+
+## `BlockError`
+
+| Variant | When |
+| --- | --- |
+| `PathNotFound { path }` | No node at `path`. |
+| `IndexOutOfRange { parent, index }` | A child index is out of range for its parent. |
+| `NoParent` | The edit needs a parent, and sometimes a grandparent, that the path does not have. `lift` on a top-level block returns it. |
+| `NoPreviousSibling { path }` | `join_blocks` with index 0. |
+| `InvalidRange { parent, start, end }` | A `BlockRange` is inverted or runs past the parent's children. |
+| `Range(RangeError)` | A mid-text split position was invalid. |
+
+```rust
+# use tiptap_rusty_parser::{doc, BlockError, Node};
+let mut d = doc([Node::element("paragraph")]);
+assert_eq!(
+    d.join_blocks(&[], 0),
+    Err(BlockError::NoPreviousSibling { path: vec![0] })
+);
+```
+
+## `PosError`
+
+| Variant | When |
+| --- | --- |
+| `OutOfRange { pos, size }` | `pos` is past the end of the document. `size` is the largest valid position. |
+| `PathNotFound { path }` | An index path does not resolve. |
+| `OffsetOutOfRange { path, offset }` | `offset` is out of range: an index in `path` past its parent's last child, or a text offset past the end of the text (or on a node without text). The message says "child index" in both cases. |
+
+```rust
+# use tiptap_rusty_parser::{doc, Node, PosError};
+let d = doc([Node::element("paragraph").with_text("hi")]);
+assert!(matches!(d.resolve(99), Err(PosError::OutOfRange { pos: 99, .. })));
+```
+
+## `PosEditError`
+
+| Variant | When |
+| --- | --- |
+| `Pos(PosError)` | A position in the batch does not resolve. |
+| `Range(RangeError)` | An inline edit failed, or an edit has `from` greater than `to`. |
+| `Block(BlockError)` | Joining blocks for a cross-block edit failed. |
+| `Apply(ApplyError)` | A change failed to apply. The current batch code never returns it. |
+| `UnsupportedSpan { from, to }` | A span crosses blocks that are not siblings under one parent. |
+| `OverlappingEdits { from, to }` | Two edits in the batch overlap. |
+
+On any `PosEditError` the document is unchanged. See
+[Position editing](/docs/parser/position-editing#errors).
+
+## `QueryError`
+
+A struct with `offset`, the byte offset in the query string, and `kind`, a
+`QueryErrorKind`. `QueryErrorKind` is `#[non_exhaustive]`, so a `match` on it needs a
+wildcard arm.
+
+| `QueryErrorKind` | When |
+| --- | --- |
+| `Empty` | The query is empty or only whitespace. |
+| `UnexpectedEnd { expected }` | The query ended where `expected` was required. |
+| `UnexpectedToken { found, expected }` | `found` appeared where `expected` was required. |
+| `UnterminatedString` | A quoted string has no closing quote. |
+| `LoneOperator(char)` | A single `&` or `\|` instead of `&&` or `\|\|`. |
+| `UnknownField(name)` | A word followed by an operator is not a known field. The message suggests `attrs.name`. |
+| `ExpectedNumber` | A numeric field such as `children` or `depth` got something else. |
+| `InvalidOperator` | The operator does not apply to the field, such as `children ~ 2`. |
+| `EmptyPath` | A dotted path has an empty segment, such as `attrs.` or `attrs..x`. |
+
+```rust
+# use tiptap_rusty_parser::{Query, QueryErrorKind};
+let err = Query::parse("level == 2").unwrap_err();
+assert_eq!(err.kind, QueryErrorKind::UnknownField("level".into()));
+assert_eq!(err.to_string(), "unknown field `level` (try attrs.level) (at byte 0)");
+```
+
+See [Query language](/docs/parser/query-language) for the grammar.
+
+## `SourceMapError`
+
+A struct with `offset`, the byte where scanning stopped, and `message`, what was expected
+there. `SourceMap::build` returns it when the text is not a JSON node object.
+`SourceMap::pretty` serializes the node itself, so it cannot fail.
+
+## `ParseExprError`
+
+A struct with `pos`, the byte offset in the expression, and `msg`, the reason. It displays
+as `invalid content expression at byte {pos}: {msg}`. Causes include a missing `)`, a
+range whose maximum is below its minimum, a repeat count above 1000, and trailing input.
+`NodeSpec::content_match` panics with this error instead of returning it.

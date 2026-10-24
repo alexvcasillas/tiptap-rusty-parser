@@ -1,0 +1,107 @@
+---
+title: tiptap-rusty-markdown
+description: Convert Markdown to Tiptap JSONContent and back, in Rust.
+---
+
+`tiptap-rusty-markdown` turns Markdown into a Tiptap / ProseMirror document and turns a
+document back into Markdown. It reads CommonMark plus the GitHub Flavored Markdown (GFM)
+extensions for tables, task lists and strikethrough, and writes the same dialect.
+
+It builds on [`tiptap-rusty-parser`](/docs/parser): import returns a parser `Document`, and
+export takes any parser `Node`. Imported documents use the node and mark names of Tiptap's
+StarterKit (`paragraph`, `heading`, `bulletList`, `bold`, `link`, …), plus `table`,
+`taskList` and `image` for the GFM extensions.
+
+This page documents version 0.1.1.
+
+## Install
+
+```toml
+[dependencies]
+tiptap-rusty-markdown = "0.1"
+```
+
+Or with Cargo:
+
+```sh
+cargo add tiptap-rusty-markdown
+```
+
+The crate re-exports `Document` and `Node` from `tiptap-rusty-parser`, so you only need
+the parser as a direct dependency when you use the rest of its API.
+
+## Markdown to JSONContent
+
+`from_markdown` parses a string and returns a `Document`. It never fails and never panics:
+any input produces a document with at least one block.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let doc = from_markdown("# Hello\n\nSome **bold** text.");
+let json = doc.to_value()?;
+
+assert_eq!(json["content"][0]["type"], "heading");
+assert_eq!(json["content"][0]["attrs"]["level"], 1);
+assert_eq!(json["content"][1]["content"][1]["text"], "bold");
+assert_eq!(json["content"][1]["content"][1]["marks"][0]["type"], "bold");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`doc.to_json_str()` gives you the JSON string to hand to Tiptap's `setContent`.
+
+## JSONContent to Markdown
+
+`to_markdown` renders a `Node` (a `Document` derefs to its root node) and returns a
+`String`. It accepts any tree, including node and mark types it does not know.
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, Document};
+
+let doc = Document::from_json_str(
+    r#"{"type":"doc","content":[
+        {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Hi"}]},
+        {"type":"paragraph","content":[
+            {"type":"text","text":"a "},
+            {"type":"text","text":"b","marks":[{"type":"bold"}]},
+            {"type":"text","text":"c","marks":[{"type":"bold"}]}]}]}"#,
+)?;
+
+assert_eq!(to_markdown(&doc), "## Hi\n\na **bc**\n");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+Adjacent text nodes that share a mark come out as one `**…**` run.
+
+## Round trips
+
+Export escapes text so that importing the output gives the same document back. A document
+that came from `from_markdown` exports to Markdown that imports to the same JSON:
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, to_markdown};
+
+let md = "# Title\n\n- one\n- two *three*\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+let doc = from_markdown(md);
+let again = from_markdown(&to_markdown(&doc));
+
+assert_eq!(doc, again);
+```
+
+The exceptions are listed in [Limitations](/docs/markdown/limitations).
+
+## Options
+
+Both directions have a `_with` variant that takes an options struct:
+[`ParseOptions`](/docs/markdown/import#options) for import and
+[`RenderOptions`](/docs/markdown/export#options) for export. Both are plain data with
+`serde` support and camelCase field names, so they can be loaded from JSON.
+
+<Cards>
+  <Card title="Import" href="/docs/markdown/import">Every option, and how each Markdown construct maps to nodes and marks.</Card>
+  <Card title="Export" href="/docs/markdown/export">Every option, and how nodes, marks and unknown types are written.</Card>
+  <Card title="Limitations" href="/docs/markdown/limitations">What does not survive a round trip.</Card>
+  <Card title="Performance" href="/docs/markdown/performance">How it is built and how to benchmark it.</Card>
+</Cards>
+
+The API reference is on [docs.rs](https://docs.rs/tiptap-rusty-markdown).

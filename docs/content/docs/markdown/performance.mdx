@@ -1,0 +1,55 @@
+---
+title: Performance
+description: How the converter is built for speed, and how to measure it.
+---
+
+Both directions make a single pass over their input and build no intermediate tree.
+
+## Import
+
+Import walks the event stream of [`pulldown-cmark`](https://crates.io/crates/pulldown-cmark)
+once, keeping a stack of open nodes. There is no Markdown AST in between.
+
+- Text stays borrowed from the source until it lands in a text node.
+- Adjacent text runs with identical marks are merged in place, so no normalization pass
+  is needed afterwards.
+- All open containers share one child stack. When a container closes, its children move
+  into an exactly sized `Vec`, so the finished tree holds no spare capacity.
+
+## Export
+
+Export writes into one output `String`, sized up front from an estimate of the tree.
+
+- Line prefixes such as `> ` and list indentation live on a prefix stack and are applied
+  when a newline is written. There are no per-line buffers and no post-processing passes.
+- No nodes are cloned.
+- Escaping scans for the few bytes that can need it in the middle of a line. The
+  line-start rules run only at line starts.
+
+## Measured
+
+The crate ships a [criterion](https://crates.io/crates/criterion) benchmark. Its input is a
+generated document of repeated sections, each with headings, marked-up paragraphs, nested
+and task lists, a code block, a table and a blockquote. One run on an Apple M2 Max, for
+the 1 MB input:
+
+| Benchmark | Time |
+| --- | --- |
+| `md_import_large`: `from_markdown` | ~21 ms |
+| `md_export_large`: `to_markdown` | ~4.8 ms |
+| `md_roundtrip_large`: import then export | ~25 ms |
+
+Numbers depend on the machine and the content. Run the benchmark on yours from the
+repository root:
+
+```sh
+cargo bench -p tiptap-rusty-markdown
+```
+
+It also measures a 4 KB, README-sized input (`md_import_small`, `md_export_small`).
+
+## Tips
+
+- Reuse one `ParseOptions` or `RenderOptions` value. Both are passed by reference.
+- `to_markdown` takes `&Node`, so you can export a subtree, such as one section of a
+  document, without cloning it into a new document.

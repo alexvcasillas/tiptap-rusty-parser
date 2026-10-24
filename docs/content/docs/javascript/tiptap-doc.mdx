@@ -1,0 +1,234 @@
+---
+title: TiptapDoc
+description: The document handle, and every method grouped by purpose.
+---
+
+`TiptapDoc` holds one document inside WebAssembly. You create it from JSON, read and edit
+it through its methods, and serialize it back. It has no public constructor: use
+`TiptapDoc.fromJSON` or `TiptapDoc.fromJSONString`.
+
+```ts
+import { TiptapDoc } from "@tiptap-studio/rusty-parser";
+
+const doc = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [
+    { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Title" }] },
+    { type: "paragraph", content: [{ type: "text", text: "Hello world" }] },
+  ],
+});
+
+doc.pathsByType("text"); // [[0, 0], [1, 0]]
+doc.nodeAt([1, 0]); // { type: "text", text: "Hello world" }
+```
+
+## Conventions
+
+- **Paths** are `number[]` index paths. `[]` is the root.
+- **Nodes** are plain `JSONContent` objects, in and out. Returned nodes are copies.
+- **Optional arguments** (`attrs`, `marks`, `options`) accept `undefined` or `null`. The
+  generated TypeScript declares every parameter as required, so pass `undefined`
+  explicitly in TypeScript. See [TypeScript](/docs/javascript/typescript).
+- **Errors** are thrown as JS `Error`s. A mutation on a path with no node throws
+  `no node at path`.
+
+The types named below (`JSONContent`, `Mark`, `Position`, `Range`, `Change`, …) are
+declared in the package's `.d.ts`.
+
+## Create and serialize
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `TiptapDoc.fromJSON(value: JSONContent)` | `TiptapDoc` | Throws if `value` is not a node object. |
+| `TiptapDoc.fromJSONString(json: string)` | `TiptapDoc` | Throws on invalid JSON, for example `json error: EOF while parsing an object at line 1 column 1`. |
+| `toJSON()` | `JSONContent` | A plain object. Unknown fields are kept. |
+| `toJSONString()` | `string` | Compact JSON. |
+| `toHTML()` | `string` | HTML with Tiptap's default tags. |
+| `toHTMLWith(options)` | `string` | HTML with [options](#html-options). |
+| `free()` | `void` | Releases the WebAssembly memory. See [Memory and disposal](/docs/javascript#memory-and-disposal). |
+
+## Find nodes
+
+These return copies of the matching nodes, in document order (pre-order). The root is
+included when it matches.
+
+| Method | Returns |
+| --- | --- |
+| `byType(type: string)` | `JSONContent[]` |
+| `firstByType(type: string)` | `JSONContent` or `undefined` |
+| `byMark(markType: string)` | `JSONContent[]` of nodes carrying that mark |
+| `byAttr(key: string, value: unknown)` | `JSONContent[]` of nodes whose `attrs[key]` equals `value` |
+
+To edit what you found, get paths instead:
+
+| Method | Returns |
+| --- | --- |
+| `pathsByType(type: string)` | `number[][]` |
+| `pathsByMark(markType: string)` | `number[][]` |
+| `pathsByAttr(key: string, value: unknown)` | `number[][]` |
+| `nodeAt(path: number[])` | `JSONContent` or `undefined` |
+| `childCount(path: number[])` | `number`, or `undefined` when there is no node at `path` |
+
+```ts
+doc.setAttr([0], "level", 1);
+doc.pathsByAttr("level", 1); // [[0]]
+doc.firstByType("paragraph"); // { type: "paragraph", content: [...] }
+doc.childCount([9]); // undefined
+```
+
+## Read text
+
+| Method | Returns |
+| --- | --- |
+| `textContent()` | `string`: all descendant text concatenated, with no separators |
+| `charCount()` | `number` of Unicode scalar values in the text |
+| `wordCount()` | `number` of words, using Unicode word segmentation, with blocks kept apart |
+
+```ts
+doc.textContent(); // "TitleHello world"
+doc.charCount(); // 16
+doc.wordCount(); // 3
+```
+
+## Edit a node by path
+
+| Method | Returns | Effect |
+| --- | --- | --- |
+| `setAttr(path, key: string, value: unknown)` | `void` | Sets `attrs[key]`. |
+| `removeAttr(path, key: string)` | `boolean` | Removes `attrs[key]`; `true` if it existed. |
+| `setText(path, text: string)` | `void` | Sets the node's `text`. |
+| `addMark(path, markType: string, attrs)` | `boolean` | Adds the mark unless one of that type is already there; `true` if added. An empty `attrs` object adds no `attrs`. |
+| `removeMark(path, markType: string)` | `number` | Removes every mark of that type; returns how many. |
+| `pushChild(path, child: JSONContent)` | `void` | Appends a child. |
+| `insertChild(path, index: number, child: JSONContent)` | `void` | Inserts at `index`, clamped to the child count. |
+| `removeChild(path, index: number)` | `JSONContent` or `undefined` | Removes and returns the child, or `undefined` when there is none. |
+
+```ts
+doc.addMark([0, 0], "bold", undefined); // true
+doc.addMark([0, 0], "bold", undefined); // false: already bold
+doc.removeMark([0, 0], "bold"); // 1
+doc.pushChild([], { type: "paragraph", content: [{ type: "text", text: "More" }] });
+```
+
+## Edit inline content
+
+These edit the inline children of one block, such as a paragraph, addressed by the
+block's `path` and by `Position` values inside it. A `Position` is
+`{ child, offset }`: the index of an inline child and a Unicode-scalar offset into its
+text. A `Range` is `{ start: Position, end: Position }` in the same block. Text nodes are
+split at the boundaries and adjacent text with equal marks is merged again, so the content
+stays normalized.
+
+| Method | Effect |
+| --- | --- |
+| `insertText(path, position, text: string, marks)` | Inserts text. `marks` is a `Mark[]`, or `undefined` or `[]` for none. |
+| `deleteRange(path, range)` | Deletes the range. A collapsed range does nothing. |
+| `replaceRange(path, range, text: string, marks)` | Replaces the range with text. |
+| `addMarkRange(path, range, markType: string, attrs)` | Adds a mark to every text node in the range. |
+| `removeMarkRange(path, range, markType: string)` | Removes every mark of that type in the range. |
+| `toggleMarkRange(path, range, markType: string, attrs)` | Removes the mark when every text node in the range has it, otherwise adds it everywhere. |
+
+All return `void` and throw on an out-of-range position, for example
+`range: offset 99 out of range in child 0`.
+
+```ts
+const p = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [{ type: "paragraph", content: [{ type: "text", text: "Hello world" }] }],
+});
+
+// Italicize "world": child 0, scalars 6 to 11.
+p.addMarkRange([0], { start: { child: 0, offset: 6 }, end: { child: 0, offset: 11 } }, "italic", undefined);
+p.nodeAt([0]);
+// { type: "paragraph", content: [
+//   { type: "text", text: "Hello " },
+//   { type: "text", marks: [{ type: "italic" }], text: "world" } ] }
+
+p.insertText([0], { child: 0, offset: 0 }, "» ", undefined);
+p.textContent(); // "» Hello world"
+```
+
+To work from flat ProseMirror positions instead, convert with `posToInline` or use
+`applyPosEdits`. See [Positions](/docs/javascript/positions).
+
+## Edit block structure
+
+These restructure the block tree, addressed by index path.
+
+| Method | Effect |
+| --- | --- |
+| `setBlockType(path, type: string, attrs)` | Changes the node's type and keeps its content. `attrs` replaces the attributes: `undefined` or `null` removes them, `{}` sets an empty object. The root can be retyped. |
+| `splitBlock(path, at: number, depth: number)` | Splits the block before child `at`: the left keeps children before `at`, a new right sibling of the same type takes the rest. `depth` also splits that many ancestors. |
+| `splitBlockAt(path, position: Position, depth: number)` | Like `splitBlock`, at an inline position, splitting the text there first. |
+| `joinBlocks(parentPath, index: number)` | Merges child `index` of `parentPath` into the previous sibling. The previous sibling's type and attributes win. |
+| `wrap(path, type: string, attrs)` | Wraps the block in a new parent of `type`. |
+| `wrapRange(parentPath, start: number, end: number, type: string, attrs)` | Wraps children `start` to `end` (exclusive) of `parentPath` in one new parent. |
+| `lift(path)` | Moves the block out of its parent into the grandparent, splitting the parent around it. A parent with only that child is replaced by it. |
+
+```ts
+const b = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [{ type: "paragraph", content: [{ type: "text", text: "Hello world" }] }],
+});
+
+b.splitBlockAt([0], { child: 0, offset: 5 }, 0); // "Hello" | " world"
+b.setBlockType([1], "heading", { level: 2 });
+b.wrapRange([], 0, 2, "blockquote", undefined); // both blocks in one blockquote
+b.lift([0, 0]); // the paragraph moves back out, before the blockquote
+```
+
+## Normalize
+
+| Method | Effect |
+| --- | --- |
+| `normalize()` | Merges adjacent text nodes with equal marks and removes empty text nodes. |
+| `normalizeWith(options: NormalizeOptions)` | The same, configured. |
+
+`NormalizeOptions` fields, all optional:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `mergeAdjacentText` | `true` | Merge consecutive text nodes that differ only in `text`. |
+| `removeEmptyText` | `true` | Drop text nodes whose text is empty or missing. |
+| `removeEmptyNodes` | `false` | Drop non-text nodes whose `content` is an empty array. A node with no `content` field is kept. |
+
+## HTML options
+
+`toHTMLWith` takes an object with these optional fields:
+
+| Field | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `nodeTags` | `Record<string, string>` | `{}` | Extra or replacement node type to tag mappings, such as `{ callout: "aside" }`. |
+| `markTags` | `Record<string, string>` | `{}` | The same for marks, such as `{ highlight: "mark" }`. |
+| `unknownNode` | `"transparent"`, `"dataTypeDiv"`, `"skip"` | `"transparent"` | Unknown nodes: children only, a `<div data-type="…">` wrapper, or nothing. |
+| `unknownMark` | `"transparent"`, `"dataMarkSpan"`, `"skip"` | `"transparent"` | Unknown marks: text only, a `<span data-mark="…">` wrapper, or nothing. |
+| `selfClosing` | `"html5"`, `"xhtml"` | `"html5"` | `<hr>` or `<hr/>`. |
+| `spreadAttrs` | `boolean` | `false` | Write the node's other attributes as HTML attributes. |
+| `textAlign` | `boolean` | `true` | Write `style="text-align:…"` for `textAlign` on paragraphs and headings. |
+
+```ts
+const h = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [
+    { type: "callout", content: [{ type: "paragraph", content: [
+      { type: "text", text: "x", marks: [{ type: "highlight" }] } ] }] },
+    { type: "horizontalRule" },
+  ],
+});
+
+h.toHTML(); // "<p>x</p><hr>"
+h.toHTMLWith({ nodeTags: { callout: "aside" }, markTags: { highlight: "mark" }, selfClosing: "xhtml" });
+// "<aside><p><mark>x</mark></p></aside><hr/>"
+```
+
+Text and attribute values are HTML-escaped, but URLs are written as they are. Sanitize the
+output of untrusted documents.
+
+## Other methods
+
+| Group | Methods | Page |
+| --- | --- | --- |
+| Flat positions | `contentSize`, `resolve`, `posBefore`, `posAfter`, `posInText`, `posToInline`, `inlineToPos` | [Positions](/docs/javascript/positions) |
+| Position edits | `applyPosEdits` | [Positions](/docs/javascript/positions#edit-by-position) |
+| Diff and patches | `diff`, `diffWith`, `applyChanges`, `invert` | [Diffing](/docs/javascript/diffing) |
+| Validation | `validate`, `isValid` | [Schema](/docs/javascript/schema) |

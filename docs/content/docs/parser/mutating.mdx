@@ -1,0 +1,202 @@
+---
+title: Mutating
+description: Change marks, attributes, children and text in place, one node at a time or in bulk.
+---
+
+Edits happen in place on a `&mut Node` or a `&mut Document`. Nothing is copied or
+rebuilt. Get the node to edit with a [mutable query](/docs/parser/querying#mutable-queries)
+or with [`node_at_mut`](/docs/parser/paths-and-positions#index-paths).
+
+These methods change the tree and record nothing. To get an undoable change list for
+the same edits, run them through a [transaction](/docs/parser/transactions).
+
+## Empty containers collapse
+
+Removing the last mark, attribute or child sets that field back to `None`, so the output
+has no empty `"marks": []`, `"attrs": {}` or `"content": []` left behind. Adding to a
+missing field creates it.
+
+```rust
+use tiptap_rusty_parser::{Mark, Node};
+
+let mut t = Node::text("hi");
+t.add_mark(Mark::new("bold"));
+assert!(t.marks.is_some());
+t.remove_mark("bold");
+assert!(t.marks.is_none());
+assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"type":"text","text":"hi"}"#);
+```
+
+`children_mut()` and `attrs_mut()` create an empty container when it is missing, even if
+you then add nothing.
+
+## Marks
+
+```rust
+use tiptap_rusty_parser::{Mark, Node};
+use serde_json::json;
+
+let mut t = Node::text("hello");
+
+assert!(t.add_mark(Mark::new("bold")));        // added
+assert!(!t.add_mark(Mark::new("bold")));       // already there, not added twice
+assert!(t.has_mark("bold"));
+
+assert!(t.toggle_mark(Mark::new("italic")));   // now present
+assert!(!t.toggle_mark(Mark::new("italic")));  // now absent
+
+t.add_mark(Mark::new("link"));
+assert!(t.set_mark_attr("link", "href", "https://tiptap.dev"));
+assert!(!t.set_mark_attr("code", "x", 1));     // no such mark
+assert_eq!(
+    t.get_mark("link").unwrap().attrs().unwrap().get("href"),
+    Some(&json!("https://tiptap.dev"))
+);
+
+assert_eq!(t.remove_mark("bold"), 1);
+t.clear_marks();
+assert!(t.marks.is_none());
+```
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `has_mark(type)` | `bool` | |
+| `get_mark(type)` | `Option<&Mark>` | The first mark of that type |
+| `add_mark(mark)` | `bool` | `false` if a mark of that type already exists. Attributes are not compared. |
+| `remove_mark(type)` | `usize` | How many marks of that type were removed |
+| `toggle_mark(mark)` | `bool` | Removes every mark of that type if one exists, otherwise adds it. Returns whether it is now present. |
+| `set_mark_attr(type, key, value)` | `bool` | Sets an attribute on the first mark of that type. `false` if there is none. |
+| `clear_marks()` | `()` | Removes all marks |
+
+Marks are compared by type only. `add_mark` with a `link` mark does not replace an
+existing `link` with a different `href`: use `set_mark_attr` for that.
+
+## Attributes
+
+```rust
+use tiptap_rusty_parser::Node;
+use serde_json::json;
+
+let mut h = Node::element("heading");
+
+assert_eq!(h.set_attr("level", 2), None);
+assert_eq!(h.set_attr("level", 3), Some(json!(2)));
+assert_eq!(h.attr("level"), Some(&json!(3)));
+
+h.attrs_mut().insert("class".into(), json!("title"));
+assert_eq!(h.remove_attr("level"), Some(json!(3)));
+assert_eq!(h.remove_attr("class"), Some(json!("title")));
+assert!(h.attrs.is_none());
+```
+
+| Method | Returns |
+| --- | --- |
+| `attr(key)` | `Option<&Value>` |
+| `attrs()` | `Option<&Map<String, Value>>` |
+| `attrs_mut()` | `&mut Map<String, Value>`, created if missing |
+| `set_attr(key, value)` | `Option<Value>`: the previous value |
+| `remove_attr(key)` | `Option<Value>`: the removed value |
+
+`set_attr` takes any `impl Into<serde_json::Value>`: numbers, strings, booleans, or a
+`json!` value. Unknown top-level fields have the same kind of helpers on `extra`, listed
+in the [data model](/docs/parser/data-model#unknown-types-and-fields).
+
+## Children
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let mut p = Node::element("paragraph");
+p.push_child(Node::text("a"));
+p.push_child(Node::text("c"));
+p.insert_child(1, Node::text("b"));
+p.insert_child(99, Node::text("d"));   // the index is clamped to the end
+assert_eq!(p.text_content(), "abcd");
+
+assert_eq!(p.child_count(), 4);
+assert_eq!(p.child(1).unwrap().get_text(), Some("b"));
+p.child_mut(1).unwrap().set_text("B");
+
+let old = p.replace_child(0, Node::text("A")).unwrap();
+assert_eq!(old.get_text(), Some("a"));
+assert_eq!(p.remove_child(3).unwrap().get_text(), Some("d"));
+assert!(p.remove_child(10).is_none());
+
+p.retain_children(|c| c.get_text() != Some("A"));
+assert_eq!(p.text_content(), "Bc");
+
+p.clear_children();
+assert!(p.content.is_none());
+```
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `child_count()` | `usize` | 0 when `content` is missing |
+| `children()` | `&[Node]` | Empty when `content` is missing |
+| `children_mut()` | `&mut Vec<Node>` | Creates `content` if missing |
+| `child(i)` / `child_mut(i)` | `Option<&Node>` / `Option<&mut Node>` | |
+| `push_child(node)` | `()` | |
+| `insert_child(i, node)` | `()` | `i` is clamped to the number of children |
+| `remove_child(i)` | `Option<Node>` | `None` when `i` is out of range |
+| `replace_child(i, node)` | `Option<Node>`: the old child | `None` when `i` is out of range, and nothing is inserted |
+| `retain_children(pred)` | `()` | Keeps the children for which `pred` returns `true` |
+| `clear_children()` | `()` | Sets `content` to `None` |
+
+## Text
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let mut t = Node::text("old");
+assert_eq!(t.get_text(), Some("old"));
+t.set_text("new");
+assert_eq!(t.get_text(), Some("new"));
+```
+
+`set_text` sets the `text` field of any node. It does not check the type. To edit part
+of a text run, split it, or insert text at a position, use
+[range editing](/docs/parser/range-and-block-editing).
+
+## Bulk transforms
+
+`replace_all` runs a closure on every node that matches a predicate, in pre-order, and
+returns how many matched:
+
+```rust
+use tiptap_rusty_parser::{Document, Mark};
+
+let mut doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"x"}]},
+    {"type":"paragraph","content":[{"type":"text","text":"y"}]}
+]}"#)?;
+
+let changed = doc.replace_all(
+    |n| n.node_type.as_deref() == Some("text"),
+    |n| {
+        n.add_mark(Mark::new("bold"));
+    },
+);
+assert_eq!(changed, 2);
+assert_eq!(doc.by_mark("bold").len(), 2);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+The predicate sees each node before the closure changes it. The closure may also change
+the node's children, and the walk then continues into the new children.
+
+For changes that do not depend on a predicate, `walk_mut` visits every node:
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let mut doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","attrs":{"id":"a1"}}]}"#,
+)?;
+doc.walk_mut(&mut |n| {
+    n.remove_attr("id");
+});
+assert_eq!(doc.to_json_str()?, r#"{"type":"doc","content":[{"type":"paragraph"}]}"#);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+To build new nodes to insert, see [Building nodes](/docs/parser/building-nodes).

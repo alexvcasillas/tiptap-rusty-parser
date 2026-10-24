@@ -1,0 +1,138 @@
+---
+title: Performance
+description: The design choices that keep the parser fast, what each operation costs, and how to run the benchmarks.
+---
+
+The parser is built to run on large documents after every edit. Its benchmarks include a
+10,000-block document of the size Tiptap Studio is tested with. This page explains where
+the speed comes from, which calls cost more than they look, and how to measure your own
+workload.
+
+## Small nodes
+
+`Node` keeps `attrs` and `extra` behind a `Box`, so a node without attributes or unknown
+fields carries one pointer for each instead of a full map. On 64-bit targets a `Node` is
+112 bytes and a `Mark` is 40. Before 0.6, with the maps inline, they were 240 and 168
+bytes. The 0.6 migration notes report parsing about 2 times faster and about 55% less
+memory after this change; they give no further detail about the measurement. See
+[Migrating from 0.5](/docs/parser/migration).
+
+## Parsing and serializing
+
+- `Node` and `Mark` have hand-written serde implementations instead of
+  `#[serde(flatten)]`, which buffers every object before it can sort known fields from
+  unknown ones.
+- While parsing, children and marks are collected on scratch stacks shared by the whole
+  parse, then moved into vectors of exactly the right size. JSON gives no length up front,
+  and growing a vector by doubling leaves up to twice the needed capacity on every node.
+
+## Traversal and queries
+
+- `descendants`, `find` and `find_all` iterate with an explicit stack, not recursion, so
+  deep documents do not grow the call stack.
+- A [query](/docs/parser/query-language) compiles once with `Query::parse`. Matching a
+  compiled query against a node does not allocate, including the case-insensitive text
+  match.
+- Most methods borrow. Queries return references and paths, not copies of nodes.
+
+## Diff
+
+`diff` is the most involved algorithm in the crate, and most of its design is about
+staying close to linear on real edits:
+
+- **Identical subtrees are skipped.** Before descending, `diff` compares the two nodes
+  and stops when they are equal.
+- **Children are hashed once.** To align two child lists, every child gets a structural
+  hash and an equality class. Nodes are compared deeply only against others in the same
+  hash bucket, so aligning costs about the total size of the children, not one comparison
+  per pair.
+- **Long lists use Myers' algorithm.** Small lists use an exact table, which is fast below
+  a size threshold. Above it, Myers' longest common subsequence runs in time proportional
+  to the list length times the number of edits, which is close to linear for a few edits
+  in a long list.
+- **Moves cost one change each.** Reordered children become `Move` changes, which do not
+  clone the subtree. The live index of each move is computed with block-decomposed lists
+  and a Fenwick tree, so a full reorder stays fast even among many equal siblings.
+- **Character diffs are bounded.** `diff_text` trims the common prefix and suffix first.
+  When the changed middle is very large, it falls back to one delete and one insert instead
+  of a quadratic table.
+
+## Edits and undo
+
+- A `Transform` records each step's inverse from the state the step overwrites, as it
+  applies. `finish_with_inverse` therefore costs as much as the edit, not the document.
+- Structural `Transform` steps clone and diff only the subtree the edit can touch: the
+  block, its parent or its grandparent.
+- `apply_inverting` takes the change list by value, so inserted nodes are moved into the
+  tree, not cloned.
+- Content expressions in a schema compile once, to an automaton, when the schema is built
+  or loaded.
+
+## Calls that cost more
+
+Some calls trade speed for simplicity. They are fine for most uses, but avoid them in a
+hot loop on a large document:
+
+| Call | Cost | Faster alternative |
+| --- | --- | --- |
+| `invert(&base, &changes)` | Clones `base`, applies the changes, and diffs the whole result back. | Record the inverse with `Transform::finish_with_inverse` or `apply_inverting`. |
+| `apply_pos_edits` | Clones the whole document, applies the batch to the clone, and diffs the clone against the original to build the patch. | Batch all edits from one tool call into one call instead of one call per edit. |
+| `diff` on two unrelated documents | Every subtree differs, so nothing is skipped. | Diff versions of the same document. |
+| `Node::walk`, `walk_mut`, `find_mut` | Recursive, unlike `descendants`. Fine for real documents, but the recursion depth follows the nesting depth. | `descendants()` for read-only traversal. |
+
+## Run the benchmarks
+
+The crate has a [criterion](https://docs.rs/criterion) benchmark suite in
+`parser/benches/bench.rs`. Run it from the repository root:
+
+```sh
+cargo bench -p tiptap-rusty-parser
+```
+
+Pass a filter to run only matching benchmarks:
+
+```sh
+cargo bench -p tiptap-rusty-parser -- diff
+```
+
+Criterion keeps the previous run and reports the change against it. HTML reports land in
+`target/criterion/`. To compare two branches, save a named baseline on one and compare on
+the other:
+
+```sh
+cargo bench -p tiptap-rusty-parser -- --save-baseline main
+git switch my-branch
+cargo bench -p tiptap-rusty-parser -- --baseline main
+```
+
+The workspace release profile sets `lto = true` and `codegen-units = 1`, and benchmarks
+build with it. A crate that depends on the parser uses its own profile settings.
+
+### What the suite measures
+
+Two document shapes are used:
+
+- **Synthetic**: 500 paragraphs of 20 bold text spans each, about 10,000 text nodes.
+- **Studio-sized**: 10,000 top-level blocks mixing headings, paragraphs with marks and
+  links, and nested bullet lists, about 10 nodes per block.
+
+| Area | Benchmarks |
+| --- | --- |
+| Parse and serialize | `parse`, `serialize` |
+| Traversal and queries | `walk_count`, `find_all_text`, `by_type`, `text_content`, `query_parse`, `query_find_paths_struct`, `query_find_paths_text`, `query_matches_walk` |
+| Mutation and normalizing | `replace_all_addmark`, `normalize_merge_heavy`, `normalize_noop` |
+| Rendering and validation | `to_html`, `validate` |
+| Diff and apply | `diff_large_small_change`, `apply_large_small_change`, `diff_reordered_children`, `diff_reordered_equal_siblings_900`, `apply_reordered_children`, `diff_inline_10k_para_small_edit`, `diff_10k_blocks_50_scattered_edits` |
+| Range and block edits | `add_mark_range_large_block`, `delete_range_large_block`, `wrap_range_500_blocks`, `split_block` |
+| Transactions and undo | `transform_small_txn`, `edit_attr_10k_clone_invert`, `edit_attr_10k_incremental_inverse`, `undo_redo_10k_apply_inverting`, `wrap_10k_scoped_txn_and_undo` |
+| Positions | `content_size`, `resolve_pos`, `apply_pos_edits_batch_50`, `pos_map_map_all_positions` |
+| Change lists | `compact_redundant`, `map_path_through_reorder` |
+| Source maps | `source_map_pretty_10k`, `source_map_build_10k`, `source_map_path_at_10k` |
+
+`edit_attr_10k_clone_invert` and `edit_attr_10k_incremental_inverse` make the same edit on
+the 10,000-block document. The first clones the document and uses `invert`, the second
+records the inverse in the `Transform`. Comparing the two on your machine shows what the
+incremental inverse saves.
+
+Timings depend on the machine, so this page does not quote them. Run the suite on your
+own hardware, with your own document sizes, before you rely on a number.

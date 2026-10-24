@@ -1,0 +1,199 @@
+---
+title: Positions
+description: Flat ProseMirror positions in JavaScript, editing by position, and mapping positions through edits.
+---
+
+Tiptap and ProseMirror address every location in a document with one integer, a flat
+position. `TiptapDoc` computes the same kind of positions, converts them to and from index
+paths, applies edits addressed by them, and maps positions through a batch of edits so a
+selection stays in place.
+
+## How positions are counted
+
+- A **text** node counts one unit per Unicode scalar value.
+- A **leaf** node counts 1. In JavaScript the leaves are always `image`,
+  `horizontalRule` and `hardBreak`.
+- **Any other** node counts 2 plus its content: one token for its start and one for its
+  end.
+- The **root** has no tokens. Valid positions run from `0` to `contentSize()`.
+
+```ts
+const doc = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [
+    { type: "paragraph", content: [{ type: "text", text: "Hello world" }] }, // 0 to 13
+    { type: "horizontalRule" },                                             // 13 to 14
+    { type: "paragraph", content: [{ type: "text", text: "Bye" }] },        // 14 to 19
+  ],
+});
+
+doc.contentSize(); // 19
+```
+
+<Callout type="warn">
+Two cases give positions that differ from the ones Tiptap computes in the editor:
+
+- **Custom atom nodes.** The leaf set is fixed. An inline atom such as `mention` counts as an
+  empty container (2) here, while the editor counts it as 1. Every position after it is
+  off by one. The Rust crate accepts a custom leaf set; the JS binding does not.
+- **Characters outside the Basic Multilingual Plane**, such as most emoji. Here they count
+  as one scalar value. ProseMirror measures text with JavaScript string length, which
+  counts them as two UTF-16 code units.
+
+Translate positions yourself, or avoid position-based APIs, when documents contain either.
+</Callout>
+
+For the full model, see [Paths and positions](/docs/parser/paths-and-positions).
+
+## Read positions
+
+| Method | Returns | Throws when |
+| --- | --- | --- |
+| `contentSize()` | `number`: the largest valid position | never |
+| `resolve(pos: number)` | `ResolvedPos` | `pos` is greater than `contentSize()` |
+| `posBefore(path: number[])` | `number`: the position just before the node | a path index is out of range |
+| `posAfter(path: number[])` | `number`: the position just after the node | a path index is out of range |
+| `posInText(path: number[], offset: number)` | `number`: the position at a scalar `offset` inside the text node at `path` | the node is not text, or `offset` is past its end |
+
+```ts
+doc.posBefore([1]); // 13
+doc.posAfter([1]); // 14
+doc.posInText([2, 0], 1); // 16: after "B"
+```
+
+Use `posBefore` and `posAfter` with paths below the root. For the root path `[]`,
+`posAfter` returns `contentSize() + 2`, which is not a valid position.
+
+### ResolvedPos
+
+`resolve` describes where a position falls:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pos` | `number` | The position you passed. |
+| `depth` | `number` | Depth of the containing node; equals `path.length`. |
+| `path` | `number[]` | Index path of the node that contains the position. |
+| `parentOffset` | `number` | Offset of the position inside that node's content. |
+| `index` | `number` | Index of the child at or just after the position. |
+| `textOffset` | `TextPoint` or `null` | Set when the position is strictly inside a text node: `{ path, offset }`, with `path` pointing at the text node and `offset` in scalars. |
+
+```ts
+doc.resolve(7);
+// { pos: 7, depth: 1, path: [0], parentOffset: 6, index: 0,
+//   textOffset: { path: [0, 0], offset: 6 } }
+
+doc.resolve(13);
+// { pos: 13, depth: 0, path: [], parentOffset: 13, index: 1, textOffset: null }
+```
+
+## Convert to inline positions
+
+The [inline editing methods](/docs/javascript/tiptap-doc#edit-inline-content) take a block
+path and a `Position` (`{ child, offset }`). These two methods convert between that form
+and flat positions:
+
+| Method | Returns |
+| --- | --- |
+| `posToInline(pos: number)` | `BlockInline`: `{ block: number[], inline: Position }` |
+| `inlineToPos(blockPath: number[], position: Position)` | `number` |
+
+```ts
+doc.posToInline(7); // { block: [0], inline: { child: 0, offset: 6 } }
+doc.inlineToPos([0], { child: 0, offset: 6 }); // 7
+
+const { block, inline } = doc.posToInline(16);
+doc.insertText(block, inline, "!", undefined); // "B!ye"
+```
+
+`inlineToPos` throws when `child` is past the block's last child, or when `offset` does not
+fit: past the end of a text child, or not `0` for any other child.
+
+<Callout type="warn">
+A position between top-level blocks resolves to the root, so `posToInline` returns
+`block: []`. `inlineToPos([], …)` returns one more than the matching position, because it
+adds a start token the root does not have. Only pass block paths below the root to
+`inlineToPos`.
+</Callout>
+
+## Edit by position
+
+`applyPosEdits(edits: PosEdit[])` applies a batch of edits addressed by flat positions and
+returns the change list it made, a `Change[]`. Undo it with
+[`invert`](/docs/javascript/transactions).
+
+| Edit | Fields | Effect |
+| --- | --- | --- |
+| `insert` | `pos`, `content` | Inserts `content` at `pos`. |
+| `delete` | `from`, `to` | Deletes `[from, to)`. |
+| `replace` | `from`, `to`, `content` | Replaces `[from, to)` with `content`. |
+| `addMark` | `from`, `to`, `mark: Mark` | Adds the mark to the text in `[from, to)`. |
+| `removeMark` | `from`, `to`, `markType: string` | Removes marks of that type from the text in `[from, to)`. |
+| `setBlockAttrs` | `pos`, `attrs` | Replaces all attributes of the node that starts at `pos`, or of the block containing `pos`. `{}` removes them. |
+
+`content` is either `{ type: "text", text, marks? }` or `{ type: "nodes", nodes }`.
+
+```ts
+const edits = [
+  { type: "replace", from: 7, to: 12, content: { type: "text", text: "there" } },
+  { type: "insert", pos: 15, content: { type: "text", text: "Good" } },
+  { type: "addMark", from: 1, to: 6, mark: { type: "bold" } },
+];
+
+const patch = doc.applyPosEdits(edits);
+doc.textContent(); // "Hello thereGoodBye"
+```
+
+Rules for a batch:
+
+- **Every position refers to the document before the batch.** Edits run from the highest
+  position down, so earlier edits never shift later ones. You do not rebase positions
+  yourself.
+- **Edits must not overlap.** Spans may touch. An overlap throws
+  `pos-edit: overlapping edit at [from,to)`.
+- **The batch is atomic.** If any edit fails, the document is left unchanged.
+- **A span can cross blocks** when both ends sit in sibling blocks under the same parent,
+  such as two top-level paragraphs. The blocks in between are removed and the two ends are
+  joined. Ends at different depths or under different parents throw
+  `pos-edit: unsupported cross-block span [from,to)`.
+- `from` greater than `to` throws `pos-edit: range: end precedes start`.
+
+Insert text at a position inside a textblock. A position between blocks resolves to the
+parent, so text inserted there lands directly in it.
+
+## Map positions through edits
+
+These two module functions carry positions from before a batch to after it. Pass the same
+`PosEdit[]` you gave to `applyPosEdits`.
+
+| Function | Returns |
+| --- | --- |
+| `mapPosition(pos: number, edits: PosEdit[], assoc: Assoc)` | `number` |
+| `mapPositionRange(range: PosRange, edits: PosEdit[], assoc: Assoc)` | `PosRange` (`{ from, to }`) |
+
+`assoc` is `"left"` or `"right"`. It decides where a position inside a replaced span, or exactly at an insertion, lands:
+`"left"` keeps it at the start, `"right"` moves it past the new content. `undefined` or
+`null` means `"left"`. TypeScript requires the argument, so pass it explicitly.
+`mapPositionRange` maps both ends with the same `assoc`. Mark and attribute edits do not
+move positions.
+
+```ts
+import { mapPosition, mapPositionRange } from "@tiptap-studio/rusty-parser";
+
+mapPosition(13, edits, "left"); // 13: before the insert, unchanged
+mapPosition(15, edits, "left"); // 15: at the insert, stays before "Good"
+mapPosition(15, edits, "right"); // 19: moves past "Good"
+mapPosition(9, edits, "left"); // 7: inside the replaced "world", to its start
+mapPosition(9, edits, "right"); // 12: to its end
+mapPositionRange({ from: 13, to: 18 }, edits, "left"); // { from: 13, to: 22 }
+```
+
+A common use is keeping the editor selection in place after an edit you applied outside
+the editor:
+
+```ts
+const from = mapPosition(selection.from, edits, "left");
+const to = mapPosition(selection.to, edits, "right");
+```
+
+The edits are expected to be disjoint, as `applyPosEdits` requires. These functions do not
+check it.

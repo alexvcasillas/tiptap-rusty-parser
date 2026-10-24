@@ -1,0 +1,122 @@
+---
+title: Normalizing
+description: Put a tree in canonical form by merging adjacent text and dropping empty nodes.
+---
+
+The same text can be stored in many shapes. `"foo"` can be one text node, or `"fo"` and
+`"o"` with the same marks. `normalize` rewrites a tree into one canonical shape, in
+place. Normalized trees give smaller [diffs](/docs/parser/diffing) and stable output.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let mut doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph","content":[
+    {"type":"text","text":"foo"},
+    {"type":"text","text":"bar"},
+    {"type":"text","text":""}
+]}]}"#)?;
+
+doc.normalize();
+assert_eq!(
+    doc.to_json_str()?,
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"foobar"}]}]}"#
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`normalize` works on the subtree it is called on, so `node.normalize()` cleans up one
+block. `Document::normalize` and `Document::normalize_with` normalize the whole
+document.
+
+## What it does
+
+By default, at every level of the tree:
+
+1. **Drop empty text.** Text nodes whose `text` is `""` or missing are removed.
+2. **Merge adjacent text.** Consecutive text nodes that differ only in `text` are joined
+   into the first one. Their marks, attributes and unknown fields must be equal, and
+   marks must be in the same order.
+
+Empty text is dropped before merging, so `"a"`, `""`, `"b"` becomes `"ab"`. Children are
+normalized before their parent, so changes deep in the tree are done before the level
+above is compacted.
+
+```rust
+use tiptap_rusty_parser::{Mark, Node};
+
+let mut p = Node::element("paragraph").with_children([
+    Node::text("a"),
+    Node::element("hardBreak"),
+    Node::text_with_marks("b", [Mark::new("bold")]),
+    Node::text_with_marks("c", [Mark::new("bold")]),
+    Node::text_with_marks("d", [Mark::new("italic")]),
+]);
+p.normalize();
+
+let texts: Vec<_> = p.children().iter().map(|c| c.get_text()).collect();
+assert_eq!(texts, [Some("a"), None, Some("bc"), Some("d")]);
+```
+
+Nodes of other types are never merged, and a non-text node between two text nodes keeps
+them apart.
+
+`normalize` is idempotent: normalizing twice gives the same tree as normalizing once.
+
+## Options
+
+`normalize_with` takes a `NormalizeOptions`:
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `merge_adjacent_text` | `true` | Merge consecutive text nodes that differ only in `text` |
+| `remove_empty_text` | `true` | Drop text nodes whose `text` is empty or missing |
+| `remove_empty_nodes` | `false` | Drop non-text nodes whose `content` is an empty list |
+
+`remove_empty_nodes` is off by default because an empty paragraph is valid content. It
+only removes nodes with `"content": []`. A node with no `content` key at all, such as a
+`horizontalRule`, is never removed, which keeps the difference between missing and
+empty.
+
+```rust
+use tiptap_rusty_parser::{doc, Node, NormalizeOptions};
+
+let mut d = doc([
+    Node::element("paragraph").with_text("keep"),
+    Node::element("paragraph").with_children([]),
+    Node::element("paragraph").with_text(""),
+    Node::element("horizontalRule"),
+]);
+
+d.normalize_with(&NormalizeOptions {
+    remove_empty_nodes: true,
+    ..Default::default()
+});
+
+// The empty paragraph is dropped, and so is the one that only held empty text.
+let types: Vec<_> = d.children().iter().map(|c| c.node_type.as_deref()).collect();
+assert_eq!(types, [Some("paragraph"), Some("horizontalRule")]);
+```
+
+The third paragraph shows the bottom-up order: its empty text is removed first, which
+leaves `"content": []`, and then the paragraph itself is dropped.
+
+`NormalizeOptions` is a plain data struct with no closures. It implements serde with
+camelCase field names (`mergeAdjacentText`, `removeEmptyText`, `removeEmptyNodes`), and
+missing fields take their defaults:
+
+```rust
+use tiptap_rusty_parser::NormalizeOptions;
+
+let opts: NormalizeOptions = serde_json::from_str(r#"{"removeEmptyNodes":true}"#).unwrap();
+assert!(opts.remove_empty_nodes && opts.merge_adjacent_text && opts.remove_empty_text);
+```
+
+## Where else it runs
+
+The [range editing](/docs/parser/range-and-block-editing) methods run the default pass on
+the edited block's children after each edit, so text they split is merged again when the
+marks match. The block methods `split_block` and `join_blocks` do the same on the blocks
+they touch.
+
+Normalizing leaves an emptied list in place: a paragraph whose only child was empty text
+ends up with `"content": []`, not with no `content` key.

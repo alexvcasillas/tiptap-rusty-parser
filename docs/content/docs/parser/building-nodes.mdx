@@ -1,0 +1,143 @@
+---
+title: Building nodes
+description: Create nodes, marks and whole documents in code instead of parsing JSON.
+---
+
+You can build any tree in Rust with constructors and chained builders, then serialize it,
+insert it into another document, or use it as the `node` of a `Change`.
+
+```rust
+# use tiptap_rusty_parser::{doc, Document, Mark, Node};
+let d = Document::new(doc([
+    Node::element("heading").with_attr("level", 1).with_text("Release notes"),
+    Node::element("paragraph")
+        .with_text("See ")
+        .with_child(Node::text_with_marks(
+            "the changelog",
+            [Mark::new("link").attr("href", "https://example.com/changelog")],
+        )),
+]));
+
+assert_eq!(
+    d.to_json_str()?,
+    r#"{"type":"doc","content":[{"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Release notes"}]},{"type":"paragraph","content":[{"type":"text","text":"See "},{"type":"text","marks":[{"type":"link","attrs":{"href":"https://example.com/changelog"}}],"text":"the changelog"}]}]}"#
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Constructors
+
+| Constructor | Returns |
+| --- | --- |
+| `Node::element(type)` | A node of `type` with no attributes, content, marks or text. |
+| `Node::text(text)` | A `text` node. |
+| `Node::text_with_marks(text, marks)` | A `text` node with marks. `marks` is any iterator of `Mark`. |
+| `doc(children)` | A `doc` root with the given children. Always has a `content` array, even when empty. |
+| `Mark::new(type)` | A mark with no attributes. |
+| `Node::default()` | A node with every field absent, not even a `type`. |
+
+Node and mark types are plain strings. Any type is accepted, including your own custom
+nodes.
+
+## Builders
+
+Builders take the node by value and return it, so they chain.
+
+| Builder | Does |
+| --- | --- |
+| `with_attr(key, value)` | Sets one attribute. `value` is anything that converts into a `serde_json::Value`: strings, numbers, booleans, `json!` values. |
+| `with_child(node)` | Appends a child. |
+| `with_children(nodes)` | Appends several children. |
+| `with_text(text)` | Appends a `text` child. On a `paragraph` this is the usual way to add text. |
+| `with_mark(mark)` | Appends a mark to the node's own marks. Duplicates are not checked. |
+| `Mark::attr(key, value)` | Sets one attribute on a mark. |
+
+```rust
+# use tiptap_rusty_parser::{Mark, Node};
+use serde_json::json;
+
+let task = Node::element("taskItem")
+    .with_attr("checked", false)
+    .with_attr("meta", json!({ "owner": "ana", "tags": ["docs"] }))
+    .with_child(Node::element("paragraph").with_text("Write the guide"));
+assert_eq!(task.attr("meta").unwrap()["owner"], "ana");
+
+let bold_italic = Node::text("both").with_mark(Mark::new("bold")).with_mark(Mark::new("italic"));
+assert_eq!(bold_italic.marks.as_ref().unwrap().len(), 2);
+```
+
+A `with_text` call adds a separate text node each time. Two calls with the same marks
+leave two adjacent text nodes; [normalizing](/docs/parser/normalizing) merges them.
+
+## From the fields
+
+`Node` and `Mark` are structs with public fields. Every structural field is an `Option`, so
+the tree keeps the difference between an absent field and an empty one.
+
+```rust
+# use tiptap_rusty_parser::Node;
+let mut n = Node { node_type: Some("paragraph".into()), ..Default::default() };
+n.content = Some(Vec::new()); // serializes as "content": []
+assert_eq!(serde_json::to_string(&n).unwrap(), r#"{"type":"paragraph","content":[]}"#);
+```
+
+`attrs` and `extra` are `Option<Box<Map<String, Value>>>`. Prefer the accessors
+`attrs()`, `attrs_mut()`, `extra_field()`, `extra_mut()` and `remove_extra()` over touching
+the boxes. See [Data model](/docs/parser/data-model).
+
+## From JSON values
+
+When the shape is easier to write as JSON, build a `serde_json::Value` and deserialize
+it. `Node` implements `Deserialize`, and `Document::from_value` wraps the result:
+
+```rust
+# use tiptap_rusty_parser::{Document, Node};
+use serde_json::json;
+
+let p: Node = serde_json::from_value(json!({
+    "type": "paragraph",
+    "content": [{ "type": "text", "text": "hi", "marks": [{ "type": "bold" }] }]
+}))?;
+assert_eq!(p.child_count(), 1);
+
+let d = Document::from_value(json!({ "type": "doc", "content": [p] }))?;
+assert_eq!(d.text_content(), "hi");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+Unknown fields such as an `id` on a node land in `extra` and survive the round trip, the
+same as when you parse a string.
+
+## Documents
+
+`Document` owns a root node and adds JSON parsing and serialization. It dereferences to
+the root `Node`, so every node method works on it directly.
+
+| Method | Does |
+| --- | --- |
+| `Document::new(root)`, `Document::from(root)` | Wraps a root node. |
+| `root()`, `root_mut()` | Borrows the root. |
+| `into_root()` | Takes the root out. |
+| `to_json_str()`, `to_string_pretty()`, `to_value()` | Serializes. See [Parsing](/docs/parser/parsing). |
+
+You do not need a `Document` to work on a tree. All query, edit, diff and render methods
+are defined on `Node`, and a `Document` reaches them through `Deref`.
+
+## Insert built nodes
+
+Built nodes go anywhere a `Node` is expected: `push_child` and `insert_child` on a tree,
+a `Transform` step, a `Change::Insert`, or `PosContent::Nodes` in a
+[position edit](/docs/parser/position-editing).
+
+```rust
+# use tiptap_rusty_parser::{doc, Node};
+let mut d = doc([Node::element("paragraph").with_text("first")]);
+let changes = {
+    let mut tx = d.transform();
+    tx.insert(vec![], 1, Node::element("horizontalRule"))?;
+    tx.finish()
+};
+assert_eq!(d.child_count(), 2);
+assert_eq!(changes.len(), 1);
+# Ok::<(), tiptap_rusty_parser::ApplyError>(())
+```

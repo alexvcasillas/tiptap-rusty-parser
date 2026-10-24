@@ -74,13 +74,13 @@ fn every_rust_page_is_compiled_and_every_fence_is_labelled() {
         let has_rust = langs
             .iter()
             .any(|(_, info)| info.split([' ', ',']).next() == Some("rust"));
-        if has_rust && !docs_check::PAGES.contains(&rel.as_str()) {
+        if has_rust && !docs_check::pages().contains(&rel.as_str()) {
             problems.push(format!(
-                "{rel}: has Rust fences but is not registered in docs-check/src/lib.rs"
+                "{rel}: has Rust fences but is not registered in a docs-check/src/<section>.rs module"
             ));
         }
     }
-    for page in docs_check::PAGES {
+    for page in docs_check::pages() {
         if !root.join(page).exists() {
             problems.push(format!(
                 "{page}: registered in docs-check but the file does not exist"

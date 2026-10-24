@@ -1,0 +1,105 @@
+---
+title: Change algebra
+description: Combine change lists with compose, shorten them with compact, and follow a node through edits with mapPath.
+---
+
+Three module functions work on `Change[]` lists without needing a document: `compose`,
+`compact` and `mapPath`. They take and return plain arrays, the same shape `diff`,
+`applyPosEdits` and `invert` produce.
+
+```ts
+import { compose, compact, mapPath } from "@tiptap-studio/rusty-parser";
+```
+
+| Function | Returns | Use |
+| --- | --- | --- |
+| `compose(a: Change[], b: Change[])` | `Change[]` | One list with the same effect as applying `a`, then `b`. |
+| `compact(changes: Change[])` | `Change[]` | The same list with redundant writes removed. Never longer than the input. |
+| `mapPath(path: number[], changes: Change[])` | `number[]` or `null` | Where the node at `path` is after the changes, or `null` if they removed or replaced it. |
+
+Each throws when an argument is not a valid change list, for example
+``Error: unknown variant `nope`, expected one of `setAttr`, …``.
+
+## compose
+
+`b` must be written against the document as `a` leaves it, which is the case when you
+record two edits one after the other. `compose` concatenates the lists and compacts the
+result.
+
+```ts
+const first = [{ op: "setText", path: [0, 0], text: "uno" }];
+const second = [
+  { op: "setText", path: [0, 0], text: "eins" },
+  { op: "insert", path: [], index: 0, node: { type: "paragraph", content: [{ type: "text", text: "zero" }] } },
+];
+
+compose(first, second);
+// [
+//   { op: "setText", path: [0, 0], text: "eins" },
+//   { op: "insert", path: [], index: 0, node: { type: "paragraph", ... } },
+// ]
+```
+
+Use it to merge a run of small edits, such as keystrokes, into one undo step or one network
+message.
+
+## compact
+
+`compact` only makes reductions that keep the result of applying the list the same:
+
+- Repeated writes to the same field of the same node collapse to the last one. A field is
+  the text, the mark list, one attribute key or one unknown top-level key, so `setAttr`
+  and `removeAttr` on the same key count as writes to one field.
+- An `insert` immediately followed by a `remove` of that same child cancels out.
+
+Structural changes (`insert`, `remove`, `move`, `replace`, and `spliceText`) are barriers.
+Field writes are never merged across them, because a structural change can shift which
+node a path points at.
+
+```ts
+compact([
+  { op: "setAttr", path: [0], key: "level", value: 2 },
+  { op: "setAttr", path: [0], key: "level", value: 3 },
+]);
+// [{ op: "setAttr", path: [0], key: "level", value: 3 }]
+
+compact([
+  { op: "setAttr", path: [0], key: "level", value: 2 },
+  { op: "remove", path: [], index: 3 },
+  { op: "setAttr", path: [0], key: "level", value: 4 },
+]);
+// unchanged: the remove is a barrier
+```
+
+`compact` assumes the list applies cleanly to the document it was made for. For a list
+that would fail to apply, the compacted list can behave differently: an out-of-range
+`insert` followed by its `remove` cancels out instead of failing.
+
+## mapPath
+
+`mapPath` follows a node through a change list, using the same live-index rules as
+`applyChanges`. Use it to keep a selected node, a comment anchor or a decoration attached
+to the right node after an edit.
+
+- An `insert` at or before the node's index shifts it right.
+- A `remove` before it shifts it left. Removing the node, or an ancestor, returns `null`.
+- A `move` of the node takes it to its new index. A `move` of a sibling shifts it as
+  needed.
+- A `replace` of the node or an ancestor returns `null`.
+- Field changes never move a node.
+
+```ts
+mapPath([1, 0], [{ op: "insert", path: [], index: 0, node: { type: "paragraph" } }]); // [2, 0]
+mapPath([1, 0], [{ op: "remove", path: [], index: 1 }]); // null
+mapPath([1, 0], [{ op: "move", path: [], from: 1, to: 0 }]); // [0, 0]
+mapPath([1, 0], [{ op: "setText", path: [1, 0], text: "x" }]); // [1, 0]
+```
+
+To map a flat position instead of a path, use
+[`mapPosition`](/docs/javascript/positions#map-positions-through-edits).
+
+## Not in JavaScript
+
+The Rust crate also has `unmap_path`, which maps a path back to where it was before a
+list, and `rebase_change`. Neither is exposed to JavaScript. See
+[Change algebra](/docs/parser/change-algebra) for the Rust API.

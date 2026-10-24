@@ -1,0 +1,303 @@
+---
+title: Paths and positions
+description: Address nodes by index path or by flat ProseMirror position, and carry positions across edits.
+---
+
+The crate has two ways to point at a place in a document:
+
+- An **index path** is a list of child indices from the root. It names a node. It is
+  what queries return and what most editing APIs take.
+- A **flat position** is a single integer, the scheme ProseMirror and Tiptap use for
+  `from` and `to`. It names a gap between characters or nodes.
+
+You can convert between the two, and carry a flat position across a batch of edits with
+a `PosMap`.
+
+## Index paths
+
+A path is a `&[usize]`. The root is `&[]`. In a `doc > paragraph > text` tree the text
+node is at `&[0, 0]`. Nodes have no parent pointers: the parent of `path` is the node at
+`&path[..path.len() - 1]`.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let mut doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}
+]}"#)?;
+
+assert_eq!(doc.node_at(&[0, 1]).unwrap().get_text(), Some("b"));
+assert!(doc.node_at(&[5]).is_none());
+
+doc.node_at_mut(&[0, 1]).unwrap().set_text("B");
+
+let path = doc.path_to(|n| n.get_text() == Some("B")).unwrap();
+assert_eq!(path, vec![0, 1]);
+let parent = doc.node_at(&path[..path.len() - 1]).unwrap();
+assert_eq!(parent.node_type.as_deref(), Some("paragraph"));
+
+let texts = doc.paths_to(|n| n.node_type.as_deref() == Some("text"));
+assert_eq!(texts, vec![vec![0, 0], vec![0, 1]]);
+assert_eq!(doc.path_to(|n| n.node_type.as_deref() == Some("doc")), Some(vec![]));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Returns |
+| --- | --- |
+| `node_at(path)` | `Option<&Node>`, `None` if any index is missing |
+| `node_at_mut(path)` | `Option<&mut Node>` |
+| `path_to(pred)` | `Option<Vec<usize>>`: the first match in pre-order, `Some(vec![])` for the node itself |
+| `paths_to(pred)` | `Vec<Vec<usize>>`: every match in pre-order |
+
+A path is only valid for the tree it was taken from. Inserting or removing a sibling
+before it shifts it. To carry a path through a list of changes, see
+[Change algebra](/docs/parser/change-algebra).
+
+## Flat positions
+
+ProseMirror gives every node a size and counts positions through the document:
+
+- A **text** node's size is its length in Unicode scalar values (Rust `char`s), not
+  bytes and not UTF-16 units.
+- A **leaf** node, such as an image, has size 1.
+- Any other node has size `2 + content size`: one token to open it, one to close it.
+- The root is not wrapped in tokens. Valid positions run from `0` to the root's content
+  size, and `0` is just inside the root, before its first child.
+
+```text
+doc > [ paragraph("hi"), horizontalRule, paragraph("ok") ]
+
+0     1   2   3      4      5     6   7   8      9
+| <p> | h | i | </p> | <hr> | <p> | o | k | </p> |
+```
+
+Each `|` is a position. Positions sit between tokens and characters.
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let doc = Node::element("doc").with_children([
+    Node::element("paragraph").with_text("hi"),
+    Node::element("horizontalRule"),
+    Node::element("paragraph").with_text("ok"),
+]);
+
+assert_eq!(doc.content_size(), 9);
+assert_eq!(doc.child(0).unwrap().node_size(), 4);
+assert_eq!(doc.child(1).unwrap().node_size(), 1);
+
+assert_eq!(doc.pos_before(&[1])?, 4);      // the rule
+assert_eq!(doc.pos_after(&[1])?, 5);
+assert_eq!(doc.pos_before(&[0, 0])?, 1);   // the text "hi"
+assert_eq!(doc.pos_in_text(&[0, 0], 1)?, 2); // between "h" and "i"
+# Ok::<(), tiptap_rusty_parser::PosError>(())
+```
+
+### Leaf policy
+
+Whether a node is a leaf (size 1) or an empty container (size 2, like an empty
+paragraph) is a schema property. The JSON cannot tell you: both have no `content`. A
+`LeafPolicy` decides it:
+
+- `LeafPolicy::Builtin`, the default, treats `image`, `horizontalRule` and `hardBreak`
+  as leaves and every other non-text node as a container.
+- `LeafPolicy::from_types([...])` or `LeafPolicy::Types(set)` uses your own list of leaf
+  types. It replaces the built-in list, it does not extend it.
+
+Every method has a `_with` variant that takes a policy. The plain methods use
+`LeafPolicy::Builtin`.
+
+```rust
+use tiptap_rusty_parser::{LeafPolicy, Node};
+
+let embed = Node::element("mediaEmbed");
+assert_eq!(embed.node_size(), 2);           // a container by default
+
+let policy = LeafPolicy::from_types(["mediaEmbed", "image"]);
+assert!(embed.is_leaf_with(&policy));
+assert_eq!(embed.node_size_with(&policy), 1);
+```
+
+A text node is never a leaf: any node with a `text` field is sized by its text.
+
+### Resolve a position
+
+`resolve` turns a flat position into a `ResolvedPos`: the container it falls in and
+where inside it.
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let doc = Node::element("doc").with_children([
+    Node::element("paragraph").with_text("hi"),
+    Node::element("horizontalRule"),
+]);
+
+// Inside the text "hi", one scalar in.
+let r = doc.resolve(2)?;
+assert_eq!(r.path, vec![0]);
+assert_eq!(r.depth, 1);
+assert!(r.is_in_text());
+let point = r.text_offset.as_ref().unwrap();
+assert_eq!((point.path.clone(), point.offset), (vec![0, 0], 1));
+assert_eq!(r.parent(&doc).unwrap().node_type.as_deref(), Some("paragraph"));
+
+// Between the paragraph and the rule, in the doc.
+let r = doc.resolve(4)?;
+assert_eq!(r.path, Vec::<usize>::new());
+assert_eq!(r.index, 1);
+assert!(!r.is_in_text());
+# Ok::<(), tiptap_rusty_parser::PosError>(())
+```
+
+| `ResolvedPos` field | Meaning |
+| --- | --- |
+| `pos` | The position you resolved |
+| `path` | Index path of the containing node |
+| `depth` | `path.len()` |
+| `parent_offset` | Offset inside the container's content, in flat units |
+| `index` | Index of the child at or just after the position |
+| `text_offset` | `Some(TextPoint { path, offset })` when the position is strictly inside a text node, with `offset` in scalars |
+
+A position at the boundary between two text nodes, or at either end of one, is not
+inside text: `text_offset` is `None` and `index` points at the next child.
+`ResolvedPos` and `TextPoint` hold only owned indices, so they serialize with serde.
+
+### Inline offsets
+
+The [range editing](/docs/parser/range-and-block-editing) API addresses text inside one
+block with a `Position { child, offset }`. Two methods bridge flat positions and that
+form:
+
+```rust
+use tiptap_rusty_parser::{Node, Position};
+
+let doc = Node::element("doc").with_child(
+    Node::element("paragraph").with_children([Node::text("ab"), Node::text("cd")]),
+);
+
+// Flat 4 = open token + "ab" + one scalar into "cd".
+let (block, inline) = doc.pos_to_inline(4)?;
+assert_eq!(block, vec![0]);
+assert_eq!(inline, Position::new(1, 1));
+assert_eq!(doc.inline_to_pos(&[0], Position::new(1, 1))?, 4);
+
+// A boundary gives offset 0 on the next child.
+assert_eq!(doc.pos_to_inline(1)?, (vec![0], Position::new(0, 0)));
+# Ok::<(), tiptap_rusty_parser::PosError>(())
+```
+
+`pos_to_inline` returns the resolved container's path. For a position between blocks
+that container is the parent of the blocks, not a block. Both methods use the default
+leaf policy.
+
+### Methods
+
+| Method | Returns |
+| --- | --- |
+| `node_size()` / `node_size_with(policy)` | The node's ProseMirror size |
+| `content_size()` / `content_size_with(policy)` | Sum of the children's sizes |
+| `is_leaf()` / `is_leaf_with(policy)` | Whether the node is a leaf |
+| `resolve(pos)` / `resolve_with(pos, policy)` | `Result<ResolvedPos, PosError>` |
+| `pos_before(path)` / `pos_before_with(path, policy)` | `Result<usize, PosError>`: the position just before the node |
+| `pos_after(path)` / `pos_after_with(path, policy)` | `Result<usize, PosError>`: the position just after the node |
+| `pos_in_text(text_path, offset)` | `Result<usize, PosError>`: a scalar offset inside a text node |
+| `pos_to_inline(pos)` | `Result<(Vec<usize>, Position), PosError>` |
+| `inline_to_pos(block_path, inline)` | `Result<usize, PosError>` |
+
+`PosRange { from, to }` is a flat range over the whole document. `PosRange::new`,
+`PosRange::collapsed` and `is_empty` build and test it. It is different from the
+block-scoped `Range` used by range editing.
+
+### PosError
+
+| Variant | When |
+| --- | --- |
+| `OutOfRange { pos, size }` | `pos` is greater than the root's content size |
+| `PathNotFound { path }` | A path does not resolve to a node |
+| `OffsetOutOfRange { path, offset }` | A child index is past the end of its parent, a `pos_in_text` path is not a text node, or an offset is past the end of the text |
+
+```rust
+use tiptap_rusty_parser::{Node, PosError};
+
+let doc = Node::element("doc").with_child(Node::element("paragraph").with_text("hi"));
+assert_eq!(doc.resolve(9), Err(PosError::OutOfRange { pos: 9, size: 4 }));
+assert!(doc.pos_before(&[3]).is_err());
+assert!(doc.pos_in_text(&[0], 0).is_err());      // a paragraph, not text
+assert!(doc.pos_in_text(&[0, 0], 3).is_err());   // past "hi"
+```
+
+## Position maps
+
+A `PosMap` carries a flat position from the document before a batch of edits to the
+document after it. Use it to keep a cursor, a selection or a decoration anchored after
+[position-addressed edits](/docs/parser/position-editing).
+`apply_pos_edits_mapped` applies a batch and returns the map:
+
+```rust
+use tiptap_rusty_parser::{Assoc, Node, PosContent, PosEdit};
+
+// doc > paragraph("hello world"); insert "big " before "world" (pos 7).
+let mut doc = Node::element("doc")
+    .with_child(Node::element("paragraph").with_child(Node::text("hello world")));
+let (_patch, map) = doc.apply_pos_edits_mapped(&[PosEdit::Insert {
+    pos: 7,
+    content: PosContent::Text { text: "big ".into(), marks: None },
+}])?;
+
+assert_eq!(map.map(3, Assoc::Left), 3);    // before the edit
+assert_eq!(map.map(7, Assoc::Left), 7);    // at the edit, stays before the new text
+assert_eq!(map.map(7, Assoc::Right), 11);  // at the edit, moves past it
+assert_eq!(map.map(13, Assoc::Left), 17);  // after the edit, shifted by 4
+assert_eq!(doc.text_content(), "hello big world");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`PosMap::from_pos_edits(&edits)` builds the same map without applying anything. Insert,
+delete and replace edits add a step. Mark and attribute edits do not change sizes and
+add none. Node content is sized with the default leaf policy.
+
+### Assoc
+
+`Assoc` decides where a position that touches a replaced span goes:
+
+- `Assoc::Left`, the default, maps it to the start of the replacement.
+- `Assoc::Right` maps it to the end of the replacement.
+
+This applies to positions inside the replaced span and at both of its ends. For a
+deletion both sides are the same point.
+
+```rust
+use tiptap_rusty_parser::{Assoc, PosMap};
+
+// [5, 10) was replaced by 2 units.
+let mut map = PosMap::new();
+map.push(5, 5, 2);
+assert_eq!(map.map(4, Assoc::Left), 4);    // before: unchanged
+assert_eq!(map.map(7, Assoc::Left), 5);    // inside: left edge
+assert_eq!(map.map(7, Assoc::Right), 7);   // inside: right edge (5 + 2)
+assert_eq!(map.map(10, Assoc::Left), 5);   // at the old end, Left still goes left
+assert_eq!(map.map(10, Assoc::Right), 7);
+assert_eq!(map.map(12, Assoc::Left), 9);   // after: shifted by -3
+```
+
+<Callout title="Differs from ProseMirror at the end of a span">
+ProseMirror maps a position at the end of a replaced span to the end of the replacement
+whatever the association. `PosMap` follows `Assoc` there too, so with `Assoc::Left` it
+moves to the start.
+</Callout>
+
+### Methods
+
+| Method | What it does |
+| --- | --- |
+| `PosMap::new()` | An empty map, which maps every position to itself |
+| `push(start, old_len, new_len)` | Record that `[start, start + old_len)` became `new_len` units wide, in pre-edit coordinates. A step with both lengths 0 is ignored. |
+| `map(pos, assoc)` | Map one position |
+| `map_range(range, assoc)` | Map both ends of a `PosRange` with the same `assoc`, so a collapsed range stays collapsed |
+| `from_pos_edits(edits)` | Build a map from a batch of `PosEdit`s |
+| `is_empty()` | Whether the map has no steps |
+
+Steps are kept sorted by `start`, so you can push them in any order. They must not
+overlap. `push` does not check that, and overlapping steps map to unspecified edges.
+`PosMap` and `Assoc` serialize with serde.

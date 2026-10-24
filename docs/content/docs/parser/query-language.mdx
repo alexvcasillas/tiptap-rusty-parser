@@ -1,0 +1,353 @@
+---
+title: Query language
+description: Compile a query string such as `type == heading && attrs.level > 1` once and match it against nodes.
+---
+
+`Query` is a small, schema-agnostic query language over nodes. Use it when the query
+comes from a user, a config file or another process, where you cannot pass a Rust
+closure. Tiptap Studio's find box runs the same language.
+
+```rust
+use tiptap_rusty_parser::{Document, Query};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Title"}]},
+    {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Usage"}]}
+]}"#)?;
+
+let q = Query::parse("type == heading && attrs.level > 1")?;
+assert_eq!(q.find_paths(doc.root()), vec![vec![1]]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+`Query::parse` compiles the string once into a tree. Matching then walks that tree
+without allocating, so compile a query once and reuse it.
+
+## Running a query
+
+| Method | Returns | Notes |
+| --- | --- | --- |
+| `Query::parse(src)` | `Result<Query, QueryError>` | Compile a query |
+| `q.matches(&node)` | `bool` | Tests one node. `depth` is evaluated as 0. |
+| `q.matches_at(&node, depth)` | `bool` | Tests one node found at index-path length `depth` |
+| `q.find_paths(&root)` | `Vec<Vec<usize>>` | Index paths of every match under `root`, including `root`, in document order |
+
+`depth` is the only part of the language that needs context: the node itself does not
+know how deep it sits. `find_paths` passes the real depth for every node. `matches`
+always uses 0, so `depth == 0` is true for any node there. When you walk the tree
+yourself, use `matches_at`:
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let q = Query::parse("depth >= 2")?;
+let text = Node::text("x");
+assert!(!q.matches(&text));
+assert!(q.matches_at(&text, 2));
+assert!(!q.matches_at(&text, 1));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The paths from `find_paths` work with `node_at`, `node_at_mut` and every other
+[path-based API](/docs/parser/paths-and-positions).
+
+## Grammar
+
+```text
+query   := or
+or      := and (("||" | "or") and)*
+and     := unary (("&&" | "and")? unary)*      adjacent terms are ANDed
+unary   := ("!" | "not") unary | "(" or ")" | term
+term    := WORD | STRING                       bare word / quoted string
+         | "type" OP value
+         | "text" [OP value]
+         | "attrs" | "attrs." PATH [OP value]
+         | "marks" | "marks." NAME ["." PATH] [OP value]
+         | "mark" OP value
+         | "has" "mark" value | "has" "attr" PATH
+         | "children" [OP NUMBER]
+         | "depth" OP NUMBER
+OP      := "==" | "=" | "!=" | "<" | "<=" | ">" | ">=" | "~"
+value   := WORD | STRING        WORD: number, true, false, null, or text
+```
+
+Whitespace separates tokens and is otherwise ignored. A word runs until whitespace or
+one of `( ) & | ! = < > ~ " '`.
+
+## Bare words and strings
+
+A bare word, or a quoted string, matches a node when it is a case-insensitive substring
+of the node's own `text` or of its `type`. Own text means the node's `text` field: a
+paragraph does not match the words of its text children.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let n = Node::text("The diff engine");
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+assert!(m("ENGINE"));
+assert!(m("\"diff engine\""));     // a quoted phrase
+assert!(m("'diff engine'"));       // single quotes work too
+assert!(m("tex"));                 // matches the type "text"
+assert!(!m("\"engine diff\""));
+assert!(m("diff engine"));         // two words, ANDed
+```
+
+Strings use `"` or `'`. A backslash keeps the next character as is, so `"say \"hi\""`
+searches for `say "hi"`. Case folding is Unicode-aware: `ÜBER` finds `über`.
+
+## Operators
+
+| Operator | Meaning |
+| --- | --- |
+| `==`, `=` | Equal. Exact and case-sensitive for strings. |
+| `!=` | Not equal. Always the negation of `==`. |
+| `<`, `<=`, `>`, `>=` | Numbers compare numerically, strings lexicographically (by bytes, case-sensitive) |
+| `~` | Case-insensitive substring. Only for strings. |
+
+Because `!=` is the negation of `==`, a missing field is `!=` anything: `attrs.level != 1`
+matches every node that has no `level` attribute.
+
+## Values
+
+An unquoted value is read as a number if it parses as one, as a boolean for `true` and
+`false`, as null for `null`, and as a string otherwise. A quoted value is always a
+string.
+
+How a value compares depends on the JSON type of the field:
+
+| Field value | Comparison |
+| --- | --- |
+| String | Against the value's text. `==`, `<` and the others compare exactly, `~` is a substring test. An unquoted `1` is also the text `1`, so it equals the string `"1"`. |
+| Number | Numerically, and only against a number value. `~` never matches. |
+| Boolean | Only `==` and `!=` against `true` or `false` |
+| Null | Only `==` and `!=` against `null` |
+| Array | Matches if any element matches |
+| Object | Never matches a comparison. It still exists for an existence test. |
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let n = Node::element("heading").with_attr("level", 1).with_attr("id", "1");
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+assert!(m("attrs.level == 1"));
+assert!(!m("attrs.level == \"1\""));   // a string never equals a number
+assert!(m("attrs.id == 1"));           // an unquoted 1 is also the text "1"
+assert!(m("attrs.id == \"1\""));
+assert!(!m("attrs.level ~ 1"));        // ~ only works on strings
+```
+
+## Fields
+
+### `type`
+
+`type` takes an operator and a value.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let n = Node::element("bulletList");
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+assert!(m("type == bulletList"));
+assert!(m("type != text"));
+assert!(m("type ~ list"));
+```
+
+### `text`
+
+`text` alone tests that the node has its own `text`. With an operator it compares that
+text.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let n = Node::text("see repo");
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+assert!(m("text"));
+assert!(m("text ~ \"REPO\""));
+assert!(m("text == \"see repo\""));
+assert!(!m("text == see"));
+assert!(!Query::parse("text").unwrap().matches(&Node::element("paragraph")));
+```
+
+### `attrs` and `attrs.PATH`
+
+`attrs` alone matches a node with at least one attribute. `attrs.KEY` alone tests that
+the attribute exists. With an operator it compares the attribute's value.
+
+A path descends into objects by key (`attrs.meta.source`) and into arrays by index
+(`attrs.tags.0`). Comparing against an array matches when any element does.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+use serde_json::json;
+
+let n = Node::element("callout")
+    .with_attr("priority", 2)
+    .with_attr("collapsed", false)
+    .with_attr("variant", "info")
+    .with_attr("note", serde_json::Value::Null)
+    .with_attr("meta", json!({"source": "import", "tags": ["docs", "beta"]}));
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+
+assert!(m("attrs"));
+assert!(m("attrs.variant") && !m("attrs.missing"));
+assert!(m("attrs.priority >= 2") && m("attrs.priority < 3") && !m("attrs.priority != 2"));
+assert!(m("attrs.collapsed == false"));
+assert!(m("attrs.note == null"));
+assert!(m("attrs.variant ~ NF"));
+assert!(m("attrs.meta.source == import"));
+assert!(m("attrs.meta.tags == docs"));    // any element
+assert!(m("attrs.meta.tags ~ bet"));
+assert!(m("attrs.meta.tags.0 == docs"));  // by index
+assert!(!m("attrs.meta.tags.1 == docs"));
+```
+
+### `marks`, `mark` and `marks.NAME`
+
+| Form | Matches |
+| --- | --- |
+| `marks` | The node has at least one mark |
+| `mark OP value` | Some mark's type compares true. `mark != link` means no `link` mark. |
+| `has mark NAME` | Same as `mark == NAME` |
+| `marks.NAME` | The node has a mark of type `NAME` |
+| `marks.NAME.PATH OP value` | Some `NAME` mark has an attribute at `PATH` that compares true |
+
+`marks.NAME` without a path takes no operator. Comparing a mark attribute with `!=`
+means no `NAME` mark has that value.
+
+```rust
+use tiptap_rusty_parser::{Mark, Node, Query};
+
+let n = Node::text_with_marks(
+    "see repo",
+    [Mark::new("bold"), Mark::new("link").attr("href", "https://github.com/x")],
+);
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+
+assert!(m("marks"));
+assert!(m("has mark bold") && m("mark == link") && !m("mark == italic"));
+assert!(m("mark ~ LIN"));
+assert!(m("mark != italic") && !m("mark != link"));
+assert!(m("marks.link") && !m("marks.italic"));
+assert!(m("marks.link.href ~ github"));
+assert!(!m("marks.link.href != \"https://github.com/x\""));
+```
+
+### `has attr PATH`
+
+`has attr PATH` is the same as `attrs.PATH` with no operator.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+use serde_json::json;
+
+let n = Node::element("callout").with_attr("meta", json!({"source": "import"}));
+assert!(Query::parse("has attr meta.source").unwrap().matches(&n));
+assert!(!Query::parse("has attr meta.other").unwrap().matches(&n));
+```
+
+### `children`
+
+`children` alone matches a node with at least one child. With an operator it compares
+the number of children. The value must be a number, and `~` is not allowed.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let list = Node::element("bulletList").with_children((0..3).map(|_| Node::element("listItem")));
+let m = |q: &str| Query::parse(q).unwrap().matches(&list);
+assert!(m("children"));
+assert!(m("children > 2") && m("children == 3"));
+assert!(Query::parse("!children").unwrap().matches(&Node::element("listItem")));
+```
+
+### `depth`
+
+`depth` is the length of the node's index path: 0 for the root, 1 for its children. It
+needs an operator and a number.
+
+```rust
+use tiptap_rusty_parser::{doc, Document, Node, Query};
+
+let list = Node::element("bulletList").with_children((0..3).map(|_| Node::element("listItem")));
+let d = Document::new(doc([list]));
+let q = Query::parse("depth == 2")?;
+assert_eq!(q.find_paths(d.root()), vec![vec![0, 0], vec![0, 1], vec![0, 2]]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## Boolean logic
+
+| Syntax | Meaning |
+| --- | --- |
+| `a && b`, `a and b`, `a b` | Both. Adjacent terms are ANDed. |
+| `a \|\| b`, `a or b` | Either |
+| `!a`, `not a` | Not |
+| `( … )` | Grouping |
+
+`and`, `or` and `not` are case-insensitive. `&&` binds tighter than `||`, and `!`
+binds tightest.
+
+```rust
+use tiptap_rusty_parser::{Node, Query};
+
+let n = Node::element("heading").with_attr("level", 2);
+let m = |q: &str| Query::parse(q).unwrap().matches(&n);
+assert!(m("type == heading && attrs.level == 2"));
+assert!(m("type == paragraph or type == heading"));
+assert!(m("type == heading AND NOT attrs.level == 1"));
+assert!(m("not (type == text || attrs.level == 1)"));
+assert!(m("!text and heading"));
+// && first: callout || (heading && level == 2)
+assert!(m("type == callout || type == heading && attrs.level == 2"));
+```
+
+## Keywords
+
+The field names `type`, `text`, `attrs`, `marks`, `mark`, `has`, `children` and `depth`
+are fields, not bare words. They are case-sensitive. To search for one of them as a
+word, quote it: `"type"`. A word that is not a field and is followed by an operator is
+an error, because it is most likely a missing `attrs.` prefix:
+
+```rust
+use tiptap_rusty_parser::{Query, QueryErrorKind};
+
+let err = Query::parse("level > 1").unwrap_err();
+assert_eq!(err.kind, QueryErrorKind::UnknownField("level".into()));
+assert_eq!(err.to_string(), "unknown field `level` (try attrs.level) (at byte 0)");
+```
+
+## QueryError
+
+A failed parse returns a `QueryError` with the byte `offset` in the query string and a
+`kind`. Its `Display` ends with `(at byte N)`. `QueryErrorKind` is `#[non_exhaustive]`,
+so match it with a wildcard arm.
+
+| Kind | Example | Offset |
+| --- | --- | --- |
+| `Empty` | `""`, `"   "` | 0 |
+| `UnexpectedEnd { expected }` | `attrs.level >`, `type`, `(a \|\| b`, `a &&` | End of the query |
+| `UnexpectedToken { found, expected }` | `type heading`, `a)`, `has bold` | Start of the token |
+| `UnterminatedString` | `foo "bar` | The opening quote |
+| `LoneOperator(char)` | `a & b`, `x \| y` | The single `&` or `\|` |
+| `UnknownField(String)` | `level > 1` | Start of the word |
+| `ExpectedNumber` | `children > x` | The value |
+| `InvalidOperator` | `children ~ 2`, `marks.link == x` | The operator |
+| `EmptyPath` | `attrs.`, `attrs..x` | The empty segment |
+
+```rust
+use tiptap_rusty_parser::{Query, QueryErrorKind};
+
+let err = Query::parse("attrs.level >").unwrap_err();
+assert_eq!(err.offset, 13);
+assert_eq!(err.kind, QueryErrorKind::UnexpectedEnd { expected: "a value" });
+assert_eq!(err.to_string(), "expected a value at end of query (at byte 13)");
+
+assert_eq!(Query::parse("a & b").unwrap_err().offset, 2);
+assert_eq!(Query::parse("children ~ 2").unwrap_err().kind, QueryErrorKind::InvalidOperator);
+assert_eq!(Query::parse("attrs..x").unwrap_err().offset, 6);
+```
+
+`QueryError` implements `std::error::Error`, so `?` converts it into
+`Box<dyn std::error::Error>`.

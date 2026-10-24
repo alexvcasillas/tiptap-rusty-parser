@@ -1,0 +1,143 @@
+---
+title: Transactions and undo
+description: Record edits as change lists, undo and redo them, and group them, from JavaScript.
+---
+
+The Rust crate has a `Transform` type that records every edit into a change list as it
+runs. See [Transactions](/docs/parser/transactions). It is not exposed to JavaScript.
+In JavaScript you build the same thing from three pieces:
+
+| Piece | Returns | Role |
+| --- | --- | --- |
+| `doc.applyPosEdits(edits)` | `Change[]` | Applies a batch atomically and returns its change list. |
+| `before.diff(after)` | `Change[]` | Records any edit, by comparing snapshots. |
+| `before.invert(changes)` | `Change[]` | The list that undoes `changes`. Call it on the document as it was before them. |
+
+`doc.applyChanges(list)` replays a list, forward for redo or inverted for undo.
+
+## Undo a position edit
+
+`applyPosEdits` returns the forward change list. `invert` needs the document as it was
+before those changes, so take a snapshot first:
+
+```ts
+const doc = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [{ type: "paragraph", content: [{ type: "text", text: "hello world" }] }],
+});
+
+const before = TiptapDoc.fromJSONString(doc.toJSONString());
+const forward = doc.applyPosEdits([
+  { type: "replace", from: 7, to: 12, content: { type: "text", text: "there" } },
+]);
+const backward = before.invert(forward);
+before.free();
+
+doc.textContent(); // "hello there"
+doc.applyChanges(backward); // "hello world"
+doc.applyChanges(forward); // "hello there"
+```
+
+`invert(changes)` replays `changes` on a copy of the document it is called on and diffs
+the result back. Called on the edited document instead of the snapshot, it returns a wrong
+list or throws `apply: no node at path [...]` when `changes` does not apply there.
+
+## Record any edit
+
+The path-based methods, such as `setAttr`, `splitBlock` or `wrap`, edit in place and
+return no change list. Snapshot, edit, then diff in both directions:
+
+```ts
+import { TiptapDoc, type Change } from "@tiptap-studio/rusty-parser";
+
+interface Step {
+  forward: Change[];
+  backward: Change[];
+}
+
+function record(doc: TiptapDoc, edit: (doc: TiptapDoc) => void): Step {
+  const before = TiptapDoc.fromJSONString(doc.toJSONString());
+  try {
+    edit(doc);
+    return { forward: before.diff(doc), backward: doc.diff(before) };
+  } finally {
+    before.free();
+  }
+}
+
+const step = record(doc, (d) => {
+  d.splitBlockAt([0], { child: 0, offset: 5 }, 0);
+  d.wrap([1], "blockquote", undefined);
+});
+
+doc.applyChanges(step.backward); // back to one paragraph
+doc.applyChanges(step.forward); // split and wrapped again
+```
+
+`doc.diff(before)` gives the same result as `before.invert(before.diff(doc))` with one
+diff instead of two.
+
+The snapshot copies the whole document, so its cost grows with the document. For large
+documents and frequent edits, prefer `applyPosEdits`, which already returns the forward
+list.
+
+## Group steps
+
+To make several steps one undo entry, compose the forward lists in order and the backward
+lists in reverse order:
+
+```ts
+import { compose } from "@tiptap-studio/rusty-parser";
+
+const a = record(doc, (d) => d.setAttr([0], "textAlign", "center"));
+const b = record(doc, (d) => d.setAttr([0], "textAlign", "right"));
+
+const group: Step = {
+  forward: compose(a.forward, b.forward), // [{ op: "setAttr", ..., value: "right" }]
+  backward: compose(b.backward, a.backward), // [{ op: "removeAttr", ..., key: "textAlign" }]
+};
+```
+
+`compose` also compacts, so repeated writes to the same field collapse to the last. See
+[Change algebra](/docs/javascript/change-algebra).
+
+## An undo stack
+
+```ts
+const undoStack: Step[] = [];
+const redoStack: Step[] = [];
+
+function commit(step: Step) {
+  undoStack.push(step);
+  redoStack.length = 0;
+}
+
+function undo(doc: TiptapDoc) {
+  const step = undoStack.pop();
+  if (!step) return;
+  doc.applyChanges(step.backward);
+  redoStack.push(step);
+}
+
+function redo(doc: TiptapDoc) {
+  const step = redoStack.pop();
+  if (!step) return;
+  doc.applyChanges(step.forward);
+  undoStack.push(step);
+}
+```
+
+Each list is only valid against the exact document state it was recorded for. Apply steps
+strictly in stack order, and clear both stacks when the document is replaced from outside.
+
+## Failure behaviour
+
+| Operation | On failure |
+| --- | --- |
+| `applyPosEdits` | Throws and leaves the document unchanged. |
+| `applyChanges` | Throws; the changes before the failing one stay applied. |
+| `invert` | Throws; nothing is modified. |
+
+Because `applyChanges` is not atomic, keep the lists you replay to ones produced by this
+package for the same document state. When you must apply a list from elsewhere, apply it to
+a copy first and swap the copy in on success.
