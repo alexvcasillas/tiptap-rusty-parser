@@ -1,8 +1,6 @@
 [package]
 name = "tiptap-rusty-markdown"
 version = "0.1.0"
-# First crates.io publish is manual (Trusted Publishing cannot create a crate); re-enabled after.
-publish = false
 edition = "2021"
 description = "Fast Markdown <-> Tiptap/ProseMirror JSONContent conversion on top of tiptap-rusty-parser"
 license = "MIT"
@@ -15,7 +13,7 @@ readme = "README.md"
 all-features = true
 
 [dependencies]
-tiptap-rusty-parser = { path = "../parser" }
+tiptap-rusty-parser = { version = "0.6.0", path = "../parser" }
 pulldown-cmark = { version = "0.13", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
