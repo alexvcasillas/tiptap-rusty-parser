@@ -56,6 +56,8 @@ ProseMirror `JSONContent` documents, in Rust.
 
 ## Install
 
+Upgrading from 0.5? See [MIGRATION.md](MIGRATION.md).
+
 Add to `Cargo.toml`:
 
 ```toml
