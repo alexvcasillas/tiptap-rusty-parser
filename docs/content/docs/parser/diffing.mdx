@@ -1,0 +1,236 @@
+---
+title: Diffing
+description: Compute the changes between two documents, apply them, and invert them for undo.
+---
+
+`diff` compares two trees and returns a list of `Change`s. Applying that list to the first
+tree reproduces the second exactly. `invert` turns the list into its undo.
+
+```rust
+# use tiptap_rusty_parser::{Change, Document};
+let a = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello world"}]}]}"#,
+)?;
+let b = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello there"}]}]}"#,
+)?;
+
+let changes = a.diff(&b);
+assert_eq!(
+    changes,
+    vec![Change::SetText { path: vec![0, 0], text: Some("hello there".into()) }]
+);
+
+let mut c = a.clone();
+c.apply(&changes).unwrap();
+assert_eq!(c, b);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+The same operations exist as free functions, `diff(&a, &b)`, `apply(&mut a, &changes)` and
+`invert(&a, &changes)`, and as methods on both `Node` and `Document`.
+
+## The `Change` enum
+
+Every change carries a `path`, an index path from the root (see
+[Paths and positions](/docs/parser/paths-and-positions)). Node-local changes address the
+node they modify. Child-list changes (`Insert`, `Remove`, `Move`) address the **parent**
+and pick the child with an index.
+
+| Variant | Fields | Effect |
+| --- | --- | --- |
+| `SetAttr` | `path`, `key`, `value` | Sets attribute `key` on the node, adding or overwriting it. |
+| `RemoveAttr` | `path`, `key` | Removes attribute `key`. |
+| `SetText` | `path`, `text: Option<String>` | Replaces the node's text. `None` clears it. |
+| `SpliceText` | `path`, `from`, `len_del`, `insert` | Replaces `len_del` characters starting at `from` with `insert`. Offsets count Unicode scalar values. |
+| `SetMarks` | `path`, `marks: Option<Vec<Mark>>` | Replaces the node's whole mark list. `None` clears it. |
+| `SetExtra` | `path`, `key`, `value` | Sets an unknown top-level field, such as an `id` your app stores on nodes. |
+| `RemoveExtra` | `path`, `key` | Removes an unknown top-level field. |
+| `Insert` | `path` (parent), `index`, `node` | Inserts `node` as child `index`. |
+| `Remove` | `path` (parent), `index` | Removes child `index`. |
+| `Move` | `path` (parent), `from`, `to` | Removes child `from`, then inserts it so it lands at `to` in the shortened list. The subtree is moved, not cloned. |
+| `Replace` | `path`, `node` | Replaces the node wholesale. An empty path replaces the root. |
+
+`diff` emits `Replace` when a node's `type` changes. It also emits it when an empty
+container and an absent one differ (`"content": []` against no `content`), because the
+other changes cannot express that difference and the round trip must stay exact.
+
+### JSON form
+
+`Change` serializes as an object tagged by `op`, with camelCase names:
+
+```rust
+# use tiptap_rusty_parser::Change;
+let change = Change::SpliceText { path: vec![0, 0], from: 6, len_del: 0, insert: "big ".into() };
+assert_eq!(
+    serde_json::to_value(&change).unwrap(),
+    serde_json::json!({ "op": "spliceText", "path": [0, 0], "from": 6, "lenDel": 0, "insert": "big " })
+);
+```
+
+The other tags are `setAttr`, `removeAttr`, `setText`, `setMarks`, `setExtra`,
+`removeExtra`, `insert`, `remove`, `move` and `replace`. This is the shape the WASM package
+returns, so a change list can travel between Rust and JavaScript unchanged.
+
+## Change paths are live
+
+`apply` runs the changes strictly in order, and each one sees the tree as the previous
+changes left it. A change's path and indices are therefore **live**: they assume every
+earlier change in the list has already run.
+
+```rust
+# use tiptap_rusty_parser::{doc, Change, Node};
+let p = |t: &str| Node::element("paragraph").with_text(t);
+let a = doc([p("one"), p("two"), p("three")]);
+let b = doc([p("two")]);
+
+let changes = a.diff(&b);
+assert_eq!(
+    changes,
+    vec![
+        Change::Remove { path: vec![], index: 0 }, // "one"
+        Change::Remove { path: vec![], index: 1 }, // "three", now at index 1
+    ]
+);
+```
+
+"three" sits at index 2 in `a`, but the second `Remove` says index 1, because "one" is
+already gone when it runs. Two consequences follow:
+
+- Apply a list in order, and apply all of it. A change taken out of the middle of a list
+  may point at the wrong node in the original tree.
+- To show a change against the original tree, or to apply it on its own, translate its
+  path with `unmap_path` or `rebase_change`. See
+  [Change algebra](/docs/parser/change-algebra).
+
+## Moves
+
+A child that changes position within the same parent comes out as one `Move` instead of
+a `Remove` plus an `Insert`, so the subtree is not cloned:
+
+```rust
+# use tiptap_rusty_parser::{doc, Change, Node};
+# let p = |t: &str| Node::element("paragraph").with_text(t);
+let a = doc([p("one"), p("two")]);
+let b = doc([p("two"), p("one")]);
+let changes = a.diff(&b);
+assert!(matches!(changes.as_slice(), [Change::Move { .. }]));
+
+let mut c = a.clone();
+c.apply(&changes).unwrap();
+assert_eq!(c, b);
+```
+
+Children are aligned by equality, with a longest common subsequence. Leftover removals and
+insertions that are equal by value become moves. Moves are detected within one parent
+only: a node that moves to another parent is a `Remove` and an `Insert`. Between aligned
+children, changed nodes are paired by position: a pair of the same type is diffed
+recursively, a pair of different types becomes a `Replace`. The result always reproduces
+the target, but it is not always the shortest possible list.
+
+## Text granularity
+
+By default a changed text node is one `SetText` with the whole new string. `diff_with`
+takes `DiffOptions` with a `DiffGranularity` that changes that:
+
+| Granularity | Changed text node becomes |
+| --- | --- |
+| `DiffGranularity::Block` (default) | One `SetText` with the new string. |
+| `DiffGranularity::Inline` | One `SpliceText` per changed run of characters. |
+| `DiffGranularity::Smart { replace_threshold }` | `SpliceText`s while the changed fraction is at most `replace_threshold`, otherwise one `SetText`. |
+
+The changed fraction is the number of inserted plus deleted characters, divided by the
+length of the old text plus the length of the new one. Character-level splices only apply
+when both sides have text. Everything else in the tree is diffed the same way in all three
+modes.
+
+```rust
+# use tiptap_rusty_parser::{doc, Change, DiffGranularity, DiffOptions, Node};
+let para = |t: &str| doc([Node::element("paragraph").with_text(t)]);
+let a = para("hello world");
+
+let inline = DiffOptions { text: DiffGranularity::Inline };
+assert_eq!(
+    a.diff_with(&para("hello big world"), &inline),
+    vec![Change::SpliceText { path: vec![0, 0], from: 6, len_del: 0, insert: "big ".into() }]
+);
+
+let smart = DiffOptions { text: DiffGranularity::Smart { replace_threshold: 0.5 } };
+// 4 changed characters out of 11 + 15: a splice.
+assert!(matches!(a.diff_with(&para("hello big world"), &smart)[0], Change::SpliceText { .. }));
+// Every character changed: one SetText.
+assert!(matches!(a.diff_with(&para("xyz"), &smart)[0], Change::SetText { .. }));
+```
+
+Splices within one text node are emitted highest offset first. Each offset refers to the
+original string, and applying from the end keeps the lower offsets valid.
+
+Inline diffs are useful for review and AI suggestion flows, where "inserted X, deleted Y"
+reads better than "replaced the whole paragraph".
+
+### `diff_text`
+
+`diff_text` runs the character diff on two strings and returns `TextSegment`s, each with
+a `kind` (`SegKind::Keep`, `Insert` or `Delete`) and its `text`:
+
+```rust
+# use tiptap_rusty_parser::{diff_text, SegKind};
+let segs = diff_text("hello world", "hello big world");
+let kinds: Vec<_> = segs.iter().map(|s| (s.kind, s.text.as_str())).collect();
+assert_eq!(
+    kinds,
+    vec![(SegKind::Keep, "hello "), (SegKind::Insert, "big "), (SegKind::Keep, "world")]
+);
+```
+
+It trims the common prefix and suffix, then runs a longest common subsequence on the
+middle. When the middle is very large (the product of both lengths above 2^20), it emits a
+single delete and insert for it instead, to bound the cost.
+
+## Apply
+
+`apply(&mut root, &changes)` mutates the tree in place and returns
+`Result<(), ApplyError>`. A list produced by `diff` always applies to the tree it was
+computed from. An `ApplyError` means the list was built or edited elsewhere: a path did
+not resolve, a child index was out of range, or a `SpliceText` range was past the end of
+the text. `ApplyError::path` is the path that failed.
+
+```rust
+# use tiptap_rusty_parser::{doc, apply, Change, Node};
+let mut d = doc([Node::element("paragraph")]);
+let err = apply(&mut d, &[Change::Remove { path: vec![], index: 3 }]).unwrap_err();
+assert_eq!(err.path, vec![3]);
+```
+
+`apply` stops at the first failing change and leaves the earlier changes applied. To apply
+all or nothing, use `apply_inverting`, described in
+[Transactions](/docs/parser/transactions).
+
+## Invert
+
+`invert(&base, &changes)` returns the changes that undo `changes`. `base` is the tree
+before the changes ran.
+
+```rust
+# use tiptap_rusty_parser::{doc, Node};
+let a = doc([Node::element("paragraph")]);
+let b = doc([Node::element("heading").with_attr("level", 1)]);
+
+let forward = a.diff(&b);
+let undo = a.invert(&forward).unwrap();
+
+let mut c = b.clone();
+c.apply(&undo).unwrap();
+assert_eq!(c, a);
+```
+
+`invert` clones `base`, applies the changes and diffs the result back to `base`. That
+costs a clone of the whole tree. When you make the changes yourself, a `Transform` records
+the inverse as it goes, without the clone. `invert` fails only when `changes` does not
+apply to `base`.
+
+## Next
+
+- [Transactions](/docs/parser/transactions): edit a tree and record its change list and undo.
+- [Change algebra](/docs/parser/change-algebra): compose, compact and rebase change lists.
+- [`Change` API reference](https://docs.rs/tiptap-rusty-parser/latest/tiptap_rusty_parser/enum.Change.html)

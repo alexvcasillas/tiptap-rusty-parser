@@ -1,0 +1,165 @@
+---
+title: Change algebra
+description: Combine, shorten and rebase change lists, and carry paths through them.
+---
+
+A change list from `diff` or a `Transform` is plain data. Five functions work on those
+lists without touching a tree:
+
+| Function | Use it to |
+| --- | --- |
+| `compose(a, b)` | Merge two consecutive lists into one. |
+| `compact(changes)` | Drop redundant writes from a list. |
+| `map_path(path, changes)` | Find where a node ends up after the changes run. |
+| `unmap_path(path, changes)` | Find where a node was before the changes ran. |
+| `rebase_change(change, prior)` | Re-express one change from the middle of a list so it applies on its own. |
+
+All five rely on one rule: change paths are **live**. Each change assumes every earlier
+change in its list has already run. See
+[Diffing](/docs/parser/diffing#change-paths-are-live).
+
+## `compose`
+
+`compose(a, b)` returns one list that has the same effect as applying `a` and then `b`.
+Because `b`'s paths already assume `a` ran, composing is concatenation, followed by
+`compact`.
+
+```rust
+# use tiptap_rusty_parser::{apply, compose, doc, Change, Node};
+let base = doc([Node::text("x")]);
+let a = vec![Change::SetText { path: vec![0], text: Some("y".into()) }];
+let b = vec![Change::SetText { path: vec![0], text: Some("z".into()) }];
+
+let composed = compose(&a, &b);
+assert_eq!(composed, vec![Change::SetText { path: vec![0], text: Some("z".into()) }]);
+
+let mut t = base.clone();
+apply(&mut t, &composed).unwrap();
+assert_eq!(t.text_content(), "z");
+```
+
+Use it to squash several undo steps into one, or to batch edits before you send them.
+
+## `compact`
+
+`compact(changes)` removes changes whose effect a later change overwrites, and keeps the
+result of `apply` the same. It makes only two safe reductions:
+
+- Repeated writes to the same field of the same node keep only the last one. A field is
+  the text, the marks, one attribute key or one extra key. `SetAttr` and `RemoveAttr` on
+  the same key count as writes to the same field, and so do `SetExtra` and `RemoveExtra`.
+- An `Insert` immediately followed by a `Remove` of the same child cancels out.
+
+Every other change (`Insert`, `Remove`, `Move`, `Replace` and `SpliceText`) is a barrier:
+writes are never merged across one, because after a structural change the same path may
+point at a different node. The result is never longer than the input.
+
+```rust
+# use tiptap_rusty_parser::{compact, Change, Node};
+let set = |v: u64| Change::SetAttr { path: vec![0], key: "level".into(), value: v.into() };
+let changes = vec![
+    set(1),
+    set(2),
+    Change::Insert { path: vec![], index: 0, node: Node::element("paragraph") },
+    set(3), // after the insert, [0] is a different node
+];
+assert_eq!(compact(&changes), vec![set(2), changes[2].clone(), set(3)]);
+```
+
+`compact` assumes the list applies cleanly to its base, as lists from `diff` and
+`Transform` do. On a list that would fail, the result can differ: an out-of-range `Insert`
+followed by its `Remove` cancels out here, while applying the original would return an
+error.
+
+## `map_path`
+
+`map_path(path, changes)` answers: the node at `path` before the changes, where is it
+after them? It returns `None` when the changes removed the node, removed or replaced one of
+its ancestors, or replaced the node itself.
+
+```rust
+# use tiptap_rusty_parser::{map_path, Change};
+let changes = vec![Change::Insert { path: vec![], index: 0, node: Default::default() }];
+assert_eq!(map_path(&[1, 0], &changes), Some(vec![2, 0])); // shifted right by the insert
+
+let removed = vec![Change::Remove { path: vec![], index: 1 }];
+assert_eq!(map_path(&[1, 0], &removed), None); // its parent was removed
+```
+
+Field changes never move a node. `Insert`, `Remove` and `Move` shift the index at the level
+they act on. Use `map_path` to keep a selection, a highlight or a comment anchor on the
+same node after an edit, an undo or a remote change. For flat positions, use a `PosMap`
+instead; see [Position editing](/docs/parser/position-editing#map-positions-across-a-batch).
+
+## `unmap_path`
+
+`unmap_path(path, changes)` goes the other way: given a path in the tree after the
+changes, where was that node before them? It returns `None` when the node did not exist
+before, because a change inserted it or it lives inside a replaced subtree.
+
+```rust
+# use tiptap_rusty_parser::{unmap_path, Change};
+let changes = vec![Change::Insert { path: vec![], index: 0, node: Default::default() }];
+assert_eq!(unmap_path(&[2, 0], &changes), Some(vec![1, 0]));
+assert_eq!(unmap_path(&[0], &changes), None); // the inserted node itself
+```
+
+Its main use is to show a change from the middle of a list against the original tree.
+Change `i` has live paths, so it addresses the tree after changes `0..i`.
+`unmap_path(path, &changes[..i])` turns its path into a path in the original tree, where a
+diff view can highlight it.
+
+## `rebase_change`
+
+`rebase_change(change, prior)` takes a change that comes right after `prior` in a list and
+re-expresses it against the tree before `prior` ran. You can then apply it on its own to
+the base. That is how you cherry-pick one change out of a diff, for example when a reviewer
+accepts the third suggestion but not the first two.
+
+```rust
+# use tiptap_rusty_parser::{apply, doc, rebase_change, Change, Node};
+let p = |t: &str| Node::element("paragraph").with_text(t);
+let base = doc([p("one"), p("two"), p("three")]);
+let target = doc([p("two"), p("THREE")]);
+
+let changes = base.diff(&target);
+assert_eq!(
+    changes,
+    vec![
+        Change::Remove { path: vec![], index: 0 },
+        Change::SetText { path: vec![1, 0], text: Some("THREE".into()) },
+    ]
+);
+
+// Accept only the text edit. Its live path [1, 0] assumes "one" is already gone.
+let picked = rebase_change(&changes[1], &changes[..1]).unwrap();
+assert_eq!(picked, Change::SetText { path: vec![2, 0], text: Some("THREE".into()) });
+
+let mut merged = base.clone();
+apply(&mut merged, &[picked]).unwrap();
+assert_eq!(merged, doc([p("one"), p("two"), p("THREE")]));
+```
+
+Applying `changes[1]` to `base` directly would have edited "two" instead.
+
+How each kind of change is rebased:
+
+- Node addresses go through `unmap_path`.
+- The `index` of an `Insert` and the `to` of a `Move` are insertion slots. An earlier
+  insert at the same slot does not drop them.
+- A `SpliceText` also has its character range carried back through earlier splices of the
+  same text node.
+
+`rebase_change` returns `None` when the change cannot exist on its own in the base: its
+target is inside a node that `prior` inserted or replaced, or a `SpliceText` touches text
+that an earlier change inserted or replaced.
+
+After you apply a cherry-picked change, the base has changed, so recompute the diff to get
+the remaining changes. In Tiptap Studio, **Take B** on a single change works this way; see
+[Diff and merge](/docs/studio/diff).
+
+`rebase_change` is not operational transformation. It moves one change back across the
+changes before it in the same list. It does not merge two concurrent edit streams, which
+would need stable node identity that the `Change` model does not have.
+
+See the [API reference](https://docs.rs/tiptap-rusty-parser/latest/tiptap_rusty_parser/fn.rebase_change.html).

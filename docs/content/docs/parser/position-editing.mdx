@@ -1,0 +1,198 @@
+---
+title: Position editing
+description: Apply a batch of edits addressed by flat ProseMirror positions, and map positions across them.
+---
+
+ProseMirror, and Tiptap on top of it, address content with flat integer positions: each
+node's opening and closing token counts one, each character of text counts one.
+`apply_pos_edits` takes a batch of edits in that coordinate system, applies them, and
+returns an invertible `Change` list.
+
+```rust
+# use tiptap_rusty_parser::{doc, Node, PosContent, PosEdit};
+// doc > paragraph("hello world")
+let mut d = doc([Node::element("paragraph").with_text("hello world")]);
+let original = d.clone();
+
+// "world" is at positions 7..12: 1 for the paragraph's opening token, plus offsets 6..11.
+let patch = d.apply_pos_edits(&[PosEdit::Replace {
+    from: 7,
+    to: 12,
+    content: PosContent::Text { text: "there".into(), marks: None },
+}])?;
+assert_eq!(d.text_content(), "hello there");
+
+// The patch is an ordinary change list: it replays and inverts.
+let undo = original.invert(&patch).unwrap();
+d.apply(&undo).unwrap();
+assert_eq!(d, original);
+# Ok::<(), tiptap_rusty_parser::PosEditError>(())
+```
+
+How positions are counted, including leaf nodes and resolving a position to a path, is
+covered in [Paths and positions](/docs/parser/paths-and-positions).
+
+## Edits
+
+| `PosEdit` variant | Fields | Effect |
+| --- | --- | --- |
+| `Insert` | `pos`, `content` | Inserts `content` at `pos`. |
+| `Delete` | `from`, `to` | Deletes `[from, to)`. |
+| `Replace` | `from`, `to`, `content` | Replaces `[from, to)` with `content`. |
+| `AddMark` | `from`, `to`, `mark` | Adds `mark` to the text in `[from, to)`. |
+| `RemoveMark` | `from`, `to`, `mark_type` | Removes every mark of `mark_type` from the text in `[from, to)`. |
+| `SetBlockAttrs` | `pos`, `attrs` | Replaces the whole attribute map of the block at `pos`. An empty map clears the attributes. |
+
+`content` is a `PosContent`:
+
+| `PosContent` variant | Fields | Inserts |
+| --- | --- | --- |
+| `Text` | `text`, `marks: Option<Vec<Mark>>` | Text in the block's inline content, with optional marks. Adjacent text with the same marks merges. |
+| `Nodes` | `nodes: Vec<Node>` | A run of nodes at the position. A position inside a text node splits it first. |
+
+For `SetBlockAttrs`, a position right before a non-text node targets that node. Any other
+position targets the block that contains it.
+
+### JSON form
+
+`PosEdit` and `PosContent` serialize tagged by `type`, with camelCase names, so a batch can
+come straight from JSON, for example from a JavaScript client or a model's tool call:
+
+```rust
+# use tiptap_rusty_parser::{PosContent, PosEdit};
+let edits: Vec<PosEdit> = serde_json::from_str(r#"[
+  { "type": "replace", "from": 7, "to": 12, "content": { "type": "text", "text": "there" } },
+  { "type": "removeMark", "from": 1, "to": 6, "markType": "bold" },
+  { "type": "setBlockAttrs", "pos": 0, "attrs": { "textAlign": "center" } }
+]"#).unwrap();
+assert_eq!(
+    edits[0],
+    PosEdit::Replace { from: 7, to: 12, content: PosContent::Text { text: "there".into(), marks: None } }
+);
+```
+
+The other tags are `insert`, `delete` and `addMark`, and `nodes` for `PosContent::Nodes`.
+
+## Batches
+
+All edits in a batch use positions in the document **before** the batch. You do not adjust
+later edits for earlier ones.
+
+- Spans must be disjoint. Two edits that overlap return `PosEditError::OverlappingEdits`.
+  Spans that only touch, such as a delete ending at 10 and an insert at 10, are allowed.
+- The batch runs highest position first, so an edit never shifts the positions of the
+  edits still to run.
+- The batch is atomic. It runs on a working copy that replaces the tree only when every
+  edit succeeded. On any error the tree is unchanged.
+
+```rust
+# use tiptap_rusty_parser::{doc, Node, PosContent, PosEdit};
+let mut d = doc([Node::element("paragraph").with_text("hello world")]);
+d.apply_pos_edits(&[
+    PosEdit::Insert { pos: 1, content: PosContent::Text { text: "Oh, ".into(), marks: None } },
+    PosEdit::Delete { from: 6, to: 12 }, // " world", in pre-batch positions
+])?;
+assert_eq!(d.text_content(), "Oh, hello");
+# Ok::<(), tiptap_rusty_parser::PosEditError>(())
+```
+
+## Edits across blocks
+
+An edit can span the end of one block and the start of another when both are siblings
+under the same parent, which covers paragraphs directly under `doc`. A delete or replace
+removes the tail of the first block, every block in between and the head of the last
+block, then joins what is left into one block, the way ProseMirror's `deleteRange` does.
+Mark edits mark the text in all those blocks.
+
+```rust
+# use tiptap_rusty_parser::{doc, Node, PosEdit};
+// doc > [paragraph("one"), paragraph("two")]: "one" is 1..4, "two" is 6..9.
+let mut d = doc([
+    Node::element("paragraph").with_text("one"),
+    Node::element("paragraph").with_text("two"),
+]);
+d.apply_pos_edits(&[PosEdit::Delete { from: 3, to: 7 }])?;
+assert_eq!(d.child_count(), 1);
+assert_eq!(d.text_content(), "onwo");
+# Ok::<(), tiptap_rusty_parser::PosEditError>(())
+```
+
+Spans whose ends sit at different depths or under different parents, such as from a
+paragraph into a list item, return `PosEditError::UnsupportedSpan`. Edits inside one block
+work at any depth.
+
+## Map positions across a batch
+
+`apply_pos_edits_mapped` does the same as `apply_pos_edits` and also returns a `PosMap`. The
+map carries a position from the document before the batch to the document after it, so a
+cursor, a selection or a decoration stays on the same content.
+
+```rust
+# use tiptap_rusty_parser::{doc, Assoc, Node, PosContent, PosEdit};
+let mut d = doc([Node::element("paragraph").with_text("hello world")]);
+let (_patch, map) = d.apply_pos_edits_mapped(&[PosEdit::Insert {
+    pos: 7,
+    content: PosContent::Text { text: "big ".into(), marks: None },
+}])?;
+
+assert_eq!(map.map(3, Assoc::Left), 3);   // before the edit: unchanged
+assert_eq!(map.map(7, Assoc::Left), 7);   // at the edit, stays before the inserted text
+assert_eq!(map.map(7, Assoc::Right), 11); // at the edit, moves past it
+assert_eq!(map.map(13, Assoc::Left), 17); // after the edit: shifted by 4
+# Ok::<(), tiptap_rusty_parser::PosEditError>(())
+```
+
+A position at the edge of an edit, or inside a deleted or replaced span, goes to one edge
+of the new content. `Assoc` picks which: `Assoc::Left` (the default) maps it to the start,
+`Assoc::Right` to the end. Positions after the edit shift by the change in size.
+
+| `PosMap` method | Does |
+| --- | --- |
+| `PosMap::from_pos_edits(&edits)` | Builds the map for a batch. Mark and attribute edits add nothing. |
+| `map(pos, assoc)` | Maps one position. |
+| `map_range(range, assoc)` | Maps both ends of a `PosRange` with the same `assoc`, so a collapsed range stays collapsed. |
+| `PosMap::new()`, `push(start, old_len, new_len)` | Builds a map by hand: `[start, start + old_len)` became `new_len` wide. |
+| `is_empty()` | `true` when the map has no steps, so it maps every position to itself. |
+
+`PosMap` maps flat positions. To carry an index path through a `Change` list instead, use
+`map_path`; see [Change algebra](/docs/parser/change-algebra).
+
+## Errors
+
+`apply_pos_edits` returns `PosEditError`:
+
+| Variant | When |
+| --- | --- |
+| `Pos(PosError)` | A position does not resolve, usually because it is past the end of the document. |
+| `Range(RangeError)` | An inline edit failed. An edit whose `from` is greater than its `to` returns `Range(RangeError::InvertedRange)`, checked before anything runs. |
+| `Block(BlockError)` | Joining the blocks of a cross-block edit failed. |
+| `Apply(ApplyError)` | A change failed to apply. The current batch code never returns it. |
+| `UnsupportedSpan { from, to }` | A span crosses blocks that are not siblings under one parent. |
+| `OverlappingEdits { from, to }` | Two edits in the batch overlap. `from` and `to` are the lower edit's span. |
+
+```rust
+# use tiptap_rusty_parser::{doc, Node, PosEdit, PosEditError};
+let mut d = doc([Node::element("paragraph").with_text("hello world")]);
+let err = d
+    .apply_pos_edits(&[PosEdit::Delete { from: 1, to: 6 }, PosEdit::Delete { from: 4, to: 9 }])
+    .unwrap_err();
+assert_eq!(err, PosEditError::OverlappingEdits { from: 1, to: 6 });
+assert_eq!(d.text_content(), "hello world"); // unchanged
+```
+
+## Use with the Tiptap AI Toolkit
+
+The [Tiptap AI Toolkit](https://tiptap.dev/docs/content-ai/capabilities/ai-toolkit/overview)
+has a model edit documents through tool calls whose operations address content with flat
+positions, the same scheme `PosEdit` uses. The crate contains no Toolkit code. You write a
+small adapter that turns each operation into a `PosEdit`, then:
+
+1. Apply the whole tool call as one batch with `apply_pos_edits_mapped`.
+2. Keep the returned patch. Its inverse rejects the suggestion; the patch itself replays it
+   on another copy of the document.
+3. Map the user's selection through the `PosMap` so it stays on the same text.
+
+The same flow works on a server with the Rust crate, or in the browser through the
+[JavaScript package](/docs/javascript). To show a model's rewrite as tracked insertions
+and deletions instead, diff the old and new documents with inline granularity; see
+[Diffing](/docs/parser/diffing#text-granularity).

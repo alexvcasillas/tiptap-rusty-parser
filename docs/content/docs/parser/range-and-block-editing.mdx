@@ -1,0 +1,332 @@
+---
+title: Range and block editing
+description: Editor-style commands that edit text inside a block and restructure the block tree.
+---
+
+Two families of methods work like editor commands:
+
+- **Range editing** edits the inline content of one block: insert, delete or replace
+  text and add or remove marks over a range. Text nodes are split and merged for you.
+- **Block editing** restructures the tree of blocks: retype, split, join, wrap and lift.
+
+Both mutate the tree in place and record nothing. Every block method and every range
+method except `toggle_mark_range` also exists as a [transaction](/docs/parser/transactions)
+builder that records an invertible change list.
+
+## Range editing
+
+Range methods treat the node you call them on as **one block**, such as a paragraph,
+and edit its direct children. A `Position` addresses a point in those children:
+
+- `child` is the index of a child.
+- `offset` is a count of Unicode scalar values (Rust `char`s) into that child's text.
+
+For a non-text child, such as a `hardBreak`, the only valid offset is 0, the point
+before it. The point after it is offset 0 of the next child. `Position::new(len, 0)`,
+where `len` is the number of children, is the end of the block.
+
+A `Range` spans two positions in the same block. `start` is inclusive and `end` is
+exclusive. `Range::collapsed(pos)` is an empty range.
+
+```rust
+use tiptap_rusty_parser::{Mark, Node, Position, Range};
+
+let mut p = Node::element("paragraph").with_child(Node::text("Hello world"));
+
+// Bold "world": the text node is split at offset 6.
+p.add_mark_range(Range::new(Position::new(0, 6), Position::new(0, 11)), Mark::new("bold"))?;
+assert_eq!(p.child_count(), 2);
+assert_eq!(p.child(0).unwrap().get_text(), Some("Hello "));
+assert!(p.child(1).unwrap().has_mark("bold"));
+
+// Remove it again: the two halves have equal marks, so they merge back.
+p.remove_mark_range(Range::new(Position::new(0, 0), Position::new(1, 5)), "bold")?;
+assert_eq!(p.child_count(), 1);
+assert_eq!(p.child(0).unwrap().get_text(), Some("Hello world"));
+# Ok::<(), tiptap_rusty_parser::RangeError>(())
+```
+
+To edit a nested block, get it first with `node_at_mut`:
+
+```rust
+use tiptap_rusty_parser::{Document, Position};
+
+let mut doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"hi"}]}
+]}"#)?;
+doc.node_at_mut(&[0]).unwrap().insert_text(Position::new(0, 2), "!", None)?;
+assert_eq!(doc.text_content(), "hi!");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+To get a `Position` from a flat ProseMirror position, use
+[`pos_to_inline`](/docs/parser/paths-and-positions#inline-offsets).
+
+### Methods
+
+| Method | What it does |
+| --- | --- |
+| `insert_text(pos, text, marks)` | Insert `text` at `pos`, with the marks in `marks` (`Option<&[Mark]>`) |
+| `delete_range(range)` | Delete everything in `range`, including whole inline nodes it covers. A collapsed range changes nothing. |
+| `replace_range(range, text, marks)` | Delete `range`, then insert `text` with `marks` at its start. An empty `text` only deletes. |
+| `add_mark_range(range, mark)` | Add `mark` to every text node in `range` |
+| `remove_mark_range(range, mark_type)` | Remove every mark of `mark_type` from the text nodes in `range` |
+| `toggle_mark_range(range, mark)` | If every text node in `range` has a mark of that type, remove it from all. Otherwise add it to all. |
+
+Every method returns `Result<(), RangeError>`. Mark methods only touch text nodes:
+inline nodes such as a `hardBreak` inside the range keep their marks.
+
+After each edit the block's children get the default
+[normalize](/docs/parser/normalizing) pass: empty text nodes are removed and adjacent
+text nodes with equal marks are merged. Inserted text with different marks stays a
+separate node:
+
+```rust
+use tiptap_rusty_parser::{Mark, Node, Position, Range};
+
+let mut p = Node::element("paragraph").with_child(Node::text("ab"));
+
+p.insert_text(Position::new(0, 1), "X", None)?;
+assert_eq!(p.child_count(), 1);                     // "aXb", merged
+
+p.insert_text(Position::new(0, 1), "Y", Some(&[Mark::new("bold")]))?;
+assert_eq!(p.text_content(), "aYXb");
+assert_eq!(p.child_count(), 3);                     // "a" | "Y" bold | "Xb"
+
+p.replace_range(Range::new(Position::new(0, 0), Position::new(2, 1)), "Z", None)?;
+assert_eq!(p.text_content(), "Zb");
+assert_eq!(p.child_count(), 1);
+# Ok::<(), tiptap_rusty_parser::RangeError>(())
+```
+
+Offsets count scalars, so a split never lands inside a UTF-8 code point. It can split a
+grapheme cluster, such as an emoji with a skin-tone modifier, if you pass an offset in
+the middle of one.
+
+### RangeError
+
+Out-of-range positions are errors. They are never clamped.
+
+| Variant | When |
+| --- | --- |
+| `ChildOutOfRange { child }` | `child` is greater than the number of children |
+| `OffsetOutOfRange { child, offset }` | `offset` is past the end of the child's text, or not 0 at the end of the block |
+| `NotTextNode { child }` | A non-zero `offset` on a non-text child |
+| `InvertedRange` | `end` comes before `start` |
+
+```rust
+use tiptap_rusty_parser::{Node, Position, Range, RangeError};
+
+let mut p = Node::element("paragraph")
+    .with_children([Node::element("hardBreak"), Node::text("hi")]);
+
+assert_eq!(
+    p.delete_range(Range::new(Position::new(1, 1), Position::new(0, 0))),
+    Err(RangeError::InvertedRange)
+);
+assert_eq!(
+    p.insert_text(Position::new(0, 1), "x", None),
+    Err(RangeError::NotTextNode { child: 0 })
+);
+assert_eq!(
+    p.insert_text(Position::new(1, 5), "x", None),
+    Err(RangeError::OffsetOutOfRange { child: 1, offset: 5 })
+);
+assert_eq!(
+    p.insert_text(Position::new(3, 0), "x", None),
+    Err(RangeError::ChildOutOfRange { child: 3 })
+);
+```
+
+<Callout type="warn" title="Errors are not atomic">
+A range method checks the end of the range before its start. When the end is valid and
+the start is not, the text node at the end is already split when the error returns.
+Range methods also create an empty `content` list on a block that had none, even when
+they fail or change nothing. Use a [transaction](/docs/parser/transactions) when you need
+to roll back.
+</Callout>
+
+## Block editing
+
+Block methods take index paths and restructure the tree of blocks. A `BlockRange` names
+a run of siblings: `parent` is the path of their parent, and `[start, end)` are child
+indices.
+
+```rust
+use tiptap_rusty_parser::{BlockRange, Node};
+
+let mut doc = Node::element("doc").with_children([
+    Node::element("paragraph").with_text("a"),
+    Node::element("paragraph").with_text("b"),
+    Node::element("paragraph").with_text("c"),
+]);
+
+doc.wrap_range(&BlockRange::new(vec![], 0, 2), "blockquote", None)?;
+assert_eq!(doc.child_count(), 2);
+assert_eq!(doc.child(0).unwrap().node_type.as_deref(), Some("blockquote"));
+assert_eq!(doc.child(0).unwrap().child_count(), 2);
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+`BlockRange::single(path)` is the one-block range for the node at `path`.
+`len()` and `is_empty()` report its size.
+
+### Retype
+
+`set_block_type` changes the type and attributes of the node at `path` and keeps its
+content. `attrs: None` clears the attributes. The root can be retyped.
+
+```rust
+use tiptap_rusty_parser::Node;
+use serde_json::{json, Map};
+
+let mut doc = Node::element("doc").with_child(Node::element("paragraph").with_text("Title"));
+
+let mut attrs = Map::new();
+attrs.insert("level".into(), json!(1));
+doc.set_block_type(&[0], "heading", Some(attrs))?;
+
+let h = doc.child(0).unwrap();
+assert_eq!(h.node_type.as_deref(), Some("heading"));
+assert_eq!(h.attr("level"), Some(&json!(1)));
+assert_eq!(h.text_content(), "Title");
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+### Split
+
+`split_block(path, at, depth)` splits the node at `path` before child `at`. The left
+part keeps children `[..at]`. A new right sibling with the same type, attributes, marks
+and unknown fields takes `[at..]`. Both parts are normalized.
+
+`split_block_at(path, pos, depth)` does the same at an inline `Position`, splitting a
+text node first when the position is inside one.
+
+`depth` splits that many ancestors too, like ProseMirror's `split` with a depth. With
+`depth` 1, splitting a paragraph inside a list item also splits the list item. Splitting
+stops below the root: the root itself is never split.
+
+```rust
+use tiptap_rusty_parser::{Node, Position};
+
+let mut doc = Node::element("doc").with_child(Node::element("paragraph").with_text("Hello world"));
+doc.split_block_at(&[0], Position::new(0, 5), 0)?;
+assert_eq!(doc.child(0).unwrap().text_content(), "Hello");
+assert_eq!(doc.child(1).unwrap().text_content(), " world");
+
+// doc > bulletList > listItem > paragraph("abcd"): split the item after "ab".
+let mut list = Node::element("doc").with_child(
+    Node::element("bulletList").with_child(
+        Node::element("listItem").with_child(Node::element("paragraph").with_text("abcd")),
+    ),
+);
+list.split_block_at(&[0, 0, 0], Position::new(0, 2), 1)?;
+let items = list.child(0).unwrap();
+assert_eq!(items.child_count(), 2);
+assert_eq!(items.child(0).unwrap().text_content(), "ab");
+assert_eq!(items.child(1).unwrap().text_content(), "cd");
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+Splitting at 0 or at the end leaves one side with an empty `content` list.
+
+### Join
+
+`join_blocks(parent, index)` merges the child at `index` into its previous sibling. The
+children are appended to the previous sibling and adjacent text is merged at the seam.
+The previous sibling keeps its type and attributes when the two differ.
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let mut doc = Node::element("doc").with_children([
+    Node::element("heading").with_text("H"),
+    Node::element("paragraph").with_text("p"),
+]);
+doc.join_blocks(&[], 1)?;
+assert_eq!(doc.child_count(), 1);
+assert_eq!(doc.child(0).unwrap().node_type.as_deref(), Some("heading"));
+assert_eq!(doc.child(0).unwrap().text_content(), "Hp");
+assert_eq!(doc.child(0).unwrap().child_count(), 1);
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+### Wrap
+
+`wrap(path, wrapper_type, attrs)` wraps the node at `path` in a new node.
+`wrap_range(range, wrapper_type, attrs)` wraps a run of siblings. The wrapper gets the
+given type and attributes and no marks. Wrapping is one level: to build
+`bulletList > listItem > paragraph`, wrap twice.
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let mut doc = Node::element("doc").with_child(Node::element("paragraph").with_text("a"));
+doc.wrap(&[0], "listItem", None)?;
+doc.wrap(&[0], "bulletList", None)?;
+let p = doc.node_at(&[0, 0, 0]).unwrap();
+assert_eq!(p.node_type.as_deref(), Some("paragraph"));
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+### Lift
+
+`lift(path)` moves the node at `path` out of its parent into its grandparent. The
+parent is split around it, so siblings before and after stay in copies of the parent.
+A parent left with no children disappears.
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let mut doc = Node::element("doc").with_child(Node::element("blockquote").with_children([
+    Node::element("paragraph").with_text("a"),
+    Node::element("paragraph").with_text("b"),
+    Node::element("paragraph").with_text("c"),
+]));
+doc.lift(&[0, 1])?;
+
+let types: Vec<_> = doc.children().iter().map(|c| c.node_type.as_deref()).collect();
+assert_eq!(types, [Some("blockquote"), Some("paragraph"), Some("blockquote")]);
+assert_eq!(doc.child(1).unwrap().text_content(), "b");
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+### Methods
+
+| Method | Notes |
+| --- | --- |
+| `set_block_type(path, new_type, attrs)` | Keeps content. `attrs: None` clears attributes. |
+| `split_block(path, at, depth)` | Split before child `at`. The path must not be the root. |
+| `split_block_at(path, pos, depth)` | Split at an inline `Position` |
+| `join_blocks(parent, index)` | Merge child `index` into child `index - 1` |
+| `wrap(path, wrapper_type, attrs)` | Wrap one node |
+| `wrap_range(range, wrapper_type, attrs)` | Wrap a run of siblings |
+| `lift(path)` | Move a node up one level. The path needs at least two indices. |
+
+All return `Result<(), BlockError>`. `attrs` is an `Option<serde_json::Map<String, Value>>`.
+
+### BlockError
+
+| Variant | When |
+| --- | --- |
+| `PathNotFound { path }` | No node at the path |
+| `IndexOutOfRange { parent, index }` | `split_block`'s `at` is past the end, or `join_blocks`'s `index` has no child |
+| `NoParent` | `split_block` or `split_block_at` on the root, or `lift` on the root or a child of the root |
+| `NoPreviousSibling { path }` | `join_blocks` with `index` 0 |
+| `InvalidRange { parent, start, end }` | A `BlockRange` is inverted or runs past the parent's children |
+| `Range(RangeError)` | `split_block_at` got an invalid `Position` |
+
+```rust
+use tiptap_rusty_parser::{BlockError, Node};
+
+let mut doc = Node::element("doc").with_child(Node::element("paragraph").with_text("a"));
+assert_eq!(doc.split_block(&[], 0, 0), Err(BlockError::NoParent));
+assert_eq!(doc.lift(&[0]), Err(BlockError::NoParent));
+assert_eq!(doc.join_blocks(&[], 0), Err(BlockError::NoPreviousSibling { path: vec![0] }));
+assert_eq!(
+    doc.set_block_type(&[5], "heading", None),
+    Err(BlockError::PathNotFound { path: vec![5] })
+);
+```
+
+`BlockError` implements `From<RangeError>`, and both implement `std::error::Error`.

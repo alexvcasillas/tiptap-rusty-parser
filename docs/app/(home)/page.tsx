@@ -39,17 +39,17 @@ const packages = [
   {
     name: "tiptap-rusty-parser",
     body: "The Rust crate behind the app: parse, query, mutate, diff and validate JSONContent.",
-    href: "https://crates.io/crates/tiptap-rusty-parser",
+    href: "/docs/parser",
   },
   {
     name: "tiptap-rusty-markdown",
     body: "Markdown to JSONContent and back, CommonMark and GFM.",
-    href: "https://crates.io/crates/tiptap-rusty-markdown",
+    href: "/docs/markdown",
   },
   {
     name: "@tiptap-studio/rusty-parser",
     body: "The same engine for JavaScript, compiled to WebAssembly.",
-    href: "https://www.npmjs.com/package/@tiptap-studio/rusty-parser",
+    href: "/docs/javascript",
   },
 ];
 
@@ -99,14 +99,14 @@ export default function HomePage() {
         <h2 className="text-2xl font-semibold">Use the engine directly</h2>
         <div className="grid gap-4 sm:grid-cols-3">
           {packages.map((p) => (
-            <a
+            <Link
               key={p.name}
               href={p.href}
               className="rounded-xl border border-fd-border p-5 transition-colors hover:border-fd-primary"
             >
               <h3 className="mb-2 font-mono text-sm font-semibold">{p.name}</h3>
               <p className="text-sm text-fd-muted-foreground">{p.body}</p>
-            </a>
+            </Link>
           ))}
         </div>
       </section>

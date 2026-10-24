@@ -1,0 +1,149 @@
+---
+title: Querying
+description: Walk the tree and find nodes with predicate closures and selector helpers.
+---
+
+Every query runs depth-first in pre-order: a node is visited before its children, and
+children in document order. Every query includes the node you call it on, so
+`doc.find(..)` can return the root itself.
+
+The predicate is a plain closure over `&Node`, so it can test anything: type, text,
+attributes, marks, unknown fields. For string queries typed by a user, see the
+[query language](/docs/parser/query-language).
+
+## Find
+
+```rust
+use tiptap_rusty_parser::{Document, Node};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[
+        {"type":"text","text":"a","marks":[{"type":"bold"}]},
+        {"type":"text","text":"b"}
+    ]}
+]}"#)?;
+
+// First match, or None.
+let bold: Option<&Node> = doc.find(|n| n.has_mark("bold"));
+assert_eq!(bold.unwrap().get_text(), Some("a"));
+
+// Every match.
+let texts: Vec<&Node> = doc.find_all(|n| n.node_type.as_deref() == Some("text"));
+assert_eq!(texts.len(), 2);
+
+// The root is included.
+assert_eq!(doc.find(|_| true).unwrap().node_type.as_deref(), Some("doc"));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Walk and iterate
+
+`walk` calls a closure for every node. `descendants` returns a lazy iterator, so you can
+chain iterator adapters and stop early:
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"a"}]},
+    {"type":"paragraph"}
+]}"#)?;
+
+let mut count = 0;
+doc.walk(&mut |_| count += 1);
+assert_eq!(count, 4);
+
+let types: Vec<&str> = doc.descendants().filter_map(|n| n.node_type.as_deref()).collect();
+assert_eq!(types, ["doc", "paragraph", "text", "paragraph"]);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`descendants` keeps its own stack instead of recursing, and `find` and `find_all` are
+built on it, so deep documents do not grow the call stack.
+
+## Mutable queries
+
+`find_all_mut` and `walk_mut` give `&mut Node` access. The predicate still takes
+`&Node`. To edit only the first match, find its path with `path_to` and borrow it with
+`node_at_mut`.
+
+```rust
+use tiptap_rusty_parser::{Document, Mark, Node};
+
+let mut doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"x"},{"type":"text","text":"y"}]}
+]}"#)?;
+
+if let Some(path) = doc.path_to(|n| n.get_text() == Some("x")) {
+    doc.node_at_mut(&path).unwrap().set_text("changed");
+}
+
+let mut is_text = |n: &Node| n.node_type.as_deref() == Some("text");
+for node in doc.find_all_mut(&mut is_text) {
+    node.add_mark(Mark::new("italic"));
+}
+
+doc.walk_mut(&mut |n| {
+    n.remove_attr("id");
+});
+
+assert_eq!(doc.by_mark("italic").len(), 2);
+assert_eq!(doc.text_content(), "changedy");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+To change every match in one call, use `replace_all`, covered in
+[Mutating](/docs/parser/mutating#bulk-transforms).
+
+| Method | Predicate | Returns |
+| --- | --- | --- |
+| `find(pred)` | `FnMut(&Node) -> bool` | `Option<&Node>` |
+| `find_all(pred)` | `FnMut(&Node) -> bool` | `Vec<&Node>` |
+| `find_all_mut(&mut pred)` | `&mut impl FnMut(&Node) -> bool` | `Vec<&mut Node>` |
+| `walk(&mut f)` | `&mut impl FnMut(&Node)` | `()` |
+| `walk_mut(&mut f)` | `&mut impl FnMut(&mut Node)` | `()` |
+| `descendants()` | none | `Descendants<'_>`, an `Iterator<Item = &Node>` |
+
+## Selectors
+
+Selectors are shortcuts for the most common predicates. They are thin wrappers over
+`find` and `find_all`.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let mut doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"heading","attrs":{"level":1},"content":[{"type":"text","text":"Title"}]},
+    {"type":"paragraph","content":[{"type":"text","text":"a","marks":[{"type":"bold"}]}]}
+]}"#)?;
+
+assert_eq!(doc.by_type("paragraph").len(), 1);
+assert_eq!(doc.first_by_type("text").unwrap().get_text(), Some("Title"));
+assert_eq!(doc.by_mark("bold").len(), 1);
+assert_eq!(doc.by_attr("level", 1).len(), 1);
+assert!(doc.by_attr("level", "1").is_empty()); // the value must match exactly
+
+for p in doc.by_type_mut("paragraph") {
+    p.set_attr("touched", true);
+}
+assert_eq!(doc.by_attr("touched", true).len(), 1);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Matches | Returns |
+| --- | --- | --- |
+| `by_type(t)` | Nodes whose type equals `t` | `Vec<&Node>` |
+| `first_by_type(t)` | The first such node | `Option<&Node>` |
+| `by_type_mut(t)` | Nodes whose type equals `t` | `Vec<&mut Node>` |
+| `by_mark(mark_type)` | Nodes that carry a mark of that type | `Vec<&Node>` |
+| `by_attr(key, value)` | Nodes whose attribute `key` equals `value` | `Vec<&Node>` |
+
+`by_attr` takes any `impl Into<serde_json::Value>`, and compares with JSON equality: the
+number `1` and the string `"1"` are different values.
+
+## Paths instead of references
+
+The methods above return references. When you need to come back to a node later, or
+edit it while holding other borrows, get its index path with `path_to` or `paths_to`,
+or run a [query language](/docs/parser/query-language) query with `find_paths`. See
+[Paths and positions](/docs/parser/paths-and-positions).

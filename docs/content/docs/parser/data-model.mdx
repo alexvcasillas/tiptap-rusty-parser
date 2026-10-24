@@ -1,0 +1,178 @@
+---
+title: Data model
+description: Document, Node and Mark, and how the crate keeps unknown fields and key order.
+---
+
+A Tiptap document is a tree of nodes. The crate mirrors Tiptap's `JSONContent` shape
+with two structs, `Node` and `Mark`, and an owning wrapper, `Document`.
+
+## Node
+
+```rust ignore
+pub struct Node {
+    pub node_type: Option<String>,                  // JSON "type"
+    pub attrs: Option<Box<Map<String, Value>>>,     // JSON "attrs"
+    pub content: Option<Vec<Node>>,                 // JSON "content"
+    pub marks: Option<Vec<Mark>>,                   // JSON "marks"
+    pub text: Option<String>,                       // JSON "text"
+    pub extra: Option<Box<Map<String, Value>>>,     // every other key
+}
+```
+
+`Map` and `Value` are `serde_json::Map` and `serde_json::Value`. The fields are public,
+so you can read and write them directly. Helper methods cover the common cases.
+
+Every field is an `Option` so the crate can tell a missing key from an empty one.
+`content: None` writes no `content` key, and `content: Some(vec![])` writes
+`"content": []`:
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph"},{"type":"paragraph","content":[]}]}"#,
+)?;
+assert!(doc.children()[0].content.is_none());
+assert_eq!(doc.children()[1].content.as_deref(), Some(&[][..]));
+assert_eq!(
+    doc.to_json_str()?,
+    r#"{"type":"doc","content":[{"type":"paragraph"},{"type":"paragraph","content":[]}]}"#
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`attrs` and `extra` are boxed, so a node without attributes or unknown fields only
+pays for a pointer.
+
+## Mark
+
+```rust ignore
+pub struct Mark {
+    pub mark_type: String,                          // JSON "type", required
+    pub attrs: Option<Box<Map<String, Value>>>,     // JSON "attrs"
+    pub extra: Option<Box<Map<String, Value>>>,     // every other key
+}
+```
+
+A mark's `type` is required. Parsing a mark without `type`, or with `"type": null`,
+fails. Build marks with `Mark::new` and add attributes with the `attr` builder:
+
+```rust
+use tiptap_rusty_parser::Mark;
+use serde_json::json;
+
+let link = Mark::new("link").attr("href", "https://tiptap.dev");
+assert_eq!(link.mark_type, "link");
+assert_eq!(link.attrs().unwrap().get("href"), Some(&json!("https://tiptap.dev")));
+```
+
+## Document
+
+`Document` owns the root node, usually `type: "doc"`. It derefs to `Node`, so every
+`Node` method is callable on a `Document`. It also adds parsing and serialization, which
+[Parsing](/docs/parser/parsing) covers.
+
+| Method | What it does |
+| --- | --- |
+| `Document::new(root)` | Wrap a root `Node`. `Document::from(node)` does the same. |
+| `root()` / `root_mut()` | Borrow the root node. |
+| `into_root()` | Consume the document and return the root node. |
+
+## Unknown types and fields
+
+Any string is a valid node or mark type. Keys other than `type`, `attrs`, `content`,
+`marks` and `text` go into `extra` and are written back unchanged. On a mark, `content`,
+`marks` and `text` are unknown keys too, so they land in the mark's `extra`.
+
+```rust
+use tiptap_rusty_parser::Document;
+use serde_json::json;
+
+let mut doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"customWidget","attrs":{"id":7},"data-foo":"bar"}]}"#,
+)?;
+let widget = &doc.children()[0];
+assert_eq!(widget.node_type.as_deref(), Some("customWidget"));
+assert_eq!(widget.extra_field("data-foo"), Some(&json!("bar")));
+
+let widget = doc.child_mut(0).unwrap();
+widget.extra_mut().insert("data-new".into(), json!(1));
+assert_eq!(widget.remove_extra("data-foo"), Some(json!("bar")));
+assert_eq!(
+    doc.to_json_str()?,
+    r#"{"type":"doc","content":[{"type":"customWidget","attrs":{"id":7},"data-new":1}]}"#
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Accessor | On | Returns |
+| --- | --- | --- |
+| `attrs()` | `Node`, `Mark` | `Option<&Map<String, Value>>` |
+| `attrs_mut()` | `Node`, `Mark` | `&mut Map<String, Value>`, created if absent |
+| `extra()` | `Node`, `Mark` | `Option<&Map<String, Value>>` |
+| `extra_mut()` | `Node`, `Mark` | `&mut Map<String, Value>`, created if absent |
+| `extra_field(key)` | `Node` | `Option<&Value>` |
+| `remove_extra(key)` | `Node` | `Option<Value>`, and drops the map once it is empty |
+
+`extra: None` and `extra: Some(empty map)` compare equal and serialize the same way, so
+calling `extra_mut()` without inserting anything does not change the output.
+
+## Key order
+
+The crate builds `serde_json` with `preserve_order`, so maps keep their insertion order.
+On output:
+
+- Known node keys come first, in a fixed order: `type`, `attrs`, `content`, `marks`,
+  `text`. Each is written only when it is `Some`.
+- Unknown keys follow, in the order they appeared in the source.
+- Keys inside `attrs`, inside `extra` values and inside mark attributes keep their
+  source order.
+
+A mark writes `type`, then `attrs`, then its unknown keys.
+
+This means the known keys of a node can move. A text node written as
+`{"text":"hi","type":"text"}` comes back as `{"type":"text","text":"hi"}`. The values are
+the same, so a comparison of parsed JSON values still holds:
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let src = r#"{"b":1,"type":"doc","a":2,"content":[{"text":"hi","type":"text"}]}"#;
+let doc = Document::from_json_str(src)?;
+assert_eq!(
+    doc.to_json_str()?,
+    r#"{"type":"doc","content":[{"type":"text","text":"hi"}],"b":1,"a":2}"#
+);
+
+let before: serde_json::Value = serde_json::from_str(src).unwrap();
+assert_eq!(doc.to_value()?, before);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Parsing rules
+
+| Input | Result |
+| --- | --- |
+| A known node field set to `null`, such as `"attrs": null` | Read as `None`, so it is not written back |
+| An unknown field set to `null` | Kept as `null` in `extra` |
+| A known field that appears twice | Error: `duplicate field` |
+| An unknown key that appears twice | Keeps the first position and the last value |
+| A field of the wrong JSON type, such as `"text": 7` | Error with line and column |
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{"type":"doc","attrs":null,"x":null}"#)?;
+assert!(doc.attrs.is_none());
+assert_eq!(doc.to_json_str()?, r#"{"type":"doc","x":null}"#);
+
+let err = Document::from_json_str(r#"{"type":"a","type":"b"}"#).unwrap_err();
+assert!(err.to_string().contains("duplicate field `type`"));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Equality
+
+`Node` and `Mark` implement `PartialEq`. Two nodes are equal when their type, text,
+attributes, marks, extra fields and children are equal. Map order does not matter for
+equality, only for output. `Node` also implements `Clone`, `Debug` and `Default`.

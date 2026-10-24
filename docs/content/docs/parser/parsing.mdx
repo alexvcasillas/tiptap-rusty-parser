@@ -1,0 +1,179 @@
+---
+title: Parsing and serializing
+description: Read a document from a string, a JSON value or a reader, write it back, and map nodes to byte spans.
+---
+
+`Document` reads and writes Tiptap JSON. Parsing builds the whole tree in one pass with
+`serde_json`. Serializing writes it back with the [key order](/docs/parser/data-model#key-order)
+the data model describes.
+
+## Parse
+
+```rust
+use tiptap_rusty_parser::Document;
+use serde_json::json;
+
+// From a string.
+let a = Document::from_json_str(r#"{"type":"doc","content":[]}"#)?;
+
+// From a serde_json::Value you already have.
+let b = Document::from_value(json!({"type": "doc", "content": []}))?;
+
+// From any std::io::Read: a file, a socket, a byte slice.
+let c = Document::from_reader(&br#"{"type":"doc","content":[]}"#[..])?;
+
+assert_eq!(a, b);
+assert_eq!(b, c);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Input | Returns |
+| --- | --- | --- |
+| `Document::from_json_str(s)` | `&str` | `Result<Document, ParseError>` |
+| `Document::from_value(v)` | `serde_json::Value` | `Result<Document, ParseError>` |
+| `Document::from_reader(r)` | `impl std::io::Read` | `Result<Document, ParseError>` |
+
+The root does not have to be a `doc`. Any JSON object parses as a node, so you can parse
+a single paragraph or a fragment the same way.
+
+`Node` and `Mark` implement serde's `Deserialize` and `Serialize`, so you can also use
+`serde_json` directly or embed them in your own types:
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let p: Node = serde_json::from_str(r#"{"type":"paragraph"}"#).unwrap();
+assert_eq!(p.node_type.as_deref(), Some("paragraph"));
+```
+
+## Serialize
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph"}]}"#)?;
+
+let compact: String = doc.to_json_str()?;
+let pretty: String = doc.to_string_pretty()?;
+let value: serde_json::Value = doc.to_value()?;
+
+assert_eq!(compact, r#"{"type":"doc","content":[{"type":"paragraph"}]}"#);
+assert!(pretty.starts_with("{\n  \"type\": \"doc\""));
+assert_eq!(value["content"][0]["type"], "paragraph");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Returns |
+| --- | --- |
+| `to_json_str()` | Compact JSON, `Result<String, ParseError>` |
+| `to_string_pretty()` | Indented JSON (two spaces), `Result<String, ParseError>` |
+| `to_value()` | `Result<serde_json::Value, ParseError>` |
+
+## Errors
+
+Every parse and serialize method returns `tiptap_rusty_parser::Result<T>`, an alias for
+`Result<T, ParseError>`. `ParseError` has two variants:
+
+| Variant | When |
+| --- | --- |
+| `ParseError::Json(serde_json::Error)` | The input is not valid JSON or does not have the node shape |
+| `ParseError::Io(std::io::Error)` | The reader failed |
+
+A JSON error carries the line and column, from `serde_json`:
+
+```rust
+use tiptap_rusty_parser::{Document, ParseError};
+
+let err = Document::from_json_str("{\"content\":[{\"type\":\"p\",\n  \"text\":7}]}").unwrap_err();
+assert!(matches!(err, ParseError::Json(_)));
+assert_eq!(
+    err.to_string(),
+    "json error: invalid type: integer `7`, expected a string at line 2 column 10"
+);
+```
+
+## Source maps
+
+A `SourceMap` records the byte span of every node object in a JSON text. Use it to
+point at a node in an editor, highlight it in a debugger, or turn a cursor offset back
+into a node.
+
+Paths in a source map are [index paths](/docs/parser/paths-and-positions#index-paths), the
+same addressing as `node_at`. A node is the root object or an object inside a node's
+`content` array. Objects inside `attrs` or unknown fields are not nodes, even when they
+have a `content` key.
+
+```rust
+use tiptap_rusty_parser::{Document, SourceMap};
+
+let doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"callout","x":1,"content":[{"type":"text","text":"hi"}]}]}"#,
+)?;
+
+// Serialize with pretty formatting and map the result.
+let (text, map) = SourceMap::pretty(doc.root());
+assert_eq!(text, doc.to_string_pretty()?);
+
+// Path to span: the bytes from `{` to `}` of the text node.
+let span = map.span(&[0, 0]).unwrap();
+assert!(text[span.clone()].starts_with('{'));
+assert!(text[span.clone()].contains("\"hi\""));
+
+// Offset to path: the deepest node whose span contains the byte.
+assert_eq!(map.path_at(span.start + 3), Some(vec![0, 0]));
+assert_eq!(map.path_at(0), Some(vec![]));
+assert_eq!(map.path_at(text.len()), None);
+
+assert_eq!(map.len(), 3);
+assert_eq!(map.child_count(&[0]), Some(1));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`SourceMap::build` maps text you already have, in any formatting, including
+hand-written JSON:
+
+```rust
+use tiptap_rusty_parser::SourceMap;
+
+let text = r#"{"type":"doc","content":[ {"type":"paragraph"} ]}"#;
+let map = SourceMap::build(text).unwrap();
+assert_eq!(&text[map.span(&[0]).unwrap()], r#"{"type":"paragraph"}"#);
+```
+
+| Method | Returns | Cost |
+| --- | --- | --- |
+| `SourceMap::build(text)` | `Result<SourceMap, SourceMapError>` | One pass over the text |
+| `SourceMap::pretty(node)` | `(String, SourceMap)`: the `to_string_pretty` text and its map | Serialize plus one pass |
+| `span(path)` | `Option<Range<usize>>`, `None` when the path does not resolve | O(depth) |
+| `path_at(offset)` | `Option<Vec<usize>>`, `None` when the offset is outside the root object | O(log nodes + depth) |
+| `child_count(path)` | `Option<usize>` | O(depth) |
+| `len()` / `is_empty()` | Number of mapped nodes | O(1) |
+
+A byte between two children, such as the comma, resolves to their parent. The scanner
+does not build a `serde_json::Value`, so it is exact for unknown node types and fields.
+
+### SourceMapError
+
+`build` fails when the text is not a JSON node tree. The error has a byte `offset` and a
+static `message`, and displays as `"<message> at byte <offset>"`.
+
+| Message | Cause |
+| --- | --- |
+| `expected a JSON object` | The text does not start with `{` |
+| `trailing characters` | Something follows the root object |
+| `` expected a node object in `content` `` | A `content` array holds something other than an object |
+| `unterminated string` | A string has no closing quote |
+| `nesting too deep` | Objects or arrays nest more than 1024 levels |
+| `expected a key`, `` expected `:` ``, `` expected `,` or `}` ``, `` expected `,` or `]` ``, `expected a value` | Malformed JSON |
+
+```rust
+use tiptap_rusty_parser::SourceMap;
+
+let err = SourceMap::build("[]").unwrap_err();
+assert_eq!(err.offset, 0);
+assert_eq!(err.message, "expected a JSON object");
+assert!(SourceMap::build(r#"{"content":[1]}"#).is_err());
+```
+
+The scanner checks structure, not every detail of JSON. Parse the text with `Document`
+when you need it validated.

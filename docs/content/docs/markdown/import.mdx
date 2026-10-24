@@ -1,0 +1,331 @@
+---
+title: Import
+description: Parse Markdown into a Tiptap document with from_markdown and from_markdown_with.
+---
+
+Import reads CommonMark, plus GFM tables, task lists and strikethrough by default, and
+builds a `Document` with Tiptap StarterKit node and mark names. It never returns an error
+and never panics. Whatever the input, the result has at least one block and passes
+StarterKit-style structural rules: list items start with a paragraph, and blockquotes and
+table cells are never empty.
+
+## Functions
+
+| Function | Signature | Use |
+| --- | --- | --- |
+| `from_markdown` | `fn from_markdown(src: &str) -> Document` | Default options. |
+| `from_markdown_with` | `fn from_markdown_with(src: &str, opts: &ParseOptions) -> Document` | Custom options. |
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, from_markdown_with, ParseOptions};
+
+let a = from_markdown("Hello *world*");
+let b = from_markdown_with("Hello *world*", &ParseOptions::default());
+assert_eq!(a, b);
+```
+
+## Options
+
+`ParseOptions` has three fields. `ParseOptions::default()` and an empty JSON object `{}`
+give the same values.
+
+| Field | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `gfm` | `bool` | `true` | Enables GFM tables, task lists and `~~strikethrough~~`. When `false`, that syntax stays as plain text. |
+| `html` | `HtmlPolicy` | `HtmlPolicy::Text` | What to do with raw HTML. See [Raw HTML](#raw-html). |
+| `max_depth` | `usize` | `128` (`DEFAULT_MAX_DEPTH`) | Maximum JSON nesting depth of the result. See [Nesting depth](#nesting-depth). |
+
+The struct derives `Serialize` and `Deserialize` with camelCase names (`gfm`, `html`,
+`maxDepth`), and missing fields take their defaults:
+
+```rust
+use tiptap_rusty_markdown::{HtmlPolicy, ParseOptions};
+
+let opts: ParseOptions = serde_json::from_str(r#"{"html":"drop"}"#)?;
+assert_eq!(opts.html, HtmlPolicy::Drop);
+assert!(opts.gfm);
+assert_eq!(opts.max_depth, tiptap_rusty_markdown::DEFAULT_MAX_DEPTH);
+# Ok::<(), serde_json::Error>(())
+```
+
+With `gfm: false`, table and strikethrough syntax is kept as text:
+
+```rust
+use tiptap_rusty_markdown::{from_markdown_with, ParseOptions};
+
+let opts = ParseOptions { gfm: false, ..Default::default() };
+let json = from_markdown_with("~~gone~~", &opts).to_value()?;
+assert_eq!(json["content"][0]["content"][0]["text"], "~~gone~~");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Blocks
+
+| Markdown | JSONContent |
+| --- | --- |
+| Empty input | `doc` with one empty `paragraph` |
+| Paragraph | `paragraph` |
+| `#` to `######` | `heading` with `attrs.level` 1 to 6 |
+| `>` | `blockquote` |
+| `-`, `*` or `+` list | `bulletList > listItem` |
+| `1.` list | `orderedList > listItem`, with `attrs.start` only when it is not 1 |
+| Fenced or indented code | `codeBlock` with `attrs.language` |
+| `---`, `***`, `___` | `horizontalRule` |
+| GFM table | `table > tableRow > tableHeader / tableCell > paragraph` |
+| GFM task list | `taskList > taskItem` with `attrs.checked` |
+| Image alone in a paragraph | `image` as a block (see [Images](#images)) |
+
+### Headings and paragraphs
+
+Trailing spaces and tabs at the end of a paragraph or heading are dropped, as CommonMark
+does. Text inside code spans and link text keeps them.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("### Third\n\nPlain text.").to_value()?;
+assert_eq!(json["content"][0]["type"], "heading");
+assert_eq!(json["content"][0]["attrs"]["level"], 3);
+assert_eq!(json["content"][1]["type"], "paragraph");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+An empty input still produces a valid document:
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("").to_value()?;
+assert_eq!(json, serde_json::json!({"type":"doc","content":[{"type":"paragraph"}]}));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+### Lists
+
+Every `listItem` starts with a `paragraph`. The inline content of tight list items is
+wrapped in one, and an item that starts with another block, or is empty, gets an empty
+leading paragraph. `orderedList` carries `start` only when the list does not start at 1.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("3. three\n4. four").to_value()?;
+let list = &json["content"][0];
+assert_eq!(list["type"], "orderedList");
+assert_eq!(list["attrs"]["start"], 3);
+assert_eq!(list["content"][0]["type"], "listItem");
+assert_eq!(list["content"][0]["content"][0]["type"], "paragraph");
+
+let json = from_markdown("1. one").to_value()?;
+assert!(json["content"][0].get("attrs").is_none());
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+### Task lists
+
+A list becomes a `taskList` only when every item has a task marker. Each item becomes a
+`taskItem` with a boolean `checked` attribute. An ordered task list loses its `start`.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("- [x] done\n- [ ] todo").to_value()?;
+let list = &json["content"][0];
+assert_eq!(list["type"], "taskList");
+assert_eq!(list["content"][0]["type"], "taskItem");
+assert_eq!(list["content"][0]["attrs"]["checked"], true);
+assert_eq!(list["content"][1]["attrs"]["checked"], false);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+When only some items have a marker, the list stays a `bulletList` or `orderedList` and the
+markers are kept as literal text, so nothing is lost:
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("- [x] done\n- plain").to_value()?;
+let list = &json["content"][0];
+assert_eq!(list["type"], "bulletList");
+assert_eq!(list["content"][0]["content"][0]["content"][0]["text"], "[x] done");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+### Code blocks
+
+`attrs.language` is the first word of the fence's info string, or `null` when there is
+none and for indented code. The code is one text child without the final newline. An empty
+code block has no children.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("```rust ignore\nfn main() {}\n```").to_value()?;
+let code = &json["content"][0];
+assert_eq!(code["type"], "codeBlock");
+assert_eq!(code["attrs"]["language"], "rust");
+assert_eq!(code["content"][0]["text"], "fn main() {}");
+
+let json = from_markdown("    indented").to_value()?;
+assert_eq!(json["content"][0]["attrs"]["language"], serde_json::Value::Null);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+### Tables
+
+The header row's cells become `tableHeader`, the other rows' cells become `tableCell`.
+Each cell holds one `paragraph`, and an empty cell gets an empty one. Column alignment
+(`:---:`) is ignored.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("| a | b |\n| :-: | --- |\n| 1 | 2 |").to_value()?;
+let table = &json["content"][0];
+assert_eq!(table["type"], "table");
+assert_eq!(table["content"][0]["content"][0]["type"], "tableHeader");
+assert_eq!(table["content"][1]["content"][0]["type"], "tableCell");
+assert_eq!(table["content"][1]["content"][0]["content"][0]["type"], "paragraph");
+assert!(table["content"][0]["content"][0].get("attrs").is_none());
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Inline content
+
+| Markdown | JSONContent |
+| --- | --- |
+| `**strong**` | mark `bold` |
+| `*em*` or `_em_` | mark `italic` |
+| `~~strike~~` | mark `strike` (GFM) |
+| `` `code` `` | mark `code` |
+| `[text](url "title")` | mark `link` with `href`, and `title` when it is not empty |
+| `<https://…>` | mark `link` |
+| `<name@example.com>` | mark `link` with a `mailto:` href |
+| `![alt](src "title")` | node `image` with `src`, `alt`, and `title` when it is not empty |
+| Hard break (`\` or two spaces before a newline) | node `hardBreak` |
+| Soft break (a plain newline) | a single space in the text |
+
+### Marks
+
+Marks are listed outermost first, in a fixed order: `link`, `strike`, `bold`, `italic`,
+then `code` innermost. The same formatting always yields the same mark list, however the
+source nested the delimiters. A mark that is already active is not repeated, so
+`**a **b** c**` gives one `bold`. Adjacent text with identical marks is merged into one
+text node.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("*__both__*").to_value()?;
+let text = &json["content"][0]["content"][0];
+assert_eq!(text["text"], "both");
+assert_eq!(text["marks"][0]["type"], "bold");
+assert_eq!(text["marks"][1]["type"], "italic");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+### Links
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown(r#"[Tiptap](https://tiptap.dev "Home") and <me@example.com>"#)
+    .to_value()?;
+let p = &json["content"][0]["content"];
+assert_eq!(p[0]["marks"][0]["attrs"]["href"], "https://tiptap.dev");
+assert_eq!(p[0]["marks"][0]["attrs"]["title"], "Home");
+assert_eq!(p[2]["marks"][0]["attrs"]["href"], "mailto:me@example.com");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+Bare URLs without angle brackets (GFM extended autolinks such as `https://…` or `www.…`)
+stay plain text.
+
+### Hard breaks
+
+A `hardBreak` inside marked text carries the surrounding marks, like an inline image does.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown("one\\\ntwo\nthree").to_value()?;
+let p = &json["content"][0]["content"];
+assert_eq!(p[0]["text"], "one");
+assert_eq!(p[1]["type"], "hardBreak");
+assert_eq!(p[2]["text"], "two three");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+### Images
+
+A paragraph that holds only unmarked images, ignoring whitespace and hard breaks, is
+replaced by the images themselves as block-level siblings. The exception is the first
+paragraph of a list item, which must stay a paragraph. Anywhere else, images stay inline in
+their paragraph or heading and carry the active marks, so a linked badge keeps its `link`.
+
+```rust
+use tiptap_rusty_markdown::from_markdown;
+
+let json = from_markdown(r#"![Logo](logo.png "The logo")"#).to_value()?;
+let img = &json["content"][0];
+assert_eq!(img["type"], "image");
+assert_eq!(img["attrs"]["src"], "logo.png");
+assert_eq!(img["attrs"]["alt"], "Logo");
+assert_eq!(img["attrs"]["title"], "The logo");
+
+let json = from_markdown("See ![icon](i.png) here").to_value()?;
+assert_eq!(json["content"][0]["type"], "paragraph");
+assert_eq!(json["content"][0]["content"][1]["type"], "image");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Raw HTML
+
+`HtmlPolicy` decides what happens to HTML in the Markdown source. Import never creates
+HTML nodes.
+
+| Variant | JSON | Effect |
+| --- | --- | --- |
+| `HtmlPolicy::Text` | `"text"` | Default. Keeps the HTML as visible text. Inline HTML is merged into the surrounding text. An HTML block becomes a paragraph, with its line breaks as `hardBreak` nodes. |
+| `HtmlPolicy::Drop` | `"drop"` | Removes it. A paragraph left empty by dropping is removed too. |
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, from_markdown_with, HtmlPolicy, ParseOptions};
+
+let json = from_markdown("a <b>b</b>").to_value()?;
+assert_eq!(json["content"][0]["content"][0]["text"], "a <b>b</b>");
+
+let opts = ParseOptions { html: HtmlPolicy::Drop, ..Default::default() };
+let json = from_markdown_with("a <b>b</b>", &opts).to_value()?;
+assert_eq!(json["content"][0]["content"][0]["text"], "a b");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Nesting depth
+
+Deeply nested Markdown, such as hundreds of `>` levels, could produce JSON that
+`serde_json` refuses to read back: its default recursion limit is 128. `max_depth` caps the
+nesting depth of the serialized result, so every imported document can be serialized and
+parsed again.
+
+A blockquote, list or table that would nest too deep is not created. Its content is
+flattened into the deepest container that fits: its paragraphs become siblings there, each
+list item or table cell becomes its own paragraph, and task markers become literal
+`[ ] ` / `[x] ` text. Only that structure is lost; the text is kept.
+
+```rust
+use tiptap_rusty_markdown::{from_markdown_with, Document, ParseOptions};
+
+let deep = format!("{}deep", "> ".repeat(500));
+let doc = from_markdown_with(&deep, &ParseOptions::default());
+assert_eq!(doc.text_content(), "deep");
+
+let json = doc.to_json_str()?;
+assert!(Document::from_json_str(&json).is_ok());
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Not supported
+
+Footnotes, math, metadata blocks, definition lists and GFM alerts are not enabled. Their
+syntax stays text. See [Limitations](/docs/markdown/limitations) for the full list.

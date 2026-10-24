@@ -1,0 +1,225 @@
+---
+title: Tiptap AI Toolkit
+description: Use the parser as the document engine behind AI edits, in the browser or on a server.
+---
+
+The [Tiptap AI Toolkit](https://tiptap.dev/docs/content-ai/capabilities/ai-toolkit/overview)
+lets a language model read and edit a Tiptap document. The edits it produces need the same
+few operations every time: compare a proposed document with the current one, apply edits
+addressed by flat positions, undo them when the user rejects them, keep the selection in
+place, and refuse content that does not fit the schema. `tiptap-rusty-parser` provides each
+of these, in JavaScript through [`@tiptap-studio/rusty-parser`](/docs/javascript) and on a
+server through the Rust crate.
+
+The parser contains no Toolkit code and knows nothing of its formats. You write a thin
+adapter that turns the Toolkit's operations into the parser's plain data shapes, described
+below.
+
+## The building blocks
+
+| Task | JavaScript | Rust |
+| --- | --- | --- |
+| Compare two documents, character by character | `a.diffWith(b, options)` | `Node::diff_with` |
+| Apply edits addressed by flat positions | `doc.applyPosEdits(edits)` | `Node::apply_pos_edits` |
+| Undo a change list | `before.invert(changes)` | `Node::invert` |
+| Map a position or range through edits | `mapPosition`, `mapPositionRange` | `Node::apply_pos_edits_mapped`, `PosMap` |
+| Check proposed content against a schema | `validateNode(schema, node)` | `Node::validate` |
+| Resolve and convert positions | `resolve`, `posToInline`, `inlineToPos`, `posBefore`, `posAfter`, `contentSize` | `Node::resolve` and friends |
+
+Edits addressed by position are `PosEdit` objects:
+
+```ts
+type PosEdit =
+  | { type: "insert"; pos: number; content: PosContent }
+  | { type: "delete"; from: number; to: number }
+  | { type: "replace"; from: number; to: number; content: PosContent }
+  | { type: "addMark"; from: number; to: number; mark: Mark }
+  | { type: "removeMark"; from: number; to: number; markType: string }
+  | { type: "setBlockAttrs"; pos: number; attrs: Record<string, unknown> };
+
+type PosContent =
+  | { type: "text"; text: string; marks?: Mark[] }
+  | { type: "nodes"; nodes: JSONContent[] };
+```
+
+The Rust `PosEdit` and `PosContent` enums serialize to exactly these shapes, so the same
+JSON works on both sides.
+
+## Check your positions first
+
+Positions here follow ProseMirror's rules, with two differences that matter when the
+positions come from the editor or from the Toolkit:
+
+- Only `image`, `horizontalRule` and `hardBreak` are leaves in JavaScript. A custom atom
+  such as `mention` is counted as an empty container, one more than the editor counts.
+  In Rust, `resolve_with`, `pos_before_with` and the other `_with` position methods take a
+  custom `LeafPolicy`, but `apply_pos_edits` always uses the built-in set.
+- Text is counted in Unicode scalar values. The editor counts UTF-16 code units, so an
+  emoji is 1 here and 2 there.
+
+If your documents can contain either, convert positions in your adapter, or prefer the
+document-to-document flow below, which does not use positions at all. See
+[Positions](/docs/javascript/positions#how-positions-are-counted).
+
+## Flow 1: the model proposes a whole document
+
+When the model returns a complete new version, diff it against the current document. The
+`smart` granularity gives character-level changes for small edits and one replacement for
+rewrites, which reads well as suggestions.
+
+```ts
+import { TiptapDoc } from "@tiptap-studio/rusty-parser";
+
+const current = TiptapDoc.fromJSON(editor.getJSON());
+const proposed = TiptapDoc.fromJSON(proposedJSON);
+
+const changes = current.diffWith(proposed, {
+  text: { smart: { replaceThreshold: 0.5 } },
+});
+// Show `changes` to the user as suggestions.
+
+// Compute the undo list before applying, while `current` is still the pre-image.
+const undo = current.invert(changes);
+
+current.applyChanges(changes); // accept
+editor.commands.setContent(current.toJSON());
+
+// Later, to reject after all:
+current.applyChanges(undo);
+editor.commands.setContent(current.toJSON());
+
+proposed.free();
+```
+
+Each change's indices assume the changes before it have run, so apply a list as a whole.
+To accept changes one at a time, apply one, then diff again against the proposal for the
+rest. Tiptap Studio's Diff mode works this way.
+
+## Flow 2: the model emits position-addressed edits
+
+When the model calls a tool with edits addressed by positions, translate them into
+`PosEdit` objects and apply them in one batch. The batch is atomic, and it returns the
+change list it made, so rejecting it later is one `invert` away.
+
+```ts
+import { TiptapDoc, mapPosition, type PosEdit } from "@tiptap-studio/rusty-parser";
+
+const doc = TiptapDoc.fromJSON(editor.getJSON());
+const before = TiptapDoc.fromJSONString(doc.toJSONString());
+
+// Your adapter: Toolkit operation -> PosEdit.
+const edits: PosEdit[] = operations.map(toPosEdit);
+
+const patch = doc.applyPosEdits(edits); // throws, leaving doc unchanged, on a bad batch
+const undo = before.invert(patch);
+before.free();
+
+editor.commands.setContent(doc.toJSON());
+
+// Keep the user's selection where it was.
+const { from, to } = editor.state.selection;
+const newFrom = mapPosition(from, edits, "left");
+const newTo = mapPosition(to, edits, "right");
+```
+
+The batch rules, from [Edit by position](/docs/javascript/positions#edit-by-position):
+
+- every position refers to the document before the batch;
+- edits must not overlap, though they may touch;
+- a span may cross blocks only when both ends are in sibling blocks under one parent.
+
+## Guard against invalid content
+
+Before content from the model reaches the document, check it against your editor's
+schema. `validateNode` works on the proposed node alone and changes nothing:
+
+```ts
+const violations = validateNode(schema, proposedNode);
+if (violations.length > 0) {
+  // Reject, or send the violations back to the model to fix.
+}
+```
+
+For flow 1, validate the whole proposed document with `proposed.validate(schema)` before
+diffing. The schema format is described on the [Schema](/docs/javascript/schema) page.
+
+## On the server
+
+A server-side agent can run the same operations natively with the Rust crate, without a
+browser or WebAssembly. The edits arrive as JSON and deserialize straight into `PosEdit`:
+
+```rust
+use tiptap_rusty_parser::{Assoc, Document, PosEdit, Schema};
+
+let mut doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hello world"}]}]}"#,
+)?;
+let before = doc.clone();
+
+// The batch, as sent by the model or your adapter.
+let edits: Vec<PosEdit> = serde_json::from_str(
+    r#"[{"type":"replace","from":7,"to":12,"content":{"type":"text","text":"there"}}]"#,
+)?;
+
+// Your editor's schema, to check the result against.
+let schema = Schema::from_json_str(
+    r#"{"nodes":{"doc":{"content":"paragraph+"},"paragraph":{"content":"text*"},"text":{}}}"#,
+)?;
+
+let (patch, map) = doc.apply_pos_edits_mapped(&edits)?;
+// A non-empty result here means: undo and reject.
+assert!(doc.validate(&schema).is_empty());
+assert_eq!(doc.text_content(), "hello there");
+
+// Carry a cursor from before the edit to after it.
+assert_eq!(map.map(12, Assoc::Right), 12);
+
+// Undo, for a reject.
+let undo = before.invert(&patch)?;
+doc.apply(&undo)?;
+assert_eq!(doc, before);
+
+let response = doc.to_json_str()?;
+# let _ = response;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+And the document-to-document flow, with the smart granularity:
+
+```rust
+use tiptap_rusty_parser::{Change, DiffGranularity, DiffOptions, Document};
+
+let current = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the quick brown fox"}]}]}"#,
+)?;
+let proposed = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"the quick red fox"}]}]}"#,
+)?;
+
+let opts = DiffOptions { text: DiffGranularity::Smart { replace_threshold: 0.5 } };
+let changes = current.root().diff_with(proposed.root(), &opts);
+assert!(changes.iter().all(|c| matches!(c, Change::SpliceText { .. })));
+
+let mut accepted = current.clone();
+accepted.apply(&changes)?;
+assert_eq!(accepted, proposed);
+
+// The change list is plain serde data: send it to the client as JSON.
+let json = serde_json::to_string(&changes)?;
+assert!(json.starts_with(r#"[{"op":"spliceText""#));
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+See [Position editing](/docs/parser/position-editing), [Diffing](/docs/parser/diffing) and
+[Schema](/docs/parser/schema) for the Rust APIs in full.
+
+## A runnable demo
+
+The repository includes an end-to-end script that runs both flows, selection mapping and
+the schema guard against the npm package:
+[`bindings/wasm/examples/ai-toolkit-integration.mjs`](https://github.com/alexvcasillas/tiptap-studio/blob/main/bindings/wasm/examples/ai-toolkit-integration.mjs).
+
+```sh
+npm install @tiptap-studio/rusty-parser
+node bindings/wasm/examples/ai-toolkit-integration.mjs
+```

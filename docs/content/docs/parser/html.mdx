@@ -1,0 +1,157 @@
+---
+title: Rendering HTML
+description: Render a document or any subtree to an HTML string with Tiptap's default tags.
+---
+
+`to_html` renders a node and its subtree to a compact HTML string. It needs no schema:
+known Tiptap node and mark types get their usual tags, and options decide what happens to
+the rest.
+
+```rust
+# use tiptap_rusty_parser::Document;
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+  {"type":"heading","attrs":{"level":2},"content":[{"type":"text","text":"Title"}]},
+  {"type":"paragraph","content":[
+    {"type":"text","text":"Read "},
+    {"type":"text","text":"the docs","marks":[{"type":"link","attrs":{"href":"https://tiptap.dev"}}]}
+  ]}
+]}"#)?;
+
+assert_eq!(
+    doc.to_html(),
+    r#"<h2>Title</h2><p>Read <a href="https://tiptap.dev">the docs</a></p>"#
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`to_html()` uses the default options and `to_html_with(&opts)` takes `HtmlOptions`. Both
+exist on `Node` and `Document`, and `to_html(&node)` is the free-function form. Call them
+on any node, not only the root, to render a fragment.
+
+## Default tags
+
+| Node type | Output |
+| --- | --- |
+| `doc` | Its children, with no wrapper. |
+| `paragraph` | `<p>` |
+| `heading` | `<h1>` to `<h6>` from `attrs.level`. A missing level renders `<h1>`. Levels outside 1 to 6 are clamped. |
+| `blockquote` | `<blockquote>` |
+| `bulletList`, `orderedList`, `listItem` | `<ul>`, `<ol>`, `<li>`. `<ol>` gets `start` when `attrs.start` is not 1. |
+| `codeBlock` | `<pre><code>`, with `class="language-…"` from `attrs.language`. The text inside is rendered without marks. |
+| `hardBreak`, `horizontalRule` | `<br>`, `<hr>` |
+| `image` | `<img>` with the `src`, `alt` and `title` attributes that are present. |
+| `text` | The escaped text, wrapped in its marks. |
+| a node without `type` | Its children, with no wrapper. |
+
+| Mark type | Output |
+| --- | --- |
+| `bold`, `italic`, `strike`, `underline` | `<strong>`, `<em>`, `<s>`, `<u>` |
+| `code` | `<code>` |
+| `subscript`, `superscript` | `<sub>`, `<sup>` |
+| `link` | `<a>` with the `href`, `target` and `rel` attributes that are present. |
+
+Marks open in the order they appear in the text node's `marks` and close in reverse.
+
+A `paragraph` or `heading` with a `textAlign` attribute of `left`, `right`, `center`,
+`justify`, `start` or `end` gets `style="text-align:…"`. Other values are ignored, so an
+attribute value cannot inject CSS.
+
+## Options
+
+`HtmlOptions::default()` follows the Tiptap conventions above.
+
+| Field | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `node_tags` | `HashMap<String, String>` | empty | Node type to tag. Overrides the built-in tag, and maps custom nodes. |
+| `mark_tags` | `HashMap<String, String>` | empty | Mark type to tag, the same way. |
+| `unknown_node` | `UnknownNodePolicy` | `Transparent` | What to do with a node type that has no tag. |
+| `unknown_mark` | `UnknownMarkPolicy` | `Transparent` | What to do with a mark type that has no tag. |
+| `self_closing` | `SelfClosingStyle` | `Html5` | `<br>` (`Html5`) or `<br/>` (`Xhtml`) for void elements. |
+| `spread_attrs` | `bool` | `false` | Also emit a node's other attributes as HTML attributes. |
+| `text_align` | `bool` | `true` | Emit the `text-align` style described above. |
+
+```rust
+# use tiptap_rusty_parser::{doc, HtmlOptions, Mark, Node, SelfClosingStyle};
+let d = doc([
+    Node::element("callout").with_child(
+        Node::element("paragraph")
+            .with_child(Node::text_with_marks("note", [Mark::new("highlight")]))
+            .with_child(Node::element("hardBreak")),
+    ),
+]);
+
+let mut opts = HtmlOptions::default();
+opts.node_tags.insert("callout".into(), "aside".into());
+opts.mark_tags.insert("highlight".into(), "mark".into());
+opts.self_closing = SelfClosingStyle::Xhtml;
+
+assert_eq!(d.to_html_with(&opts), "<aside><p><mark>note</mark><br/></p></aside>");
+```
+
+A tag from `node_tags` or `mark_tags` is a plain wrapper: it gets no attributes, except a
+node's attributes when `spread_attrs` is on. The tag name is written as given.
+
+### Unknown nodes and marks
+
+| `UnknownNodePolicy` | Unknown node renders as |
+| --- | --- |
+| `Transparent` (default) | Its children, with no wrapper. |
+| `DataTypeDiv` | `<div data-type="…">` around its children. |
+| `Skip` | Nothing. The whole subtree is dropped. |
+
+| `UnknownMarkPolicy` | Text with an unknown mark renders as |
+| --- | --- |
+| `Transparent` (default) | The text, without an element for that mark. |
+| `DataMarkSpan` | `<span data-mark="…">` around the text. |
+| `Skip` | Nothing. The text is dropped. |
+
+```rust
+# use tiptap_rusty_parser::{doc, HtmlOptions, Mark, Node, UnknownMarkPolicy, UnknownNodePolicy};
+let d = doc([Node::element("callout").with_child(Node::text_with_marks("hi", [Mark::new("glow")]))]);
+
+assert_eq!(d.to_html(), "hi");
+
+let opts = HtmlOptions {
+    unknown_node: UnknownNodePolicy::DataTypeDiv,
+    unknown_mark: UnknownMarkPolicy::DataMarkSpan,
+    ..Default::default()
+};
+assert_eq!(
+    d.to_html_with(&opts),
+    r#"<div data-type="callout"><span data-mark="glow">hi</span></div>"#
+);
+```
+
+### Spread attributes
+
+With `spread_attrs`, each remaining attribute whose value is a string, number or boolean
+becomes an HTML attribute. Attributes the built-in tag already uses (such as a heading's
+`level`) are skipped, and so are names with characters other than ASCII letters, digits,
+`-`, `_` and `:`. Null, array and object values are skipped. It is off by default because
+attribute names come from the document.
+
+```rust
+# use tiptap_rusty_parser::{doc, HtmlOptions, Node};
+let d = doc([Node::element("heading").with_attr("level", 3).with_attr("id", "intro").with_text("Hi")]);
+let opts = HtmlOptions { spread_attrs: true, ..Default::default() };
+assert_eq!(d.to_html_with(&opts), r#"<h3 id="intro">Hi</h3>"#);
+```
+
+`HtmlOptions` is plain data with `Serialize` and `Deserialize` (camelCase field names), so
+the same options can come from JSON or from the JavaScript package.
+
+## Escaping is not sanitizing
+
+Text and attribute values are escaped: `&`, `<` and `>` everywhere, and `"` inside
+attributes. That keeps document content from breaking the markup. URLs are written as
+they are, so a link with a `javascript:` `href` survives. If the document comes from an
+untrusted source, sanitize the HTML before you put it in a page.
+
+```rust
+# use tiptap_rusty_parser::{doc, Node};
+let d = doc([Node::element("paragraph").with_text("<script> & \"quotes\"")]);
+assert_eq!(d.to_html(), "<p>&lt;script&gt; &amp; \"quotes\"</p>");
+```
+
+Rendering never fails and does not validate the document. For Markdown output, see the
+[Markdown crate](/docs/markdown).

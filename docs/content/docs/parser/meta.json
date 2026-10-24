@@ -1,0 +1,30 @@
+{
+  "title": "Parser",
+  "root": true,
+  "pages": [
+    "index",
+    "data-model",
+    "parsing",
+    "querying",
+    "query-language",
+    "paths-and-positions",
+    "---Editing---",
+    "mutating",
+    "normalizing",
+    "range-and-block-editing",
+    "text",
+    "transactions",
+    "position-editing",
+    "change-algebra",
+    "---Validation and diffing---",
+    "schema",
+    "diffing",
+    "---Output---",
+    "html",
+    "building-nodes",
+    "---Reference---",
+    "errors",
+    "performance",
+    "migration"
+  ]
+}

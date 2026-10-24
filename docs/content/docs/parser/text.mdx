@@ -1,0 +1,108 @@
+---
+title: Text
+description: Extract plain text from a document and count characters and words.
+---
+
+Four methods read the text of a subtree. Call them on a `Document` for the whole
+document, or on any node for its subtree.
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[
+        {"type":"text","text":"Hello "},
+        {"type":"text","text":"brave","marks":[{"type":"bold"}]},
+        {"type":"text","text":" world"}
+    ]},
+    {"type":"paragraph","content":[{"type":"text","text":"second line"}]}
+]}"#)?;
+
+assert_eq!(doc.text_content(), "Hello brave worldsecond line");
+assert_eq!(doc.text_content_with_separator("\n\n"), "Hello brave world\n\nsecond line");
+assert_eq!(doc.char_count(), 28);
+assert_eq!(doc.word_count(), 5);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Method | Returns |
+| --- | --- |
+| `text_content()` | Every `text` field in the subtree, in document order, with nothing between them |
+| `text_content_with_separator(sep)` | The same, with `sep` between adjacent blocks |
+| `char_count()` | The number of Unicode scalar values (Rust `char`s) in all text |
+| `word_count()` | The number of words, using Unicode word segmentation |
+
+## text_content
+
+`text_content` matches ProseMirror's `node.textContent`: it concatenates every `text`
+field with no separators, so two paragraphs run together. Marks do not matter. Inline
+nodes without text, such as `hardBreak`, add nothing.
+
+## text_content_with_separator
+
+`text_content_with_separator` puts `sep` between two adjacent siblings when both are
+blocks. Text inside a block stays contiguous. A block here is any non-text node that
+has a `content` field, even an empty one.
+
+```rust
+use tiptap_rusty_parser::{doc, Node};
+
+let d = doc([
+    Node::element("heading").with_text("Title"),
+    Node::element("paragraph")
+        .with_children([Node::text("a"), Node::element("hardBreak"), Node::text("b")]),
+]);
+assert_eq!(d.text_content_with_separator("\n"), "Title\nab");
+```
+
+The test uses the JSON, not a schema. A node with no `content` key is not a block, so it
+gets no separator on either side. Tiptap writes an empty paragraph as
+`{"type":"paragraph"}`, with no `content`, so the text around one runs together:
+
+```rust
+use tiptap_rusty_parser::Document;
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"Hello"}]},
+    {"type":"paragraph"},
+    {"type":"paragraph","content":[{"type":"text","text":"world"}]}
+]}"#)?;
+assert_eq!(doc.text_content_with_separator("\n"), "Helloworld");
+assert_eq!(doc.word_count(), 1);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+If the separator matters, give empty paragraphs an empty `content` list before you
+extract the text.
+
+## char_count
+
+`char_count` counts Unicode scalar values, the same unit that
+[flat positions](/docs/parser/paths-and-positions#flat-positions) and
+[range offsets](/docs/parser/range-and-block-editing) use. It is not a byte count and
+not a UTF-16 count, so it can differ from JavaScript's `string.length`:
+
+```rust
+use tiptap_rusty_parser::Node;
+
+let t = Node::text("café 🦀");
+assert_eq!(t.char_count(), 6);
+assert_eq!("café 🦀".len(), 10); // bytes
+```
+
+## word_count
+
+`word_count` joins blocks with a space, so words do not merge across block boundaries,
+then counts words with Unicode word segmentation (UAX #29, from the
+`unicode-segmentation` crate). Punctuation is not a word. Each CJK ideograph counts as
+one word:
+
+```rust
+use tiptap_rusty_parser::Node;
+
+assert_eq!(Node::text("Hello, brave new world!").word_count(), 4);
+assert_eq!(Node::text("你好世界").word_count(), 4);
+```
+
+Because it uses the same block rule as `text_content_with_separator`, a contentless
+node between two blocks can merge their words, as shown above.

@@ -1,0 +1,268 @@
+---
+title: Schema validation
+description: Check a document against an allow-list of node types, marks, attributes and content expressions.
+---
+
+The parser accepts any node and mark type. Validation is opt-in: nothing checks a document
+until you call `validate` with a `Schema`. A schema lists the node types, mark types and
+attributes you allow, and what each node may contain. Validation collects every problem in
+one pass as a list of `Violation`s, each located by an index path.
+
+```rust
+# use tiptap_rusty_parser::{Document, Schema, ViolationKind};
+let schema = Schema::from_json_str(r#"{
+  "nodes": {
+    "doc": { "content": "heading paragraph+" },
+    "heading": { "content": "text*", "attrs": ["level"], "required_attrs": ["level"] },
+    "paragraph": { "content": "text*" },
+    "text": { "marks": ["bold"] }
+  },
+  "marks": { "bold": {}, "italic": {} }
+}"#)?;
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+  {"type":"heading","content":[{"type":"text","text":"Title"}]},
+  {"type":"paragraph","content":[{"type":"text","text":"x","marks":[{"type":"italic"}]}]}
+]}"#)?;
+
+let violations = doc.validate(&schema);
+assert_eq!(violations.len(), 2);
+
+assert_eq!(violations[0].path, vec![0]);
+assert_eq!(violations[0].kind, ViolationKind::MissingAttr { key: "level".into() });
+
+assert_eq!(violations[1].path, vec![1, 0]);
+assert_eq!(
+    violations[1].kind,
+    ViolationKind::DisallowedMark { node: "text".into(), mark: "italic".into() }
+);
+assert_eq!(violations[1].mark, Some(0));
+assert_eq!(violations[1].to_string(), "at [1, 0]: mark `italic` not allowed on `text`");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+`doc.is_valid(&schema)` returns `true` when `validate` would return an empty list.
+
+## The schema format
+
+A schema is a JSON object with two optional maps, `nodes` and `marks`. Each key is a type
+name and each value is that type's spec. Every field of a spec is optional.
+
+```json
+{
+  "nodes": {
+    "doc": { "content": "block+" },
+    "paragraph": { "group": "block", "content": "inline*", "attrs": ["textAlign"] },
+    "heading": {
+      "group": "block",
+      "content": "inline*",
+      "attrs": ["level", "textAlign"],
+      "required_attrs": ["level"]
+    },
+    "text": { "group": "inline", "marks": ["bold", "italic", "link"] }
+  },
+  "marks": {
+    "bold": {},
+    "italic": {},
+    "link": { "attrs": ["href", "target"], "required_attrs": ["href"] }
+  }
+}
+```
+
+Node spec fields:
+
+| Field | JSON | Meaning when present | When absent |
+| --- | --- | --- | --- |
+| `content` | array of type names, or a content expression string | Which children the node may have. See below. | Any children. |
+| `group` | string | Space-separated group names, so content expressions can refer to the node by group (`block`, `inline`). | No groups. |
+| `marks` | array of mark type names | Mark types allowed on nodes of this type. | Any registered mark. |
+| `attrs` | array of attribute keys | Attribute keys allowed on the node. | Any attributes. |
+| `required_attrs` | array of attribute keys | Keys that must be present. | None required. |
+
+Mark spec fields are `attrs` and `required_attrs`, with the same meaning.
+
+A few details that differ from a ProseMirror schema:
+
+- `attrs` is a list of key names, not an object of attribute specs with defaults.
+  Validation checks keys only, never values. A required key whose value is `null` is
+  present.
+- `marks` restricts the marks on the node itself. Tiptap puts marks on `text` nodes, so
+  restrict marks on the `text` spec, not on `paragraph`.
+- Unknown fields in the schema JSON are ignored.
+
+`Schema::from_json_str` returns a `ParseError` when the JSON is malformed or a content
+expression in it does not parse.
+
+### Build a schema in Rust
+
+`Schema`, `NodeSpec` and `MarkSpec` have builders that mirror the JSON fields.
+
+```rust
+# use tiptap_rusty_parser::{Document, MarkSpec, NodeSpec, Schema};
+let schema = Schema::new()
+    .node("doc", NodeSpec::new().content_match("block+"))
+    .node("paragraph", NodeSpec::new().group("block").content(["text"]))
+    .node("text", NodeSpec::new().marks(["link"]))
+    .mark("link", MarkSpec::new().attrs(["href"]).required_attrs(["href"]));
+
+let doc = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"hi"}]}]}"#,
+)?;
+assert!(doc.is_valid(&schema));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+| Builder | Sets |
+| --- | --- |
+| `Schema::new()`, `.node(type, spec)`, `.mark(type, spec)` | An empty schema, then one spec per type. Registering a type twice replaces its spec. |
+| `NodeSpec::content(types)` | `content` as a set of allowed child types. |
+| `NodeSpec::content_match(expr)` | `content` as a content expression. Panics on an invalid expression. |
+| `NodeSpec::try_content_match(expr)` | Same, returning `Result<NodeSpec, ParseExprError>`. |
+| `NodeSpec::group(groups)` | `group`. |
+| `NodeSpec::marks(types)` | `marks`. |
+| `NodeSpec::attrs(keys)`, `NodeSpec::required_attrs(keys)` | `attrs`, `required_attrs`. |
+| `MarkSpec::attrs(keys)`, `MarkSpec::required_attrs(keys)` | The same for a mark. |
+
+The fields are public too: `schema.nodes` and `schema.marks` are `HashMap`s, so you can
+inspect or edit a loaded schema. `Schema` serializes back to the same JSON shape.
+
+## Content rules
+
+`content` takes one of two forms, and they report different violations.
+
+- **Array form**, `["paragraph", "heading"]`: a set of allowed child types, in any order and
+  any number. Each child whose type is outside the set is a `DisallowedChild`.
+- **String form**, `"heading paragraph+"`: a ProseMirror content expression. It checks
+  order and count. A mismatch is one `InvalidContent` for the parent.
+
+### Content expressions
+
+The parser supports the full ProseMirror content expression language:
+
+| Syntax | Matches |
+| --- | --- |
+| `paragraph` | One child whose type is `paragraph`, or whose spec's `group` contains `paragraph`. |
+| `a b` | `a` followed by `b`. |
+| `a \| b` | `a` or `b`. `\|` binds loosest. |
+| `(…)` | Grouping. |
+| `a*`, `a+`, `a?` | Zero or more, one or more, zero or one. |
+| `a{2}`, `a{2,}`, `a{2,4}` | Exactly 2, at least 2, between 2 and 4. |
+| empty string | No children. |
+
+Names are made of letters, digits, `_` and `-`. A repeat bound may not exceed 1000.
+Expressions compile once, when the schema is built or loaded, to an automaton that
+validation runs over each node's children.
+
+`ContentExpr::parse` compiles an expression on its own and reports the byte offset of a
+syntax error:
+
+```rust
+# use tiptap_rusty_parser::ContentExpr;
+assert!(ContentExpr::parse("heading (paragraph | blockquote)*").is_ok());
+
+let err = ContentExpr::parse("a{3,1}").unwrap_err();
+assert_eq!(err.msg, "range maximum is less than minimum");
+assert_eq!(err.to_string(), "invalid content expression at byte 6: range maximum is less than minimum");
+```
+
+### Groups
+
+A name in an expression matches a child by type or by group. Give each node spec a
+`group`, then write expressions against the groups:
+
+```rust
+# use tiptap_rusty_parser::{Document, Schema, ViolationKind};
+let schema = Schema::from_json_str(r#"{
+  "nodes": {
+    "doc": { "content": "block+" },
+    "paragraph": { "group": "block" },
+    "blockquote": { "group": "block", "content": "block+" },
+    "text": { "group": "inline" }
+  }
+}"#)?;
+
+let empty = Document::from_json_str(r#"{"type":"doc","content":[]}"#)?;
+let v = empty.validate(&schema);
+assert_eq!(v[0].kind, ViolationKind::InvalidContent { parent: "doc".into(), expr: "block+".into() });
+assert_eq!(v[0].child, None); // every child matched, but `block+` needs at least one
+
+let stray = Document::from_json_str(
+    r#"{"type":"doc","content":[{"type":"paragraph"},{"type":"text","text":"x"}]}"#,
+)?;
+assert_eq!(stray.validate(&schema)[0].child, Some(1)); // the text node is the first misfit
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Violations
+
+Each `Violation` has four fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | `Vec<usize>` | Index path of the node the violation belongs to. The root is `[]`. Resolve it with `node_at`. |
+| `kind` | `ViolationKind` | What is wrong. |
+| `child` | `Option<usize>` | Index in the node's `content` of the offending child, for `DisallowedChild` and `InvalidContent`. |
+| `mark` | `Option<usize>` | Index in the node's `marks` of the offending mark, for mark violations and attribute violations raised on a mark. |
+
+`Violation` and `ViolationKind` implement `Display`, `Serialize` and `Deserialize`.
+
+### Every violation kind
+
+| Kind | Raised when | `path` points at | `child` / `mark` |
+| --- | --- | --- | --- |
+| `MissingNodeType` | A node has no `type`. | The node. | Neither. |
+| `UnknownNodeType(type)` | A node's type is not in `nodes`. | The node. | Neither. |
+| `DisallowedChild { parent, child }` | Array-form `content` does not list a child's type. | The parent. | `child` is the child's index. |
+| `InvalidContent { parent, expr }` | The children do not match the content expression. | The parent. | `child` is the first child no state of the expression can accept, or `None` when all children matched but the expression needs more. |
+| `UnknownMark(type)` | A mark's type is not in `marks`. | The node carrying the mark. | `mark` is the mark's index. |
+| `DisallowedMark { node, mark }` | The mark is registered, but the node spec's `marks` does not list it. | The node carrying the mark. | `mark` is the mark's index. |
+| `MissingAttr { key }` | A `required_attrs` key is absent. | The node. | `mark` is set when the key is missing on a mark. |
+| `UnknownAttr { key }` | An attribute key is outside the spec's `attrs`. | The node. | `mark` is set when the key is on a mark. |
+
+To reach the offending child, push `child` onto `path`. To reach the offending mark, index
+the node's `marks` with `mark`:
+
+```rust
+# use tiptap_rusty_parser::{Document, NodeSpec, Schema};
+# let schema = Schema::new()
+#     .node("doc", NodeSpec::new().content(["paragraph"]))
+#     .node("paragraph", NodeSpec::new())
+#     .node("heading", NodeSpec::new());
+# let doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph"},{"type":"heading"}]}"#)?;
+for v in doc.validate(&schema) {
+    let node = doc.node_at(&v.path).unwrap();
+    if let Some(i) = v.child {
+        let mut child_path = v.path.clone();
+        child_path.push(i);
+        assert_eq!(doc.node_at(&child_path).unwrap().node_type.as_deref(), Some("heading"));
+    }
+    if let Some(m) = v.mark {
+        let _mark = &node.marks.as_ref().unwrap()[m];
+    }
+}
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## How validation walks the tree
+
+- Nodes are visited in pre-order, so violations come out in document order. Within one
+  node they come in this order: type, node attributes, marks, content.
+- A node with no type or an unknown type gets one violation. Its attributes, marks and
+  content are not checked, but its children still are.
+- A child with no type or an unknown type is reported once, on itself. It never also
+  produces a `DisallowedChild` on its parent, and in a content expression it matches any
+  name.
+- Required attribute keys are checked from a `HashSet`, so when one node misses several,
+  their order is not fixed.
+
+## Errors
+
+| Call | Error | When |
+| --- | --- | --- |
+| `Schema::from_json_str` | `ParseError::Json` | Malformed JSON, a field of the wrong shape, or an invalid content expression. |
+| `ContentExpr::parse`, `NodeSpec::try_content_match` | `ParseExprError` | Invalid expression. `pos` is the byte offset, `msg` the reason. |
+| `NodeSpec::content_match` | panic | Invalid expression. |
+
+`validate` and `is_valid` never fail. See [Errors](/docs/parser/errors) for every error
+type, and the
+[`Schema` API reference](https://docs.rs/tiptap-rusty-parser/latest/tiptap_rusty_parser/struct.Schema.html).

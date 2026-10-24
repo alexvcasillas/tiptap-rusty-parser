@@ -1,0 +1,103 @@
+---
+title: Limitations
+description: What Markdown cannot carry, and what changes on a round trip.
+---
+
+Markdown has fewer concepts than a Tiptap document. Import and export are built so that a
+document that came from Markdown exports to Markdown that imports to the same document.
+Going the other way, from an arbitrary Tiptap document through Markdown and back, loses
+whatever Markdown cannot express. This page lists those cases.
+
+## Lost on export
+
+- **Attributes.** Only the attributes that have a Markdown form are written: heading
+  `level`, ordered list `start`, task item `checked`, code block `language`, link `href`
+  and `title`, image `src`, `alt` and `title`. Everything else, such as `textAlign` or an
+  `id`, is dropped.
+- **Unknown marks.** Marks other than `bold`, `italic`, `strike`, `code`, `link`,
+  `underline`, `subscript` and `superscript` are dropped; their text is kept.
+- **Unknown nodes.** With the default policy only their children are written. A leaf such
+  as `mention` disappears. See [Unknown nodes](/docs/markdown/export#unknown-nodes).
+- **Code block language.** Only the first word of `language` is written.
+- **Trailing hard breaks and whitespace** at the end of a paragraph are not written, since
+  Markdown would drop them anyway.
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, to_markdown, Document};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"paragraph","attrs":{"textAlign":"center"},"content":[
+        {"type":"text","text":"hi","marks":[{"type":"highlight"}]}]}
+]}"#)?;
+let md = to_markdown(&doc);
+assert_eq!(md, "hi\n");
+
+let back = from_markdown(&md).to_value()?;
+assert_eq!(back, serde_json::json!({"type":"doc","content":[
+    {"type":"paragraph","content":[{"type":"text","text":"hi"}]}]}));
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## HTML does not come back as marks
+
+Export writes `underline`, `subscript` and `superscript` as inline HTML (`<u>`, `<sub>`,
+`<sup>`), hard breaks inside table cells as `<br>`, complex tables as an HTML `<table>`, and
+unknown nodes as HTML under `UnknownNodePolicy::Html`. Import never creates nodes or marks
+from HTML. With the default `HtmlPolicy::Text`, that HTML comes back as literal text; with
+`HtmlPolicy::Drop` it is removed.
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, to_markdown, Document};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph","content":[
+    {"type":"text","text":"under","marks":[{"type":"underline"}]}]}]}"#)?;
+let md = to_markdown(&doc);
+assert_eq!(md, "<u>under</u>\n");
+
+let back = from_markdown(&md).to_value()?;
+assert_eq!(back["content"][0]["content"][0]["text"], "<u>under</u>");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Tables
+
+- GFM tables always have a header row. Export writes the first row as the header, so a
+  table without `tableHeader` cells comes back with its first row as `tableHeader`.
+- Column alignment is not imported, and export always writes `---` separators.
+- Cells with more than one paragraph, block content such as lists, or a `colspan` or
+  `rowspan` above 1 are exported as an HTML table, which imports as text.
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, to_markdown, Document};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"table","content":[
+    {"type":"tableRow","content":[
+        {"type":"tableCell","content":[{"type":"paragraph","content":[{"type":"text","text":"a"}]}]}]}]}]}"#)?;
+let back = from_markdown(&to_markdown(&doc)).to_value()?;
+assert_eq!(back["content"][0]["content"][0]["content"][0]["type"], "tableHeader");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Changed on import
+
+- **Soft line breaks** become a single space. The original line wrapping is not kept.
+- **Bare URLs** without angle brackets, such as `https://tiptap.dev` or `www.tiptap.dev`,
+  stay plain text. Only `<https://…>` autolinks become links.
+- **Mixed task lists**, where only some items have `[ ]` or `[x]`, stay normal lists with
+  the markers as text. An ordered task list loses its `start`.
+- **Image-only paragraphs** become block-level `image` nodes. See
+  [Images](/docs/markdown/import#images).
+- **Very deep nesting** beyond `max_depth` is flattened. See
+  [Nesting depth](/docs/markdown/import#nesting-depth).
+- **Raw HTML** is kept as text or dropped, never parsed.
+
+## Not supported
+
+These Markdown extensions are not enabled. Their syntax is parsed as ordinary CommonMark,
+so it comes through as text or as the plain blocks it happens to resemble:
+
+- footnotes
+- math
+- metadata blocks (front matter)
+- definition lists
+- GFM alerts (`> [!NOTE]`)

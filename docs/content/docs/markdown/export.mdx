@@ -1,0 +1,216 @@
+---
+title: Export
+description: Render a Tiptap document as Markdown with to_markdown and to_markdown_with.
+---
+
+Export walks any `Node` tree and writes CommonMark with GFM pipe tables and task lists.
+It is schema-agnostic like the parser: unknown node types follow a policy you choose,
+unknown marks and unknown attributes are ignored, and malformed input never panics.
+
+## Functions
+
+| Function | Signature | Use |
+| --- | --- | --- |
+| `to_markdown` | `fn to_markdown(node: &Node) -> String` | Default options. |
+| `to_markdown_with` | `fn to_markdown_with(node: &Node, opts: &RenderOptions) -> String` | Custom options. |
+
+Pass a `&Document` directly: it derefs to its root node. The root is usually `doc`, whose
+children are rendered as blocks. Any other node is rendered as a single block.
+
+The output is an empty string for an empty document. Otherwise it ends with exactly one
+`\n`.
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, Document, Node};
+
+let empty = Document::from_json_str(r#"{"type":"doc","content":[]}"#)?;
+assert_eq!(to_markdown(&empty), "");
+
+let para = Node::element("paragraph").with_text("Just a paragraph");
+assert_eq!(to_markdown(&para), "Just a paragraph\n");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Options
+
+| Field | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `unknown_node` | `UnknownNodePolicy` | `Transparent` | How to write node types with no Markdown equivalent. See [Unknown nodes](#unknown-nodes). |
+| `bullet` | `char` | `'-'` | Bullet list marker: `'-'`, `'*'` or `'+'`. Anything else falls back to `'-'`. |
+| `emphasis` | `char` | `'*'` | Italic delimiter: `'*'` or `'_'`. Anything else falls back to `'*'`. |
+
+Like `ParseOptions`, `RenderOptions` derives `serde` with camelCase names
+(`unknownNode`, `bullet`, `emphasis`) and missing fields take their defaults.
+
+```rust
+use tiptap_rusty_markdown::{from_markdown, to_markdown_with, RenderOptions};
+
+let doc = from_markdown("- *one*\n- two");
+let opts = RenderOptions { bullet: '*', emphasis: '_', ..Default::default() };
+assert_eq!(to_markdown_with(&doc, &opts), "* _one_\n* two\n");
+
+let opts: RenderOptions = serde_json::from_str(r#"{"bullet":"+"}"#).unwrap();
+assert_eq!(to_markdown_with(&doc, &opts), "+ *one*\n+ two\n");
+```
+
+## Nodes
+
+| Node | Markdown |
+| --- | --- |
+| `paragraph` | A paragraph. One that renders to nothing leaves no trace. |
+| `heading` | `#` repeated `attrs.level` times. A missing level is 1; levels are clamped to 1 to 6. |
+| `blockquote` | `> ` before each line. |
+| `bulletList`, `taskList` | `-` items (or the `bullet` option). Task items get `[ ] ` or `[x] ` from `attrs.checked`. |
+| `orderedList` | `1.` items, numbered from `attrs.start`. |
+| `codeBlock` | A fenced block with the first word of `attrs.language` as its info string. |
+| `horizontalRule` | `---`, or `***` / `___` when the line already has a `-`. |
+| `table` | A GFM pipe table, or an HTML `<table>` when a pipe table cannot express it. |
+| `image` | `![alt](src "title")`. |
+| `hardBreak` | `\` then a newline. In a table cell, `<br>`. |
+| `text` | Escaped text with its marks. |
+| `doc`, `listItem`, `taskItem`, `tableRow`, `tableCell`, `tableHeader` | Outside their usual parent: their content. |
+| Anything else | Follows `unknown_node`. |
+
+A list is tight (no blank lines between items) when every item holds at most one
+paragraph followed only by nested lists. Otherwise it is written loose.
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, Document};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"heading","attrs":{"level":9},"content":[{"type":"text","text":"Deep"}]},
+    {"type":"orderedList","attrs":{"start":3},"content":[
+        {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"three"}]}]},
+        {"type":"listItem","content":[{"type":"paragraph","content":[{"type":"text","text":"four"}]}]}]},
+    {"type":"taskList","content":[
+        {"type":"taskItem","attrs":{"checked":true},"content":[{"type":"paragraph","content":[{"type":"text","text":"done"}]}]}]},
+    {"type":"codeBlock","attrs":{"language":"rust"},"content":[{"type":"text","text":"let x = 1;"}]}
+]}"#)?;
+
+assert_eq!(
+    to_markdown(&doc),
+    "###### Deep\n\n3. three\n4. four\n\n- [x] done\n\n```rust\nlet x = 1;\n```\n"
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+Some choices exist only so the output parses back to the same structure:
+
+- Code fences are one backtick longer than the longest backtick run in the code, and at
+  least three. When the language contains a backtick, the fence uses tildes.
+- Two adjacent bullet lists use different markers, and two adjacent ordered lists switch
+  between `.` and `)`, so they do not merge into one list when parsed again.
+- An empty list or table writes nothing.
+
+### Tables
+
+A table becomes a GFM pipe table when every row is a `tableRow` and every cell is a
+`tableCell` or `tableHeader` with no `colspan` or `rowspan` above 1 and at most one
+paragraph of inline content. The first row is always written as the header row. Rows are
+padded to the widest row.
+
+Anything else is written as an HTML `<table>`, rendered with the parser's
+[HTML renderer](https://docs.rs/tiptap-rusty-parser/latest/tiptap_rusty_parser/struct.HtmlOptions.html)
+and with node attributes such as `colspan` written onto the tags.
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, Document};
+
+let cell = |t: &str| format!(
+    r#"{{"type":"tableCell","content":[{{"type":"paragraph","content":[{{"type":"text","text":"{t}"}}]}}]}}"#
+);
+let doc = Document::from_json_str(&format!(
+    r#"{{"type":"doc","content":[{{"type":"table","content":[
+        {{"type":"tableRow","content":[{},{}]}},
+        {{"type":"tableRow","content":[{},{}]}}]}}]}}"#,
+    cell("a"), cell("b"), cell("1"), cell("2"),
+))?;
+assert_eq!(to_markdown(&doc), "| a | b |\n| --- | --- |\n| 1 | 2 |\n");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Marks
+
+| Mark | Markdown |
+| --- | --- |
+| `bold` | `**text**` |
+| `italic` | `*text*` (or the `emphasis` option) |
+| `strike` | `~~text~~` |
+| `code` | `` `text` ``, with as many backticks as needed |
+| `link` | `[text](href "title")`. A link without a string `href` is not written as a link. |
+| `underline` | `<u>text</u>` |
+| `subscript` | `<sub>text</sub>` |
+| `superscript` | `<sup>text</sup>` |
+| Any other mark | Ignored: the text is written without it. |
+
+Marks open and close across a whole inline run, so adjacent text nodes that share a mark
+yield one delimiter pair. Whitespace at the edge of `bold`, `italic` or `strike` is moved
+outside the delimiters, because `**this **` would not parse as bold. Whitespace inside link
+text stays inside the brackets.
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, Document};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[{"type":"paragraph","content":[
+    {"type":"text","text":"see "},
+    {"type":"text","text":"the docs","marks":[{"type":"link","attrs":{"href":"https://tiptap.dev"}},{"type":"bold"}]},
+    {"type":"text","text":" and "},
+    {"type":"text","text":"this ","marks":[{"type":"bold"}]},
+    {"type":"text","text":"now","marks":[{"type":"underline"},{"type":"highlight"}]}
+]}]}"#)?;
+assert_eq!(
+    to_markdown(&doc),
+    "see [**the docs**](https://tiptap.dev) and **this** <u>now</u>\n"
+);
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+## Escaping
+
+Text is escaped so the output parses back to the same text. Characters that are special
+anywhere, such as `*`, `_`, `` ` ``, `[`, `]` and `\`, are escaped where they appear.
+Characters that are only special at the start of a line, such as `#`, `>`, `-`, `+` and
+`1.`, are escaped only there.
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, Node};
+
+let p = Node::element("paragraph").with_text("1. not a list, *not* emphasis");
+assert_eq!(to_markdown(&p), "1\\. not a list, \\*not\\* emphasis\n");
+```
+
+A newline inside a text node is written as a hard break, since a bare newline would be read
+back as a space.
+
+## Unknown nodes
+
+`UnknownNodePolicy` decides what happens to node types the exporter has no Markdown form
+for, such as `callout` or `mention`.
+
+| Variant | JSON | Effect |
+| --- | --- | --- |
+| `UnknownNodePolicy::Transparent` | `"transparent"` | Default. Writes the node's children and drops the node itself. A leaf such as `mention` writes nothing. |
+| `UnknownNodePolicy::Html` | `"html"` | Writes the node as HTML with the parser's `to_html_with`, as a `<div data-type="…">` wrapper around its rendered children. Attributes are not written. |
+| `UnknownNodePolicy::Skip` | `"skip"` | Drops the node and its children. |
+
+```rust
+use tiptap_rusty_markdown::{to_markdown, to_markdown_with, Document, RenderOptions, UnknownNodePolicy};
+
+let doc = Document::from_json_str(r#"{"type":"doc","content":[
+    {"type":"callout","content":[{"type":"paragraph","content":[{"type":"text","text":"Note"}]}]},
+    {"type":"paragraph","content":[{"type":"text","text":"end"}]}
+]}"#)?;
+
+assert_eq!(to_markdown(&doc), "Note\n\nend\n");
+
+let html = RenderOptions { unknown_node: UnknownNodePolicy::Html, ..Default::default() };
+assert_eq!(to_markdown_with(&doc, &html), "<div data-type=\"callout\"><p>Note</p></div>\n\nend\n");
+
+let skip = RenderOptions { unknown_node: UnknownNodePolicy::Skip, ..Default::default() };
+assert_eq!(to_markdown_with(&doc, &skip), "end\n");
+# Ok::<(), tiptap_rusty_parser::ParseError>(())
+```
+
+HTML written by the `Html` policy, and by `underline`, `subscript`, `superscript`, `<br>`
+in cells and the table fallback, is read back as text by import with the default
+`HtmlPolicy::Text`. See [Limitations](/docs/markdown/limitations).

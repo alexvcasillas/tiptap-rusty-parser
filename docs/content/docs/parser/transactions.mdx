@@ -1,0 +1,220 @@
+---
+title: Transactions
+description: Edit a tree in place while recording a replayable change list and its undo.
+---
+
+A `Transform` edits a tree in place and records each edit as a `Change` in the same pass.
+When you finish, you get the change list, and optionally its inverse, without diffing or
+cloning the document. Use it wherever you need undo, sync or an audit log of edits.
+
+```rust
+# use tiptap_rusty_parser::{apply, doc, Node};
+let mut d = doc([Node::element("paragraph").with_text("hi")]);
+let original = d.clone();
+
+let (changes, undo) = {
+    let mut tx = d.transform();
+    tx.set_attr(vec![0], "textAlign", "center")?;
+    tx.insert(vec![], 1, Node::element("paragraph"))?;
+    tx.finish_with_inverse()
+};
+assert_eq!(d.child_count(), 2);
+
+// The change list replays the edit on a copy of the original.
+let mut replay = original.clone();
+apply(&mut replay, &changes)?;
+assert_eq!(replay, d);
+
+// The inverse restores the original.
+apply(&mut d, &undo)?;
+assert_eq!(d, original);
+# Ok::<(), tiptap_rusty_parser::ApplyError>(())
+```
+
+`Node::transform` borrows the tree mutably, so you cannot read the tree while the
+transaction is open. Finish it, or end its scope, first.
+
+## Steps
+
+Each step applies one edit and records it. Steps return `Result<&mut Transform, E>`, so
+they chain with `?`.
+
+### Field and child steps
+
+These map one-to-one to a `Change` variant and return `ApplyError` on failure.
+
+| Step | Records |
+| --- | --- |
+| `set_attr(path, key, value)` | `SetAttr` |
+| `remove_attr(path, key)` | `RemoveAttr` |
+| `set_text(path, Option<String>)` | `SetText` |
+| `set_marks(path, Option<Vec<Mark>>)` | `SetMarks` |
+| `set_extra(path, key, value)` | `SetExtra` |
+| `remove_extra(path, key)` | `RemoveExtra` |
+| `insert(parent_path, index, node)` | `Insert` |
+| `remove(parent_path, index)` | `Remove` |
+| `replace(path, node)` | `Replace` |
+| `move_child(parent_path, from, to)` | `Move` |
+| `apply_change(change)` | The given `Change`, for example one picked from a `diff` list. |
+
+Paths are `Vec<usize>`. Indices are live, as in a diff: each step sees the tree as the
+previous steps left it.
+
+### Structural and inline steps
+
+These wrap the [block and range editing](/docs/parser/range-and-block-editing) methods
+and return `BlockError` on failure.
+
+| Step | Wraps |
+| --- | --- |
+| `set_block_type(path, new_type, attrs)` | `Node::set_block_type` |
+| `split_block(path, at, depth)` | `Node::split_block` |
+| `split_block_at(path, pos, depth)` | `Node::split_block_at` |
+| `join_blocks(parent, index)` | `Node::join_blocks` |
+| `wrap(path, wrapper_type, attrs)` | `Node::wrap` |
+| `wrap_range(range, wrapper_type, attrs)` | `Node::wrap_range` |
+| `lift(path)` | `Node::lift` |
+| `insert_text_at(block_path, pos, text, marks)` | `Node::insert_text` |
+| `delete_range_in(block_path, range)` | `Node::delete_range` |
+| `replace_range_in(block_path, range, text, marks)` | `Node::replace_range` |
+| `add_mark_range_in(block_path, range, mark)` | `Node::add_mark_range` |
+| `remove_mark_range_in(block_path, range, mark_type)` | `Node::remove_mark_range` |
+
+A structural edit can change many nodes at once, so these steps record differently. Each
+one clones the smallest subtree the edit can touch (the block, its parent or its
+grandparent), runs the edit, and diffs that subtree to recover the changes. The recorded
+inverse is a `Replace` of that subtree with its clone. The cost follows the size of the
+subtree, not of the document.
+
+```rust
+# use tiptap_rusty_parser::{doc, Node, Position};
+let mut d = doc([Node::element("paragraph").with_text("hello")]);
+let (changes, undo) = {
+    let mut tx = d.transform();
+    tx.insert_text_at(vec![0], Position::new(0, 5), " world", None)?;
+    tx.wrap(vec![0], "blockquote", None)?;
+    tx.finish_with_inverse()
+};
+assert_eq!(d.child(0).unwrap().node_type.as_deref(), Some("blockquote"));
+assert_eq!(d.text_content(), "hello world");
+assert!(!changes.is_empty());
+
+d.apply(&undo).unwrap();
+assert_eq!(d, doc([Node::element("paragraph").with_text("hello")]));
+# Ok::<(), tiptap_rusty_parser::BlockError>(())
+```
+
+## Finish
+
+| Method | Returns |
+| --- | --- |
+| `finish()` | The recorded `Vec<Change>`. |
+| `finish_with_inverse()` | `(changes, inverse)`. |
+| `changes()` | The changes recorded so far, without ending the transaction. |
+| `inverse()` | The undo of everything recorded so far, without ending the transaction. |
+| `rollback()` | Undoes every recorded step and ends the transaction. |
+
+The change list, applied to a copy of the tree as it was when the transaction began,
+reproduces the edited tree. The inverse, applied to the edited tree, restores the original.
+Both are ordinary `Change` lists: you can store them, send them as JSON, or apply them
+with `apply` or `apply_inverting`.
+
+Each step captures the state it overwrites (the old attribute, text or marks, the removed
+or replaced subtree) while it applies, so building the inverse never clones or re-diffs
+the document. If you only have the original tree and a change list, `invert` gives the same
+undo at the cost of a full clone. See [Diffing](/docs/parser/diffing#invert).
+
+## Undo and redo with `apply_inverting`
+
+`Node::apply_inverting(changes)` applies a change list and returns its inverse. Applying
+the inverse with `apply_inverting` returns the redo. That makes an undo stack two lists
+that swap back and forth:
+
+```rust
+# use tiptap_rusty_parser::{doc, Change, Node};
+let mut d = doc([Node::element("paragraph")]);
+let original = d.clone();
+
+let undo = d.apply_inverting(vec![Change::Remove { path: vec![], index: 0 }])?;
+assert_eq!(d.child_count(), 0);
+
+let redo = d.apply_inverting(undo)?;
+assert_eq!(d, original);
+assert_eq!(redo, vec![Change::Remove { path: vec![], index: 0 }]);
+# Ok::<(), tiptap_rusty_parser::ApplyError>(())
+```
+
+`apply_inverting` takes the list by value, so moved-in nodes are not cloned. It is the
+same engine the `Transform` steps use.
+
+## Failure semantics
+
+A `Transform` and `apply_inverting` handle errors differently.
+
+**A `Transform` keeps what it already did.** A step that fails leaves the tree as the
+earlier steps left it, and the failing step itself changes nothing. The transaction stays
+usable: `changes()` and `inverse()` cover the successful steps, you can keep going, and
+`rollback()` undoes everything.
+
+```rust
+# use tiptap_rusty_parser::{doc, ApplyError, Node};
+let mut d = doc([Node::element("paragraph")]);
+let original = d.clone();
+
+let mut tx = d.transform();
+tx.set_attr(vec![0], "textAlign", "center").unwrap();
+let err = tx.remove(vec![], 5).err().unwrap();
+assert_eq!(err, ApplyError { path: vec![5] });
+assert_eq!(tx.changes().len(), 1); // the first step is still applied
+
+tx.rollback();
+assert_eq!(d, original);
+```
+
+If you chain steps with `?` and return early, the earlier steps stay applied to the tree.
+Call `rollback()` on the error path when you want all or nothing.
+
+**`apply_inverting` is atomic.** If any change fails, it undoes the changes it already
+applied and returns the error. The tree is unchanged.
+
+```rust
+# use tiptap_rusty_parser::{doc, Change, Node};
+let mut d = doc([Node::element("paragraph")]);
+let original = d.clone();
+
+let result = d.apply_inverting(vec![
+    Change::SetAttr { path: vec![0], key: "textAlign".into(), value: "center".into() },
+    Change::Remove { path: vec![], index: 5 },
+]);
+assert!(result.is_err());
+assert_eq!(d, original);
+```
+
+Plain `apply` is neither: it stops at the first failing change and leaves the earlier ones
+applied, without a way to undo them.
+
+| API | On error |
+| --- | --- |
+| `Transform` step | That step changes nothing. Earlier steps stay applied and recorded. `rollback()` undoes them. |
+| `Transform` structural step | Same. The touched subtree is restored before the error returns. |
+| `Node::apply_inverting` | Rolls back the applied prefix. The tree is unchanged. |
+| `apply` | Earlier changes stay applied. |
+| `Node::apply_pos_edits` | The tree is unchanged. See [Position editing](/docs/parser/position-editing). |
+
+## `ApplyError`
+
+`ApplyError` has one field, `path: Vec<usize>`, the path that did not resolve. For a child
+index out of range, it is the parent path with the index appended. It displays as
+`apply: no node at path [5]`.
+
+| Cause | Example |
+| --- | --- |
+| No node at the change's path. | `SetAttr` on `[3]` in a document with one child. |
+| Child index out of range. | `Insert` at an index past the end, `Remove` or `Move` of a child that does not exist. |
+| Text splice out of range. | `SpliceText` whose `from + len_del` is past the end of the text. |
+
+Lists from `diff`, `Transform` and `apply_inverting` always apply to the tree they were
+made for. An `ApplyError` means the list was applied to a different tree, applied out of
+order, or built by hand.
+
+See the [`Transform` API reference](https://docs.rs/tiptap-rusty-parser/latest/tiptap_rusty_parser/struct.Transform.html).

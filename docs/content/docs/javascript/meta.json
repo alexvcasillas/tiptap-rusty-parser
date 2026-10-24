@@ -1,0 +1,16 @@
+{
+  "title": "JavaScript",
+  "root": true,
+  "pages": [
+    "index",
+    "---API---",
+    "tiptap-doc",
+    "positions",
+    "diffing",
+    "change-algebra",
+    "schema",
+    "transactions",
+    "---Reference---",
+    "typescript"
+  ]
+}

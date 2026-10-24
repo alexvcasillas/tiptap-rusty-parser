@@ -1,0 +1,141 @@
+---
+title: Schema
+description: Validate documents and proposed content against a schema with validate, isValid and validateNode.
+---
+
+The parser accepts any node and mark types. Validation is opt-in: you describe what your
+editor allows as a schema object, and check a document or a single node against it. The
+result lists every problem with its location, so one pass reports everything.
+
+| API | Returns | Use |
+| --- | --- | --- |
+| `doc.validate(schema)` | `Violation[]` | All violations in the document. Empty means valid. |
+| `doc.isValid(schema)` | `boolean` | `true` when there are no violations. |
+| `validateNode(schema, node: JSONContent)` | `Violation[]` | Check a node and its subtree without a `TiptapDoc`, for example content proposed by an AI model before you insert it. |
+
+`validateNode` is a module function:
+
+```ts
+import { TiptapDoc, validateNode } from "@tiptap-studio/rusty-parser";
+```
+
+All three throw when the schema object, or the node passed to `validateNode`, is
+malformed, for example ``Error: invalid content expression at byte 8: expected ')'``.
+A well-formed document never makes them throw: problems come back as violations.
+
+## Schema format
+
+A schema has two optional maps, `nodes` and `marks`, keyed by type name. Every node type
+the document uses must be listed, including `text`.
+
+```ts
+const schema = {
+  nodes: {
+    doc: { content: "block+" },
+    paragraph: { group: "block", content: "inline*" },
+    heading: { group: "block", content: "inline*", attrs: ["level"], required_attrs: ["level"] },
+    text: { group: "inline" },
+  },
+  marks: {
+    bold: {},
+    link: { attrs: ["href", "target"], required_attrs: ["href"] },
+  },
+};
+```
+
+Node spec fields, all optional:
+
+| Field | Type | Meaning when present | When absent |
+| --- | --- | --- | --- |
+| `content` | `string[]` or `string` | An array lists the allowed child types, in any order and number. A string is a ProseMirror content expression, such as `"heading paragraph+"`, that also checks order and count. | Any children. |
+| `group` | `string` | Space-separated groups the type belongs to, usable by name in content expressions. | No groups. |
+| `marks` | `string[]` | Mark types allowed on nodes of this type. | Any registered mark. |
+| `attrs` | `string[]` | Allowed attribute keys. | Any attributes. |
+| `required_attrs` | `string[]` | Attribute keys that must be present. | None required. |
+
+Mark spec fields, both optional: `attrs` and `required_attrs`, with the same meaning.
+
+Note that `required_attrs` is written in snake_case, unlike the camelCase used elsewhere in
+the JS API.
+
+Marks are checked on the node that carries them. In Tiptap documents that is the text
+node, so to restrict which marks text may have, set `marks` on `text`.
+
+The content expression language supports names, groups, `|`, grouping with parentheses,
+and the `*`, `+`, `?` and `{n,m}` quantifiers. A child of an unknown type matches any name
+in an expression, because it is already reported on its own. See
+[Schema](/docs/parser/schema) for the full grammar.
+
+## Violations
+
+```ts
+const doc = TiptapDoc.fromJSON({
+  type: "doc",
+  content: [
+    { type: "heading", content: [{ type: "text", text: "Title" }] },
+    { type: "paragraph", content: [
+      { type: "text", text: "see", marks: [{ type: "link", attrs: { url: "x" } }] } ] },
+    { type: "callout" },
+  ],
+});
+
+doc.validate(schema);
+// [
+//   { path: [0], kind: { MissingAttr: { key: "level" } } },
+//   { path: [1, 0], kind: { MissingAttr: { key: "href" } }, mark: 0 },
+//   { path: [1, 0], kind: { UnknownAttr: { key: "url" } }, mark: 0 },
+//   { path: [2], kind: { UnknownNodeType: "callout" } },
+// ]
+```
+
+Each violation has:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `path` | `number[]` | Index path of the node with the problem. For `validateNode`, relative to the node you passed, which is `[]`. |
+| `kind` | see below | What is wrong. |
+| `child` | `number`, optional | Index of the offending child, for `DisallowedChild` and `InvalidContent`. |
+| `mark` | `number`, optional | Index in the node's `marks` of the mark the problem is about. |
+
+`kind` is a string for `MissingNodeType` and an object with one key for every other kind:
+
+| `kind` | Raised when |
+| --- | --- |
+| `"MissingNodeType"` | A node has no `type`. |
+| `{ UnknownNodeType: string }` | A node's type is not in `nodes`. |
+| `{ DisallowedChild: { parent, child } }` | A child type is not in the parent's `content` array. |
+| `{ InvalidContent: { parent, expr } }` | The children do not match the parent's content expression. `child` is the first child that does not fit; it is missing when every child fit but more are required. |
+| `{ UnknownMark: string }` | A mark type is not in `marks`. |
+| `{ DisallowedMark: { node, mark } }` | A registered mark is not in the node's `marks` list. |
+| `{ MissingAttr: { key } }` | A required attribute is missing, on the node or on the mark given by `mark`. |
+| `{ UnknownAttr: { key } }` | An attribute is not in the allowed `attrs`, on the node or on the mark given by `mark`. |
+
+The shipped TypeScript types declare `kind` as `unknown`. Narrow it yourself:
+
+```ts
+function describe(v: Violation): string {
+  if (v.kind === "MissingNodeType") return `${v.path}: node has no type`;
+  const [name, detail] = Object.entries(v.kind as Record<string, unknown>)[0];
+  return `${v.path}: ${name} ${JSON.stringify(detail)}`;
+}
+```
+
+## Guard content before inserting it
+
+`validateNode` checks a subtree on its own, so you can reject content before it reaches a
+document:
+
+```ts
+const proposed = { type: "paragraph", content: [{ type: "heading", attrs: { level: 1 } }] };
+
+const violations = validateNode(schema, proposed);
+// [{ path: [], kind: { InvalidContent: { parent: "paragraph", expr: "inline*" } }, child: 0 }]
+
+if (violations.length === 0) {
+  doc.pushChild([], proposed);
+}
+```
+
+It checks the node against its own spec and its descendants. It cannot check whether the
+node is allowed where you plan to put it; validate the parent, or the whole document,
+after inserting for that.

@@ -1,0 +1,118 @@
+---
+title: Migrating from 0.5
+description: Update Rust code for 0.6, where node and mark attribute maps are boxed.
+---
+
+Version 0.6 stores the `attrs` and `extra` maps of `Node` and `Mark` behind a `Box`. That
+makes nodes smaller: a `Node` goes from 240 to 112 bytes and a `Mark` from 168 to 40.
+The 0.6 release measured parsing about 2 times faster with about 55% less memory.
+
+Only Rust code that reads or writes these fields directly needs changes. The JSON format
+is the same, and so is the API of the [JavaScript package](/docs/javascript).
+
+Update the dependency:
+
+```toml
+[dependencies]
+tiptap-rusty-parser = "0.6"
+```
+
+## Field types
+
+| Field | 0.5 | 0.6 |
+| --- | --- | --- |
+| `Node.attrs`, `Mark.attrs` | `Option<Map<String, Value>>` | `Option<Box<Map<String, Value>>>` |
+| `Node.extra`, `Mark.extra` | `Map<String, Value>` | `Option<Box<Map<String, Value>>>` |
+
+`extra` changed the most: it was always a map, and is now absent when a node has no
+unknown fields.
+
+## Replacements
+
+Most code moves to accessor methods, which hide the box:
+
+| 0.5 | 0.6 |
+| --- | --- |
+| `node.attrs.as_ref()` | `node.attrs()`, or `node.attrs.as_deref()` |
+| `node.attrs.get_or_insert_with(Map::new)` | `node.attrs_mut()` |
+| `node.attrs = Some(map)` | `node.attrs = Some(Box::new(map))` |
+| `node.attrs.iter().flatten()` | `node.attrs().into_iter().flatten()` |
+| `node.extra.get(k)` | `node.extra_field(k)` |
+| `node.extra.insert(k, v)` | `node.extra_mut().insert(k, v)` |
+| `node.extra.remove(k)` | `node.remove_extra(k)` |
+| `node.extra.iter()` | `node.extra().into_iter().flatten()` |
+| `Node { extra: Map::new(), .. }` | `Node { extra: None, .. }` |
+| `mark.attrs.as_ref()` | `mark.attrs()` |
+| `mark.extra.insert(k, v)` | `mark.extra_mut().insert(k, v)` |
+
+`attrs_mut()` and `extra_mut()` create the map when it is absent. `remove_extra` drops the
+map when its last key goes.
+
+```rust
+use serde_json::json;
+use tiptap_rusty_parser::{Document, Mark};
+
+let mut doc = Document::from_json_str(
+    r#"{"type":"doc","x-id":7,"content":[{"type":"paragraph","attrs":{"a":1}}]}"#,
+)
+.unwrap();
+
+// Unknown top-level fields.
+assert_eq!(doc.extra_field("x-id"), Some(&json!(7)));
+doc.extra_mut().insert("x-rev".into(), json!(2));
+assert_eq!(doc.remove_extra("x-id"), Some(json!(7)));
+
+// Node attributes.
+let p = &mut doc.children_mut()[0];
+assert_eq!(p.attrs().and_then(|m| m.get("a")), Some(&json!(1)));
+p.attrs_mut().insert("b".into(), json!(2));
+
+// Mark attributes.
+let link = Mark::new("link").attr("href", "https://tiptap.dev");
+assert_eq!(
+    link.attrs().and_then(|m| m.get("href")),
+    Some(&json!("https://tiptap.dev"))
+);
+```
+
+Struct literals that set the boxed fields wrap the map in `Box::new`:
+
+```rust
+use serde_json::{json, Map};
+use tiptap_rusty_parser::Node;
+
+let mut attrs = Map::new();
+attrs.insert("level".into(), json!(2));
+
+let heading = Node {
+    node_type: Some("heading".into()),
+    attrs: Some(Box::new(attrs)),
+    extra: None,
+    ..Default::default()
+};
+assert_eq!(heading.attr("level"), Some(&json!(2)));
+```
+
+## Behavior notes
+
+- `extra: None` and `extra: Some(empty map)` compare equal and serialize the same way.
+  Removing the last extra key with `remove_extra` sets `extra` to `None`.
+- Functions that take an `Option<Map<String, Value>>` are unchanged: `set_block_type`,
+  `wrap`, `wrap_range`, the matching `Transform` steps, and `PosEdit::SetBlockAttrs`. Pass
+  the map without a box.
+- The builders `with_attr` and `Mark::attr`, and the setters `set_attr` and
+  `remove_attr`, work as before.
+
+```rust
+use serde_json::{json, Map};
+use tiptap_rusty_parser::{doc, Node};
+
+let mut d = doc([Node::element("paragraph").with_text("hi")]);
+let mut attrs = Map::new();
+attrs.insert("level".into(), json!(1));
+d.set_block_type(&[0], "heading", Some(attrs)).unwrap();
+assert_eq!(d.child(0).unwrap().attr("level"), Some(&json!(1)));
+```
+
+See the [changelog](https://github.com/alexvcasillas/tiptap-studio/blob/main/parser/CHANGELOG.md)
+for every release.
