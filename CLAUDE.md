@@ -10,13 +10,18 @@
 - Sacrifice grammar for concision.
 
 ## Project
-Repo tiptap-studio, virtual workspace: `parser/` (crate tiptap-rusty-parser), `bindings/wasm/` (npm), `studio/` (desktop app).
+Repo tiptap-studio, virtual workspace: `parser/` (crate tiptap-rusty-parser), `markdown/` (crate tiptap-rusty-markdown), `bindings/wasm/` (npm), `studio/` (desktop app).
 tiptap-rusty-parser: Rust crate in `parser/`. Parse/walk/query/mutate Tiptap JSONContent (ProseMirror) docs.
 - Schema-agnostic: accept any node/mark types, preserve unknown fields, faithful roundtrip.
 - Query: predicate closures (find/find_all/walk).
 - Mutation: in-place mutable tree (&mut).
 - Pure lib, no bindings v1.
 - Perf-first: avoid clones, borrow over copy, bench w/ criterion.
+
+## markdown (tiptap-rusty-markdown)
+- Markdown <-> JSONContent via pulldown-cmark; depends on parser. Keep pulldown/Markdown deps out of the parser crate.
+- Import output must be schema-valid vs `markdown/tests/fixtures/gfm.schema.json`; export must stay idempotent (tests/roundtrip.rs).
+- Goldens: `UPDATE_FIXTURES=1 cargo test -p tiptap-rusty-markdown`; bench: `cargo bench -p tiptap-rusty-markdown`.
 
 ## studio (tiptap-rusty-studio)
 - GPUI desktop app in `studio/`. Depend only on `gpui-kit`; never add `gpui` directly (pinned snapshot).

@@ -1,0 +1,115 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "image",
+      "attrs": {
+        "src": "a.png",
+        "alt": "alone"
+      }
+    },
+    {
+      "type": "image",
+      "attrs": {
+        "src": "1.png",
+        "alt": "one",
+        "title": "T1"
+      }
+    },
+    {
+      "type": "image",
+      "attrs": {
+        "src": "2.png",
+        "alt": "two"
+      }
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "text "
+        },
+        {
+          "type": "image",
+          "attrs": {
+            "src": "i.png",
+            "alt": "inline"
+          }
+        },
+        {
+          "type": "text",
+          "text": " text"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "image",
+          "attrs": {
+            "src": "b.svg",
+            "alt": "badge"
+          },
+          "marks": [
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://ci.example"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "heading",
+      "attrs": {
+        "level": 1
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Heading "
+        },
+        {
+          "type": "image",
+          "attrs": {
+            "src": "h.png",
+            "alt": "h"
+          }
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "image",
+                  "attrs": {
+                    "src": "f.png",
+                    "alt": "first in item"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "attrs": {
+        "src": "e.png",
+        "alt": "em alt c"
+      }
+    }
+  ]
+}

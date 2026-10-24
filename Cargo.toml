@@ -1,7 +1,7 @@
 # Virtual workspace: the parser crate, its WASM bindings and the studio app.
 [workspace]
 resolver = "2"
-members = ["parser", "bindings/wasm", "studio"]
+members = ["parser", "markdown", "bindings/wasm", "studio"]
 
 [profile.release]
 lto = true

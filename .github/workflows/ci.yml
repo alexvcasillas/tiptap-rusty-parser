@@ -39,6 +39,15 @@ jobs:
       - name: Build examples
         run: cargo build -p tiptap-rusty-parser --examples
 
+      - name: Clippy (markdown)
+        run: cargo clippy -p tiptap-rusty-markdown --all-targets -- -D warnings
+
+      - name: Test (markdown)
+        run: cargo test -p tiptap-rusty-markdown --all-targets
+
+      - name: Doctests (markdown)
+        run: cargo test --doc -p tiptap-rusty-markdown
+
   # Informational: surfaces API-breaking changes vs the published crate so a
   # deliberate breaking version bump is visible up front. Never blocks merge.
   semver:

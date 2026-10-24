@@ -1,0 +1,46 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "horizontalRule"
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph"
+            },
+            {
+              "type": "codeBlock",
+              "attrs": {
+                "language": null
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "indented code"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

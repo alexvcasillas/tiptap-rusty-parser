@@ -17,6 +17,13 @@ changelog_path = "parser/CHANGELOG.md"
 git_tag_name = "v{{ version }}"
 git_release_name = "v{{ version }}"
 
+# Markdown <-> JSONContent, published to crates.io with its own tag.
+[[package]]
+name = "tiptap-rusty-markdown"
+changelog_path = "markdown/CHANGELOG.md"
+git_tag_name = "markdown-v{{ version }}"
+git_release_name = "tiptap-rusty-markdown {{ version }}"
+
 [[package]]
 name = "tiptap-rusty-parser-wasm"
 release = false

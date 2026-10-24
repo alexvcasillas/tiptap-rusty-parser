@@ -1,0 +1,96 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "before"
+    }
+   ]
+  },
+  {
+   "type": "table",
+   "content": [
+    {
+     "type": "tableRow",
+     "content": [
+      {
+       "type": "tableCell",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "h1"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "tableCell",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "h2"
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "tableRow",
+     "content": [
+      {
+       "type": "tableCell",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "image",
+           "attrs": {
+            "src": "i.png",
+            "alt": "x"
+           }
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "tableCell",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "l",
+           "marks": [
+            {
+             "type": "link",
+             "attrs": {
+              "href": "https://x.test"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

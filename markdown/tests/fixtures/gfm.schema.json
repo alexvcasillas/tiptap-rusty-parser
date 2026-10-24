@@ -1,0 +1,31 @@
+{
+  "$comment": "Tiptap StarterKit (v3) + Image, Table (table/tableRow/tableHeader/tableCell) and TaskList/TaskItem: the node set produced by tiptap-rusty-markdown's GFM import. image is in both the block and inline groups (block when a paragraph holds only images, inline otherwise). link also allows `title` (Markdown link titles).",
+  "nodes": {
+    "doc": { "content": "block+", "attrs": [] },
+    "paragraph": { "content": "inline*", "group": "block", "attrs": [] },
+    "text": { "group": "inline", "attrs": [] },
+    "heading": { "content": "inline*", "group": "block", "attrs": ["level"] },
+    "blockquote": { "content": "block+", "group": "block", "attrs": [] },
+    "bulletList": { "content": "listItem+", "group": "block list", "attrs": [] },
+    "orderedList": { "content": "listItem+", "group": "block list", "attrs": ["start", "type"] },
+    "listItem": { "content": "paragraph block*", "attrs": [] },
+    "codeBlock": { "content": "text*", "group": "block", "attrs": ["language"] },
+    "horizontalRule": { "content": "", "group": "block", "attrs": [] },
+    "hardBreak": { "content": "", "group": "inline", "attrs": [] },
+    "image": { "content": "", "group": "block inline", "attrs": ["src", "alt", "title", "width", "height"] },
+    "table": { "content": "tableRow+", "group": "block", "attrs": [] },
+    "tableRow": { "content": "(tableCell | tableHeader)*", "attrs": [] },
+    "tableHeader": { "content": "block+", "attrs": ["colspan", "rowspan", "colwidth"] },
+    "tableCell": { "content": "block+", "attrs": ["colspan", "rowspan", "colwidth"] },
+    "taskList": { "content": "taskItem+", "group": "block list", "attrs": [] },
+    "taskItem": { "content": "paragraph block*", "attrs": ["checked"] }
+  },
+  "marks": {
+    "bold": { "attrs": [] },
+    "italic": { "attrs": [] },
+    "strike": { "attrs": [] },
+    "code": { "attrs": [] },
+    "underline": { "attrs": [] },
+    "link": { "attrs": ["href", "title", "target", "rel", "class"] }
+  }
+}

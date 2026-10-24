@@ -1,0 +1,56 @@
+{
+ "type": "doc",
+ "content": [
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "keep"
+    }
+   ]
+  },
+  {
+   "type": "callout",
+   "content": [
+    {
+     "type": "paragraph",
+     "content": [
+      {
+       "type": "text",
+       "text": "gone"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "type": "paragraph",
+   "content": [
+    {
+     "type": "text",
+     "text": "a "
+    },
+    {
+     "type": "mention",
+     "attrs": {
+      "id": "1"
+     }
+    },
+    {
+     "type": "badge",
+     "content": [
+      {
+       "type": "text",
+       "text": "gone"
+      }
+     ]
+    },
+    {
+     "type": "text",
+     "text": "b"
+    }
+   ]
+  }
+ ]
+}
