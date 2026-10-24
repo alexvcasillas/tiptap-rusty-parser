@@ -14,7 +14,8 @@
       "!dist",
       "!build",
       "!.source",
-      "!public"
+      "!public",
+      "!pnpm-lock.yaml"
     ]
   },
   "formatter": {
