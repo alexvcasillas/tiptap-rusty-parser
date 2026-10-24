@@ -4,11 +4,12 @@
 //! `type` is accepted and unknown JSON fields are preserved in `extra` for
 //! faithful roundtrip.
 
-use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::fmt;
+use std::marker::PhantomData;
 
 /// A single Tiptap/ProseMirror node.
 ///
@@ -252,51 +253,167 @@ fn once<E: de::Error>(seen: &mut u8, bit: u8, name: &'static str) -> Result<(), 
     Ok(())
 }
 
+/// Scratch stacks shared by one deserialize call. Children and marks collect
+/// here, then move into exactly sized `Vec`s: serde's seq visitor grows by
+/// doubling (JSON gives no length), which left ~2x the needed capacity.
+#[derive(Default)]
+struct Scratch {
+    nodes: Vec<Node>,
+    marks: Vec<Mark>,
+}
+
 impl<'de> Deserialize<'de> for Node {
+    #[inline]
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Node, D::Error> {
-        struct V;
-        impl<'de> Visitor<'de> for V {
-            type Value = Node;
+        NodeSeed(&mut Scratch::default()).deserialize(d)
+    }
+}
 
-            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("struct Node")
-            }
+struct NodeSeed<'a>(&'a mut Scratch);
 
-            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Node, A::Error> {
-                let mut n = Node::default();
-                let mut seen = 0u8;
-                while let Some(key) = map.next_key::<Key>()? {
-                    match key {
-                        Key::Type => {
-                            once(&mut seen, 1, "type")?;
-                            n.node_type = map.next_value()?;
-                        }
-                        Key::Attrs => {
-                            once(&mut seen, 2, "attrs")?;
-                            n.attrs = map.next_value()?;
-                        }
-                        Key::Content => {
-                            once(&mut seen, 4, "content")?;
-                            n.content = map.next_value()?;
-                        }
-                        Key::Marks => {
-                            once(&mut seen, 8, "marks")?;
-                            n.marks = map.next_value()?;
-                        }
-                        Key::Text => {
-                            once(&mut seen, 16, "text")?;
-                            n.text = map.next_value()?;
-                        }
-                        Key::Other(k) => {
-                            let v: Value = map.next_value()?;
-                            n.extra_mut().insert(k, v);
-                        }
-                    }
+impl<'de> DeserializeSeed<'de> for NodeSeed<'_> {
+    type Value = Node;
+
+    #[inline]
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Node, D::Error> {
+        d.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for NodeSeed<'_> {
+    type Value = Node;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("struct Node")
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Node, A::Error> {
+        let mut n = Node::default();
+        let mut seen = 0u8;
+        while let Some(key) = map.next_key::<Key>()? {
+            match key {
+                Key::Type => {
+                    once(&mut seen, 1, "type")?;
+                    n.node_type = map.next_value()?;
                 }
-                Ok(n)
+                Key::Attrs => {
+                    once(&mut seen, 2, "attrs")?;
+                    n.attrs = map.next_value()?;
+                }
+                Key::Content => {
+                    once(&mut seen, 4, "content")?;
+                    n.content = map.next_value_seed(OptVec::<Node>(self.0, PhantomData))?;
+                }
+                Key::Marks => {
+                    once(&mut seen, 8, "marks")?;
+                    n.marks = map.next_value_seed(OptVec::<Mark>(self.0, PhantomData))?;
+                }
+                Key::Text => {
+                    once(&mut seen, 16, "text")?;
+                    n.text = map.next_value()?;
+                }
+                Key::Other(k) => {
+                    let v: Value = map.next_value()?;
+                    n.extra_mut().insert(k, v);
+                }
             }
         }
-        d.deserialize_map(V)
+        Ok(n)
+    }
+}
+
+/// Element type collected through a [`Scratch`] stack.
+trait Stacked: Sized {
+    fn stack(s: &mut Scratch) -> &mut Vec<Self>;
+    fn next<'de, A: SeqAccess<'de>>(seq: &mut A, s: &mut Scratch)
+        -> Result<Option<Self>, A::Error>;
+}
+
+impl Stacked for Node {
+    #[inline]
+    fn stack(s: &mut Scratch) -> &mut Vec<Node> {
+        &mut s.nodes
+    }
+
+    #[inline]
+    fn next<'de, A: SeqAccess<'de>>(
+        seq: &mut A,
+        s: &mut Scratch,
+    ) -> Result<Option<Node>, A::Error> {
+        seq.next_element_seed(NodeSeed(s))
+    }
+}
+
+impl Stacked for Mark {
+    #[inline]
+    fn stack(s: &mut Scratch) -> &mut Vec<Mark> {
+        &mut s.marks
+    }
+
+    #[inline]
+    fn next<'de, A: SeqAccess<'de>>(
+        seq: &mut A,
+        _: &mut Scratch,
+    ) -> Result<Option<Mark>, A::Error> {
+        seq.next_element()
+    }
+}
+
+/// `Option<Vec<T>>` with the same `null`/error behaviour as serde's impls.
+struct OptVec<'a, T>(&'a mut Scratch, PhantomData<T>);
+
+impl<'de, T: Stacked> DeserializeSeed<'de> for OptVec<'_, T> {
+    type Value = Option<Vec<T>>;
+
+    #[inline]
+    fn deserialize<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_option(self)
+    }
+}
+
+impl<'de, T: Stacked> Visitor<'de> for OptVec<'_, T> {
+    type Value = Option<Vec<T>>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("option")
+    }
+
+    #[inline]
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    #[inline]
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    #[inline]
+    fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_seq(SeqVec(self.0, PhantomData)).map(Some)
+    }
+}
+
+/// Seq visitor: push onto the scratch stack, then one exact-capacity move.
+struct SeqVec<'a, T>(&'a mut Scratch, PhantomData<T>);
+
+impl<'de, T: Stacked> Visitor<'de> for SeqVec<'_, T> {
+    type Value = Vec<T>;
+
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("a sequence")
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Vec<T>, A::Error> {
+        let s = self.0;
+        let base = T::stack(s).len();
+        while let Some(x) = T::next(&mut seq, s)? {
+            T::stack(s).push(x);
+        }
+        let st = T::stack(s);
+        let mut v = Vec::with_capacity(st.len() - base);
+        v.extend(st.drain(base..));
+        Ok(v)
     }
 }
 
