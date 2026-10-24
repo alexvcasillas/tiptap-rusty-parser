@@ -178,7 +178,7 @@ struct Frame {
     /// Code / HTML block text.
     buf: String,
     /// Code block attrs.
-    attrs: Option<Map<String, Value>>,
+    attrs: Option<Box<Map<String, Value>>>,
     /// Item: task marker. List: one entry per closed item.
     task: Option<bool>,
     tasks: Vec<Option<bool>>,
@@ -227,7 +227,7 @@ struct Builder {
 }
 
 #[inline]
-fn element(ty: &str, attrs: Option<Map<String, Value>>, children: Vec<Node>) -> Node {
+fn element(ty: &str, attrs: Option<Box<Map<String, Value>>>, children: Vec<Node>) -> Node {
     Node {
         node_type: Some(ty.to_owned()),
         attrs,
@@ -241,10 +241,10 @@ fn element(ty: &str, attrs: Option<Map<String, Value>>, children: Vec<Node>) -> 
 }
 
 #[inline]
-fn one_attr(k: &str, v: Value) -> Option<Map<String, Value>> {
+fn one_attr(k: &str, v: Value) -> Option<Box<Map<String, Value>>> {
     let mut m = Map::with_capacity(1);
     m.insert(k.to_owned(), v);
-    Some(m)
+    Some(Box::new(m))
 }
 
 #[inline]
@@ -518,7 +518,7 @@ impl Builder {
         }
         let node = Node {
             node_type: Some("image".to_owned()),
-            attrs: Some(attrs),
+            attrs: Some(Box::new(attrs)),
             marks: if img.marks.is_empty() {
                 None
             } else {

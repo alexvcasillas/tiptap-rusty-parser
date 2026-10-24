@@ -3,7 +3,7 @@
 //! variant (and the container-shape edge cases), applying the inverse must
 //! restore the original exactly, and must agree with the diff-based `invert`.
 
-use serde_json::{json, Map};
+use serde_json::json;
 use tiptap_rusty_parser::{apply, BlockRange, Change, Mark, Node, Position};
 
 fn p(text: &str) -> Node {
@@ -101,7 +101,7 @@ fn set_attr_overwrite_and_new() {
 #[test]
 fn set_attr_on_present_empty_attrs() {
     let mut d = doc();
-    d.node_at_mut(&[1]).unwrap().attrs = Some(Map::new());
+    d.node_at_mut(&[1]).unwrap().attrs = Some(Default::default());
     one(
         &d,
         Change::SetAttr {
@@ -144,7 +144,7 @@ fn remove_attr_present_absent_last() {
         },
     );
     let mut empty = doc();
-    empty.node_at_mut(&[1]).unwrap().attrs = Some(Map::new());
+    empty.node_at_mut(&[1]).unwrap().attrs = Some(Default::default());
     one(
         &empty,
         Change::RemoveAttr {
@@ -250,7 +250,7 @@ fn extra_fields() {
     let mut d = doc();
     d.node_at_mut(&[1])
         .unwrap()
-        .extra
+        .extra_mut()
         .insert("x-id".into(), json!("abc"));
     one(
         &d,

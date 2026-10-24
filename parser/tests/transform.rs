@@ -86,7 +86,7 @@ fn marks_and_extra() {
         tx.finish()
     };
     assert!(doc.child(0).unwrap().has_mark("bold"));
-    assert_eq!(doc.extra.get("docId").unwrap(), "abc");
+    assert_eq!(doc.extra_field("docId").unwrap(), "abc");
     assert_replayable(&original, &doc, &changes);
 }
 

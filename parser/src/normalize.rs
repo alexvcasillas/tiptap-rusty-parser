@@ -86,7 +86,11 @@ fn is_empty_text(n: &Node) -> bool {
 /// True if two text nodes differ only in their `text` payload.
 #[inline]
 fn mergeable(a: &Node, b: &Node) -> bool {
-    is_text(a) && is_text(b) && a.marks == b.marks && a.attrs == b.attrs && a.extra == b.extra
+    is_text(a)
+        && is_text(b)
+        && a.marks == b.marks
+        && a.attrs == b.attrs
+        && crate::node::extra_eq(&a.extra, &b.extra)
 }
 
 /// Canonicalize one parent's child list in place. Shared building block reused

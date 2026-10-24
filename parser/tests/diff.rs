@@ -360,10 +360,10 @@ fn fuzz_shuffle_is_pure_moves() {
 #[test]
 fn extra_fields_roundtrip() {
     let mut a = Node::element("doc");
-    a.extra.insert("docId".into(), json!("abc"));
+    a.extra_mut().insert("docId".into(), json!("abc"));
     let mut b = Node::element("doc");
-    b.extra.insert("docId".into(), json!("xyz")); // change
-    b.extra.insert("version".into(), json!(3)); // add
+    b.extra_mut().insert("docId".into(), json!("xyz")); // change
+    b.extra_mut().insert("version".into(), json!(3)); // add
     let c = roundtrip(&a, &b);
     assert!(c
         .iter()
@@ -477,7 +477,7 @@ fn random_tree(rng: &mut Rng, depth: usize) -> Node {
         n.content = Some(Vec::new());
     }
     if rng.below(6) == 0 {
-        n.attrs = Some(serde_json::Map::new());
+        n.attrs = Some(Default::default());
     }
     n
 }

@@ -215,7 +215,7 @@ fn apply_inverting_one(root: &mut Node, change: Change) -> Result<Option<Change>
         }
         Change::SetExtra { path, key, value } => {
             let node = at_mut(root, &path)?;
-            Some(match node.extra.insert(key.clone(), value) {
+            Some(match node.extra_mut().insert(key.clone(), value) {
                 Some(prev) => Change::SetExtra {
                     path,
                     key,
@@ -226,8 +226,7 @@ fn apply_inverting_one(root: &mut Node, change: Change) -> Result<Option<Change>
         }
         Change::RemoveExtra { path, key } => {
             let node = at_mut(root, &path)?;
-            node.extra
-                .remove(&key)
+            node.remove_extra(&key)
                 .map(|value| Change::SetExtra { path, key, value })
         }
         Change::Insert { path, index, node } => {

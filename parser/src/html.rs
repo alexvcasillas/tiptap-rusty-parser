@@ -415,7 +415,7 @@ fn valid_attr_name(name: &str) -> bool {
 
 /// Emit a node's remaining attrs (skipping `consumed` keys and invalid names).
 fn spread(n: &Node, consumed: &[&str], out: &mut String) {
-    if let Some(attrs) = &n.attrs {
+    if let Some(attrs) = n.attrs.as_deref() {
         for (k, v) in attrs {
             if consumed.contains(&k.as_str()) || !valid_attr_name(k) {
                 continue;

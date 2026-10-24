@@ -56,6 +56,8 @@ ProseMirror `JSONContent` documents, in Rust.
 
 ## Install
 
+Upgrading from 0.5? See [MIGRATION.md](MIGRATION.md).
+
 Add to `Cargo.toml`:
 
 ```toml
@@ -102,21 +104,25 @@ A Tiptap document is a tree of nodes. The crate mirrors Tiptap's `JSONContent`
 shape directly.
 
 ```rust
-pub struct Node {
-    pub node_type: Option<String>,            // JSON "type", e.g. "doc", "paragraph", "text"
-    pub attrs:     Option<Map<String, Value>>,// node attributes
-    pub content:   Option<Vec<Node>>,         // child nodes
-    pub marks:     Option<Vec<Mark>>,         // marks (bold, italic, link, …)
-    pub text:      Option<String>,            // text payload (text nodes)
-    pub extra:     Map<String, Value>,        // any unknown top-level fields, preserved
+pub struct Node {                                  // 112 bytes
+    pub node_type: Option<String>,                 // JSON "type", e.g. "doc", "paragraph", "text"
+    pub attrs:     Option<Box<Map<String, Value>>>,// node attributes
+    pub content:   Option<Vec<Node>>,              // child nodes
+    pub marks:     Option<Vec<Mark>>,              // marks (bold, italic, link, …)
+    pub text:      Option<String>,                 // text payload (text nodes)
+    pub extra:     Option<Box<Map<String, Value>>>,// any unknown top-level fields, preserved
 }
 
-pub struct Mark {
-    pub mark_type: String,                    // JSON "type", e.g. "bold"
-    pub attrs:     Option<Map<String, Value>>,// mark attributes (e.g. link href)
-    pub extra:     Map<String, Value>,        // unknown fields, preserved
+pub struct Mark {                                  // 40 bytes
+    pub mark_type: String,                         // JSON "type", e.g. "bold"
+    pub attrs:     Option<Box<Map<String, Value>>>,// mark attributes (e.g. link href)
+    pub extra:     Option<Box<Map<String, Value>>>,// unknown fields, preserved
 }
 ```
+
+The maps are boxed to keep nodes small. Accessors: `attrs()` / `attrs_mut()`,
+`extra()` / `extra_mut()`, `Node::extra_field(key)` / `Node::remove_extra(key)`.
+`extra: None` and `Some(empty)` compare equal.
 
 `Map`/`Value` are re-exported from `serde_json`. The crate is built with the
 `preserve_order` feature so attribute key order survives a roundtrip.

@@ -360,7 +360,7 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
     if let Some(spec) = spec {
         // node attrs
         check_attrs(
-            node.attrs.as_ref(),
+            node.attrs.as_deref(),
             spec.attrs.as_ref(),
             &spec.required_attrs,
             path,
@@ -393,7 +393,7 @@ fn validate_node(node: &Node, schema: &Schema, path: &mut Vec<usize>, out: &mut 
                             }
                         }
                         check_attrs(
-                            mark.attrs.as_ref(),
+                            mark.attrs.as_deref(),
                             mark_spec.attrs.as_ref(),
                             &mark_spec.required_attrs,
                             path,

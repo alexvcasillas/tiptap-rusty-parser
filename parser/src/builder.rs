@@ -1,7 +1,7 @@
 //! Ergonomic constructors / builders for nodes.
 
 use crate::node::{Mark, Node};
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 impl Node {
     /// Start an element node of `node_type` (no content/marks/attrs yet).
@@ -46,7 +46,7 @@ impl Node {
     /// Builder: set one attr (consuming).
     pub fn with_attr(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.attrs
-            .get_or_insert_with(Map::new)
+            .get_or_insert_with(Default::default)
             .insert(key.into(), value.into());
         self
     }

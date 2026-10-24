@@ -50,7 +50,7 @@ fn preserves_unknown_node_type_and_extra_fields() {
     let widget = doc
         .find(|n| n.node_type.as_deref() == Some("customWidget"))
         .unwrap();
-    assert_eq!(widget.extra.get("data-foo"), Some(&json!("bar")));
+    assert_eq!(widget.extra_field("data-foo"), Some(&json!("bar")));
     assert_eq!(widget.attr("id"), Some(&json!(7)));
 }
 

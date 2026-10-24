@@ -105,3 +105,7 @@ pub use schema::{MarkSpec, NodeSpec, Schema, Violation, ViolationKind};
 pub use source_map::{SourceMap, SourceMapError};
 pub use text_diff::{diff_text, DiffGranularity, DiffOptions, SegKind, TextSegment};
 pub use transform::Transform;
+
+#[cfg(doctest)]
+#[doc = include_str!("../MIGRATION.md")]
+struct MigrationDoctests;

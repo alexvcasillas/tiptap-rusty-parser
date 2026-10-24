@@ -265,8 +265,8 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>, o
     }
     if a.node_type != b.node_type
         || empty_shape_mismatch(
-            a.attrs.as_ref().map(Map::is_empty),
-            b.attrs.as_ref().map(Map::is_empty),
+            a.attrs.as_deref().map(Map::is_empty),
+            b.attrs.as_deref().map(Map::is_empty),
         )
         || empty_shape_mismatch(
             a.content.as_ref().map(Vec::is_empty),
@@ -281,7 +281,7 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>, o
         });
         return;
     }
-    diff_attrs(a.attrs.as_ref(), b.attrs.as_ref(), path, out);
+    diff_attrs(a.attrs.as_deref(), b.attrs.as_deref(), path, out);
     if a.text != b.text {
         diff_text_field(a.text.as_deref(), b.text.as_deref(), path, out, opts);
     }
@@ -291,7 +291,7 @@ fn diff_node(a: &Node, b: &Node, path: &mut Vec<usize>, out: &mut Vec<Change>, o
             marks: b.marks.clone(),
         });
     }
-    diff_extra(&a.extra, &b.extra, path, out);
+    diff_extra(a.extra.as_deref(), b.extra.as_deref(), path, out);
     diff_children(a.children(), b.children(), path, out, opts);
 }
 
@@ -371,11 +371,17 @@ fn diff_attrs(
 }
 
 fn diff_extra(
-    am: &Map<String, Value>,
-    bm: &Map<String, Value>,
+    a: Option<&Map<String, Value>>,
+    b: Option<&Map<String, Value>>,
     path: &mut [usize],
     out: &mut Vec<Change>,
 ) {
+    if a.is_none_or(Map::is_empty) && b.is_none_or(Map::is_empty) {
+        return;
+    }
+    let empty = Map::new();
+    let am = a.unwrap_or(&empty);
+    let bm = b.unwrap_or(&empty);
     for (k, v) in bm {
         if am.get(k) != Some(v) {
             out.push(Change::SetExtra {
@@ -1068,7 +1074,7 @@ impl Fx {
 
 fn hash_node(n: &Node, h: &mut Fx) {
     h.opt_str(n.node_type.as_deref());
-    hash_opt_map(n.attrs.as_ref(), h);
+    hash_opt_map(n.attrs.as_deref(), h);
     match &n.content {
         None => h.add(1),
         Some(c) => {
@@ -1084,19 +1090,30 @@ fn hash_node(n: &Node, h: &mut Fx) {
             h.add(4 ^ ((ms.len() as u64) << 8));
             for m in ms {
                 h.bytes(m.mark_type.as_bytes());
-                hash_opt_map(m.attrs.as_ref(), h);
-                hash_map(&m.extra, h);
+                hash_opt_map(m.attrs.as_deref(), h);
+                hash_extra(m.extra.as_deref(), h);
             }
         }
     }
     h.opt_str(n.text.as_deref());
-    hash_map(&n.extra, h);
+    hash_extra(n.extra.as_deref(), h);
 }
 
 fn hash_opt_map(m: Option<&Map<String, Value>>, h: &mut Fx) {
     match m {
         None => h.add(5),
         Some(m) => hash_map(m, h),
+    }
+}
+
+/// Absent extra hashes as an empty map (they compare equal).
+fn hash_extra(m: Option<&Map<String, Value>>, h: &mut Fx) {
+    match m {
+        Some(m) => hash_map(m, h),
+        None => {
+            h.add(6);
+            h.add(0);
+        }
     }
 }
 
@@ -1209,11 +1226,11 @@ fn apply_one(root: &mut Node, change: &Change) -> std::result::Result<(), ApplyE
         }
         Change::SetExtra { path, key, value } => {
             node_at_mut(root, path)?
-                .extra
+                .extra_mut()
                 .insert(key.clone(), value.clone());
         }
         Change::RemoveExtra { path, key } => {
-            node_at_mut(root, path)?.extra.remove(key);
+            node_at_mut(root, path)?.remove_extra(key);
         }
         Change::Insert { path, index, node } => {
             let parent = node_at_mut(root, path)?;
